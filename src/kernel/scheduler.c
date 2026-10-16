@@ -346,6 +346,72 @@ static int percpu_commit_gap[MAX_CPUS] = { [0 ... MAX_CPUS - 1] = -1 };
 /* Bitmask of CPUs that have run at least one user task (bit c == CPU c). The SMP
  * self-test reads it to confirm work actually landed on more than one core. */
 volatile unsigned smp_cpus_ran_tasks = 0;
+
+/* ---- PER-CPU RUN LISTS (docs/design/scheduler.md 3.5, step 2) --------------
+ *
+ * Every live task is HOMED on one CPU: it sits on that CPU's circular list
+ * (tasks[].rq_home, rq_next, rq_prev). A CPU choosing what to run looks through
+ * its own list first and takes another CPU's task only when its own has nothing
+ * (sched_pick_after). Homing is where a task is placed; it decides nothing about
+ * whether the task may run, which stays with sched_selectable, unchanged.
+ *
+ * WHY MEMBERSHIP IS NOT "RUNNABLE". The textbook queue holds exactly the runnable
+ * tasks, so every wake must enqueue. Here more than a dozen sites in five files
+ * make a task runnable, most of them under an IPC lock, and a wake that forgot to enqueue
+ * would strand its task for good: a lost wake, found only by a hang. Homing
+ * changes only at creation, at death and when a CPU takes another's task, so a
+ * wake touches no list, the IPC paths take no new lock, and the lost wake cannot
+ * be written. By construction rather than by remembering (CLAUDE.md §1). The
+ * cost is that a pick walks past blocked tasks on its list; the old pick walked
+ * past every slot in the table.
+ *
+ * A dead task may stay on its list until create_task re-homes the slot: it is
+ * never selectable, so it is never picked, and leaving it costs one step of a
+ * walk. task_teardown unlinks it anyway, so in practice the lists hold the live.
+ *
+ * All of it is written and read only under sched_raw_lock. The lists get their
+ * own locks when selection stops holding the global one; until then a second
+ * lock would protect nothing the first does not. */
+static uint64_t percpu_pick_tick[MAX_CPUS];
+static int16_t  rq_head[MAX_CPUS] = { [0 ... MAX_CPUS - 1] = -1 };
+
+/* Take `t` off whatever list it is on. Caller holds sched_raw_lock. */
+static void rq_unlink(int t)
+{
+    int c = tasks[t].rq_home;
+    if (c < 0 || c >= MAX_CPUS) { tasks[t].rq_home = -1; return; }
+    int n = tasks[t].rq_next, p = tasks[t].rq_prev;
+    if (n == t) {
+        rq_head[c] = -1;                 /* it was the only one */
+    } else {
+        tasks[p].rq_next = (int16_t)n;
+        tasks[n].rq_prev = (int16_t)p;
+        if (rq_head[c] == t) rq_head[c] = (int16_t)n;
+    }
+    tasks[t].rq_home = -1;
+    tasks[t].rq_next = tasks[t].rq_prev = (int16_t)t;
+}
+
+/* Home `t` on CPU `c`, at the tail of its list, leaving wherever it was. Caller
+ * holds sched_raw_lock. Idempotent in effect, so a reused slot is homed afresh
+ * whatever its last occupant left. */
+static void rq_home_on(int t, int c)
+{
+    if (t <= 0 || t >= g_max_tasks || c < 0 || c >= MAX_CPUS) return;
+    rq_unlink(t);
+    int h = rq_head[c];
+    if (h < 0) {
+        rq_head[c] = (int16_t)t;
+        tasks[t].rq_next = tasks[t].rq_prev = (int16_t)t;
+    } else {
+        int tail = tasks[h].rq_prev;
+        tasks[t].rq_next = (int16_t)h;
+        tasks[t].rq_prev = (int16_t)tail;
+        tasks[tail].rq_next = (int16_t)t;
+        tasks[h].rq_prev = (int16_t)t;
+    }
+    tasks[t].rq_home = (int8_t)c;
+}
 #endif
 
 #ifndef SMP
@@ -512,6 +578,12 @@ void tasks_init(void) {
     /* One word under the legacy arm, ceil(n/64) otherwise -- and the loop is
      * written so the arm's single word is zeroed too rather than skipped. */
     for (int i = 0; i < (g_max_tasks + 63) / 64; i++) g_kstack_inflight[i] = 0;
+    /* Homed nowhere, stated rather than inherited: a zero rq_home would read as
+     * "on CPU 0's list", with links that name task 0. */
+    for (int i = 0; i < g_max_tasks; i++) {
+        tasks[i].rq_home = -1;
+        tasks[i].rq_next = tasks[i].rq_prev = (int16_t)i;
+    }
 #endif
 }
 
@@ -698,6 +770,19 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
      * the one about to exist. The compiler barrier keeps the store ahead of
      * `state = 1`; x86 keeps stores in order, so any CPU that sees the slot
      * live also sees its new generation. */
+#if defined(SMP) && !defined(RUNQ_UNHOMED)
+    /* Home the task on its creator's CPU before it goes live, so there is no
+     * moment at which it is live and on no list (see PER-CPU RUN LISTS). An idle
+     * CPU takes it from there if this one is busy. RUNQ_UNHOMED=1 leaves it on
+     * no list, for the control arm: nothing then ever selects it. */
+    if (id > 0) {
+        int hc = this_cpu();
+        if (hc < 0 || hc >= MAX_CPUS) hc = 0;   /* placement only; never skip it */
+        sched_raw_lock();
+        rq_home_on(id, hc);
+        sched_raw_unlock();
+    }
+#endif
     tasks[id].slot_gen++;
     __asm__ volatile ("" ::: "memory");
     tasks[id].state = 1;
@@ -2652,8 +2737,57 @@ static void sched_assert_claims(const char *where) {
     sched_susp_task = -1;
     sched_susp_cpu  = -1;
 }
+
+static void sched_runq_panic(const char *what, const char *where, int t, int c)
+{
+    panic_begin();
+    panic_str("\nPANIC: "); panic_str(what);
+    panic_str(" at "); panic_str(where);
+    panic_str(": task "); panic_dec(t);
+    panic_str(" cpu "); panic_dec(c);
+    panic_str(" state "); panic_dec(t > 0 && t < g_max_tasks ? (int)tasks[t].state : -1);
+    panic_str("\n");
+    for (;;) __asm__ volatile ("cli; hlt");
+}
+
+/* The run lists are sound and every live task is on exactly one of them (see
+ * PER-CPU RUN LISTS). Unlike the claim audit above this needs no second strike:
+ * every write to a list happens under sched_raw_lock, which the caller holds,
+ * and a task goes live (state 0 -> 1) only after create_task has homed it, so
+ * the check is exact and a failure is never a mid-flight update. A dead task
+ * may be on a list or not. A live task on none would never be chosen again,
+ * by any CPU: the lost task this layout exists to make impossible. */
+static void sched_assert_runq(const char *where)
+{
+    uint64_t seen[(MAX_TASKS + 63) / 64] = { 0 };
+    for (int c = 0; c < MAX_CPUS; c++) {
+        int h = rq_head[c];
+        if (h < 0) continue;
+        int t = h;
+        for (int n = 0; ; n++) {
+            if (t <= 0 || t >= g_max_tasks || n >= g_max_tasks)
+                sched_runq_panic("run list damaged", where, t, c);
+            if (tasks[t].rq_home != c)
+                sched_runq_panic("run list member homed elsewhere", where, t, c);
+            if (seen[t / 64] & (1ULL << (t % 64)))
+                sched_runq_panic("task on a run list twice", where, t, c);
+            seen[t / 64] |= 1ULL << (t % 64);
+            int nx = tasks[t].rq_next;
+            if (nx <= 0 || nx >= g_max_tasks || tasks[nx].rq_prev != t)
+                sched_runq_panic("run list links disagree", where, t, c);
+            t = nx;
+            if (t == h) break;
+        }
+    }
+    for (int t = 1; t < g_max_tasks; t++) {
+        if (tasks[t].state == 0) continue;
+        if (!(seen[t / 64] & (1ULL << (t % 64))))
+            sched_runq_panic("live task on no run list", where, t, tasks[t].rq_home);
+    }
+}
 #else
 #define sched_assert_claims(where) ((void)0)
+#define sched_assert_runq(where) ((void)0)
 #endif
 
 /* Called from the timer ISR. Returns the kernel %rsp the ISR epilogue should
@@ -2797,12 +2931,12 @@ static inline int sched_selectable(int t)
            ;
 }
 
+#ifndef SMP
 /* The first selectable task after `start`, round robin over the table, or -1.
  * `start` itself is a candidate only when `include_start` is set, and then last:
- * the tick asks that way, because on SMP its own task is claimed by this CPU and
- * so fails sched_selectable anyway, while a ring-0 caller's `start` is 0, which
- * is never a task. Every other path is switching away from `start` and excludes
- * it. These are exactly the ranges the six loops used. */
+ * the tick asks that way, while a ring-0 caller's `start` is 0, which is never a
+ * task. Every other path is switching away from `start` and excludes it. These
+ * are exactly the ranges the six loops used. One CPU has no lists to keep. */
 static int sched_pick_after(int start, int include_start)
 {
     int last = include_start ? g_max_tasks : g_max_tasks - 1;
@@ -2813,6 +2947,92 @@ static int sched_pick_after(int start, int include_start)
     }
     return -1;
 }
+#else
+/* How long a CPU may go without choosing before the tasks waiting on its list
+ * are anyone's. A CPU chooses on every tick it can switch at; one that has not
+ * chosen for this many is inside a long kernel operation (preempt_on_tick never
+ * switches a CPU away from a live ring-0 context), and the tasks homed on it
+ * would otherwise wait for it however long that takes. The old single pool had
+ * no such wait, and step 2 changes no policy. */
+#define RQ_STALL_TICKS 2
+
+/* The first selectable task on CPU `c`'s list, walking from the task after
+ * `start` when `start` is on that list and from its head otherwise, never
+ * `start` itself; or -1. Caller holds sched_raw_lock. The walk is bounded by
+ * the table's size as well as by returning to where it began, so a damaged list
+ * ends the walk rather than the kernel. */
+static int rq_first_selectable(int c, int start)
+{
+    int h = rq_head[c];
+    if (h < 0) return -1;
+    int on_c = (start > 0 && start < g_max_tasks && tasks[start].rq_home == c);
+    int origin = on_c ? tasks[start].rq_next : h;
+    int t = origin;
+    for (int n = 0; n < g_max_tasks; n++) {
+        if (t != start && sched_selectable(t)) return t;
+        t = tasks[t].rq_next;
+        if (t == origin) break;
+    }
+    return -1;
+}
+
+/* Take a selectable task from another CPU's list for `cpu`, re-homing it here;
+ * or -1. With `stalled_only`, only from a CPU that has stopped choosing (see
+ * RQ_STALL_TICKS). Caller holds sched_raw_lock, and the task is not running
+ * anywhere (sched_selectable requires that), so moving it between lists cannot
+ * disturb the claim protocol: S20 rests on task_running_cpu, which a list never
+ * touches. RUNQ_NO_STEAL=1 takes nothing, for the control arm: a CPU then runs
+ * only what was created on it, and the APs of smoke-smp never run a worker. */
+static int rq_steal(int cpu, int start, int stalled_only, uint64_t now)
+{
+#ifdef RUNQ_NO_STEAL
+    (void)cpu; (void)start; (void)stalled_only; (void)now;
+    return -1;
+#else
+    for (int k = 1; k < MAX_CPUS; k++) {
+        int c = (cpu + k) % MAX_CPUS;
+        if (rq_head[c] < 0) continue;
+        if (stalled_only && now - percpu_pick_tick[c] <= RQ_STALL_TICKS) continue;
+        int t = rq_first_selectable(c, start);
+        if (t > 0) { rq_home_on(t, cpu); return t; }
+    }
+    return -1;
+#endif
+}
+
+/* The task this CPU runs next, or -1 (docs/design/scheduler.md 3.5). Same
+ * contract as the single-CPU version above: a selectable task other than
+ * `start`, with `start` itself considered last and only when `include_start`
+ * is set. What changed is only where it looks:
+ *
+ *   1. a task waiting on a CPU that has stopped choosing, so a long kernel
+ *      operation on one CPU never holds up the tasks homed on it;
+ *   2. this CPU's own list, round robin from the task after `start`;
+ *   3. any other CPU's list, taking the task over (stealing). Until scheduling
+ *      contexts exist (step 4) every task is slack work, which design 3.5 lets
+ *      any CPU take.
+ *
+ * Each candidate still passes sched_selectable, so placement can make a task
+ * wait but never makes a task run that the rule would refuse. Caller holds
+ * sched_raw_lock. */
+static int sched_pick_after(int start, int include_start)
+{
+    int cpu = this_cpu();
+    if (cpu < 0 || cpu >= MAX_CPUS) cpu = 0;
+    uint64_t now = system_ticks;
+    percpu_pick_tick[cpu] = now;
+
+    int t = rq_steal(cpu, start, 1, now);
+    if (t > 0) return t;
+    t = rq_first_selectable(cpu, start);
+    if (t > 0) return t;
+    t = rq_steal(cpu, start, 0, now);
+    if (t > 0) return t;
+    if (include_start && start > 0 && start < g_max_tasks && sched_selectable(start))
+        return start;
+    return -1;
+}
+#endif
 
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (!preempt_enabled) return frame_rsp;
@@ -2966,6 +3186,7 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
      * claim below so that claim cannot paper over a violation it did not cause.
      * Compiled out unless SCHED_INVARIANTS=1. */
     sched_assert_claims("preempt_on_tick");
+    sched_assert_runq("preempt_on_tick");
 
     int cur = percpu_current_task[cpu];
 
@@ -4040,6 +4261,7 @@ static void task_teardown_body(int id, const struct task_exit_cause *cause,
 #ifdef SMP
     task_running_cpu[id]  = -1;  /* release the SMP mutual-exclusion guard */
     REL_LOG(id, this_cpu(), "task_teardown");
+    rq_unlink(id);               /* off its CPU's list, in the same step */
     sched_raw_unlock();
     /* Any OTHER CPU still running `id` is sent the kill IPI, so it stops now.
      * preempt_on_tick, which the IPI runs, never returns into a dead task. Read

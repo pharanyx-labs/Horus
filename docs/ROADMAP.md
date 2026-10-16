@@ -60,7 +60,7 @@ The recommendation is the one the route is written around; it is not the decisio
 | Console | Job control: stopping and resuming the foreground program | 2.3 job control | | |
 | Boot | Measured boot by default, rollback anchoring | 5.6, 5.7 | 2.9, 1.12 | D3, D4 |
 | Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | D10, D5 |
-| SMP | Per-CPU run queues, one-shot timers, timers as notifications | 1.8 steps 2 and 3, 2.2 | | |
+| SMP | One-shot timers, timers as notifications | 1.8 step 3, 2.2 | | |
 | Memory | Reclaimable kernel memory | 5.9, 2.1 | 2.5, 2.3 | |
 | Proofs | Concurrent protocols modelled | 5.11 | narrows 5.5 | D9 |
 | Swap | Secrets kept out of swap | 2.12 | | D13 |
@@ -108,9 +108,8 @@ ring-3 return paths load a user selector into `%gs` and that zeroes the base. A 
 the most safety-critical assembly in the tree; nothing is blocked on it, so it comes last in SMP.
 
 **1.8 🚧 Per-CPU scheduling, with CPU time as a capability.** Designed in
-[`design/scheduler.md`](design/scheduler.md); steps 0, 1, 1b and 2a are done. Next, step 2: per-CPU
-run queues, the reschedule interrupt and stealing, with no policy change. Then step 3, per-CPU
-one-shot timers and tickless idle; then scheduling contexts and budgets (4), passive servers (5),
+[`design/scheduler.md`](design/scheduler.md); steps 0, 1, 1b, 2a and 2 (per-CPU run lists and
+stealing) are done. Next, step 3: per-CPU one-shot timers and tickless idle; then scheduling contexts and budgets (4), passive servers (5),
 affinity (6), more than eight CPUs (7) and targeted shootdown (8).
 
 ### Track 2: toward a complete operating system
@@ -154,7 +153,7 @@ controller is identified and the drive answers IDENTIFY), USB through xHCI (and 
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 11,894-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 12,029-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase

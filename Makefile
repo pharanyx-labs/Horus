@@ -221,7 +221,8 @@ DEFECT_FLAGS = \
 	INSTALLER_STOP_AFTER_FORMAT USERS_PERSIST_COMPILED_IN LIVE_OPENS_VOLUME \
 	SIBLING_KICK_TEST SIBLING_SCHED_UNGUARDED \
 	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN \
-	WAIT_WAKE_EARLY WAIT_WAKE_WIDEN PIT_SQUARE_WAVE
+	WAIT_WAKE_EARLY WAIT_WAKE_WIDEN PIT_SQUARE_WAVE \
+	RUNQ_UNHOMED RUNQ_NO_STEAL
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2184,6 +2185,20 @@ endif
 SIBLING_SCHED_UNGUARDED ?= 0
 ifeq ($(SIBLING_SCHED_UNGUARDED),1)
 CFLAGS += -DSIBLING_SCHED_UNGUARDED
+endif
+
+# The per-CPU run lists (docs/design/scheduler.md 3.5, step 2). RUNQ_UNHOMED=1
+# (defect) creates a task on no CPU's list, so nothing ever selects it again;
+# RUNQ_NO_STEAL=1 (defect) never takes a task from another CPU's list, so a CPU
+# runs only what was created on it. See smoke-runq-unhomed-control and
+# smoke-smp-nosteal-control.
+RUNQ_UNHOMED ?= 0
+ifeq ($(RUNQ_UNHOMED),1)
+CFLAGS += -DRUNQ_UNHOMED
+endif
+RUNQ_NO_STEAL ?= 0
+ifeq ($(RUNQ_NO_STEAL),1)
+CFLAGS += -DRUNQ_NO_STEAL
 endif
 
 # SHOOTDOWN_DEAF_CPU=1 (instrument) makes one CPU flush without acknowledging a
@@ -9536,6 +9551,21 @@ smoke-smp:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) MARKER_CHANNEL=kcon REQUIRE_MARKER='SMP_SELFTEST: PASS' \
 		FAIL_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
+# Control arm for stealing (docs/design/scheduler.md 3.5): the BSP creates every
+# worker, so all of them are homed on its run list, and the BSP stays in ring 0
+# running the selftest and never takes one. Only stealing gets a worker onto an
+# AP. RUNQ_NO_STEAL=1 removes it, and the selftest must report that no AP ran.
+# It reports only when its own poll runs out, 163 s under TCG on eight CPUs on
+# the development machine (2026-10-16), so the boot is given 600.
+SMP_NOSTEAL_TIMEOUT ?= 600
+.PHONY: smoke-smp-nosteal-control
+smoke-smp-nosteal-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 RUNQ_NO_STEAL=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 RUNQ_NO_STEAL=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMP_NOSTEAL_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
 # No task runs on an SMT sibling even when one is interrupted (S101). Two cores
 # of two threads: one sibling per core, two schedulable CPUs, and the selftest's
 # two workers, so one is always runnable and waiting while the BSP sends 0xFC to
@@ -14874,6 +14904,18 @@ smoke-sched-invariants-stress:
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 horus.iso
 	@STRESS_RUNS=$${STRESS_RUNS:-30} SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		FAIL_MARKER='PANIC:' STRESS_GATE=marker tools/stress_boot.sh horus.iso
+
+# Control arm for the run-list audit (docs/design/scheduler.md 3.5): with
+# RUNQ_UNHOMED=1 create_task puts a new task on no CPU's list, so nothing would
+# ever select it again. The audit in preempt_on_tick must name it on the first
+# tick after the first spawn, rather than leave a hang to be diagnosed.
+.PHONY: smoke-runq-unhomed-control
+smoke-runq-unhomed-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 RUNQ_UNHOMED=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 RUNQ_UNHOMED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
+		EXPECT_FAULT='PANIC: live task on no run list' tools/smoke_test.sh horus.iso
 
 .PHONY: test
 # The local sweep: the Rust unit tests, then a clean full build.

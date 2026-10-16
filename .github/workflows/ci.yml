@@ -2261,6 +2261,10 @@ jobs:
         run: rustup target add x86_64-unknown-none
       - name: Boot SMP_SELFTEST kernel on 8 CPUs and assert every AP runs scheduled tasks + TLB shootdown
         run: make smoke-smp
+      # The BSP creates every worker and never runs one, so an AP runs a worker
+      # only by taking it from the BSP's run list (docs/design/scheduler.md 3.5).
+      - name: Control arm, without stealing no AP runs a worker
+        run: make smoke-smp-nosteal-control
       # Eight CPUs on the topologies firmware produces, not only QEMU's default:
       # sparse LAPIC ids, SMT, and more threads than slots (docs/ARCHITECTURE.md
       # section 7). Every schedulable AP must run a task and none may be an SMT
@@ -2418,6 +2422,10 @@ jobs:
       # the 50% local one -- see the note on the Makefile target.
       - name: Boot the SCHED_INVARIANTS kernel 30 times and assert the claim invariant holds on every boot
         run: make smoke-sched-invariants-stress
+      # The same kernel checks that every live task is on exactly one CPU's run
+      # list; this arm creates tasks on none, and the check must name one.
+      - name: Control arm, a task homed on no run list is named
+        run: make smoke-runq-unhomed-control
 
   smoke-proc:
     name: QEMU process-control self-test (headless)

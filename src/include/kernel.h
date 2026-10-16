@@ -2055,7 +2055,15 @@ typedef struct tcb {
      * current image and address space only, and are rewritten when either is. */
     uint8_t  shlib_wanted;
     uint8_t  shlib_data;
-    uint8_t  padding[6];
+    /* The per-CPU run lists (docs/design/scheduler.md 3.5, step 2): the CPU
+     * this task is homed on, or -1, and its neighbours on that CPU's circular
+     * list. Written only under the scheduler lock, by rq_home_on and
+     * rq_unlink in scheduler.c, and nowhere else. They sit in what was
+     * padding, so the table's size is unchanged. */
+    int8_t   rq_home;
+    int16_t  rq_next;
+    int16_t  rq_prev;
+    uint8_t  padding[1];
 } tcb_t;
 
 /* The task table is carved from the kernel's untyped reserve, and the reserve is

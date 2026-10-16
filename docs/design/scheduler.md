@@ -1,6 +1,6 @@
 # Scheduling and SMP
 
-**Decided; steps 0, 1, 1b, 2a and 2 are built (section 5).** The maintainer asked on 2026-10-09 for a more robust SMP kernel and a
+**Decided; steps 0, 1, 1b, 2a, 2 and 3a are built (section 5).** The maintainer asked on 2026-10-09 for a more robust SMP kernel and a
 scheduler of high quality, chosen with security first. The decisions below were taken the same day.
 
 ## 1. What exists
@@ -11,7 +11,7 @@ scheduler of high quality, chosen with security first. The decisions below were 
 | Policy | Round robin. `tasks[].priority` is written (1 at init, copied on spawn) and never read |
 | CPUs | `MAX_CPUS` is 8 (`src/include/cpu_limits.h`). Each costs about 104 KiB of `.bss` whether present or not: a 68 KiB idle stack (`ap_idle_stacks`), 24 KiB of IST stacks (`ap_ist`) and 8 KiB of TSS (`ap_tss`) |
 | SMT | Every secondary thread is parked before its timer starts (S101). A parked sibling keeps interrupts on to answer shootdowns and is marked idle, and `preempt_on_tick` refuses to schedule on one whatever interrupts it (#525) |
-| Time | The PIT at 100 Hz drives `system_ticks`; every CPU's LAPIC timer runs periodically at the same rate. No one-shot timer, no per-task timer, no IPC timeout. Ring 3 sees 10 ms time and nothing finer (S34) |
+| Time | The PIT at 100 Hz drives `system_ticks` on the BSP. Each AP's LAPIC timer is one-shot at the same 10 ms, re-armed only while the AP has a task; an idle AP stops, and the BSP's tick wakes stopped APs while work waits (§3.4). No per-task timer, no IPC timeout. Ring 3 sees 10 ms time and nothing finer (S34) |
 | Wake | A wake sets a task runnable and nothing else; it touches no run list. When the waker blocks straight after (a call, a reply followed by a receive), its own CPU takes the woken task at once, from another CPU's list if need be: 59 of 64 wakes in a two-CPU boot ran within 100 µs (2026-10-09, an instrumented build, before the lists). When the waker keeps running, the woken task waits for the next tick of an idle CPU, up to 10 ms |
 | Isolation on switch | The microarchitectural state is flushed on every switch between tasks; FPU state is saved and restored eagerly (S16) |
 | Stack ownership | One CPU at a time on a task's kernel stack, held by the claim protocol and `sched_release_deferred` (S20) |
@@ -113,6 +113,19 @@ budget running out, a refill that would make a higher-priority task runnable, an
 timer. A CPU with nothing to run arms nothing and halts. The PIT stops being the clock once a
 TSC-based source is calibrated; `system_ticks` becomes derived from it.
 
+**Built first (step 3a): one-shot ticks and tickless idle.** Each AP's LAPIC timer is one-shot
+at the calibrated 10 ms and re-armed after every tick or kick only if the AP then has a task, so a
+busy AP is preempted exactly as before and an idle one takes its pending tick and stops. A stopped
+AP is woken by whoever ticks: every tick, the BSP's PIT tick and every AP's, ends by counting the
+tasks that could run now and are not running and kicking that many stopped APs (vector 0xFC). So a
+waiting task still gets a CPU within a tick, as when every idle AP polled, and no wake site changed:
+a CPU that makes a task runnable is running, so its own tick follows. One AP, the watcher, never
+stops, because the BSP can sit in ring 0 with interrupts masked for seconds (an Argon2 hash; the SMP
+selftest runs entirely so) and then takes no PIT tick either; without the watcher every CPU could be
+waiting on it. A parked SMT sibling never asks to be woken. The
+deadline arming above, and the TSC clock, are step 3b; until there are budgets the next deadline
+is always the next tick.
+
 **Ring 3's view does not change.** `SYS_CLOCK_GETTIME` still reports 10 ms resolution and
 `CR4.TSD` stays set (S34). Fine time is the kernel's, not the task's.
 
@@ -212,8 +225,9 @@ Budget exhaustion is no finer a clock than the 10 ms tick a task can already cou
 | 1b ✅ | `preempt_on_tick` refuses to schedule on an SMT sibling, whoever interrupts it (#525) | |
 | 2a ✅ | One selection rule for every switch path (#524) | |
 | 2 ✅ | Per-CPU run lists and stealing; no policy change (§3.5) | 0, 1b, 2a |
-| 3 | Per-CPU one-shot timers, tickless idle | 2 |
-| 4 | Scheduling contexts, budgets, priorities and their maximum | 3 |
+| 3a ✅ | One-shot AP timers and tickless idle, the BSP waking stopped APs (§3.4) | 2 |
+| 3b | The TSC-deadline timer, a TSC clock, and arming for the earliest deadline rather than the next tick | 3a |
+| 4 | Scheduling contexts, budgets, priorities and their maximum | 3b |
 | 5 | Passive servers | 4 |
 | 6 | Affinity | 4 |
 | 7 | More than eight CPUs | 2 |

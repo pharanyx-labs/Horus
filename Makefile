@@ -222,7 +222,8 @@ DEFECT_FLAGS = \
 	SIBLING_KICK_TEST SIBLING_SCHED_UNGUARDED \
 	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN \
 	WAIT_WAKE_EARLY WAIT_WAKE_WIDEN PIT_SQUARE_WAVE \
-	RUNQ_UNHOMED RUNQ_NO_STEAL
+	RUNQ_UNHOMED RUNQ_NO_STEAL \
+	TICKLESS_PROBE TICKLESS_OFF TICKLESS_NO_KICK
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2199,6 +2200,26 @@ endif
 RUNQ_NO_STEAL ?= 0
 ifeq ($(RUNQ_NO_STEAL),1)
 CFLAGS += -DRUNQ_NO_STEAL
+endif
+
+# Tickless idle (docs/design/scheduler.md 3.4, step 3). TICKLESS_PROBE=1
+# (instrument) counts the APs' ticks over TICKLESS_PROBE_SPAN BSP ticks from
+# TICKLESS_PROBE_FROM and prints TICKLESS: PASS or FAIL; TICKLESS_OFF=1 (defect)
+# re-arms every AP's timer on every tick, idle or not, as the periodic timer
+# did; TICKLESS_NO_KICK=1 (defect) never wakes a stopped AP. See smoke-tickless.
+TICKLESS_PROBE ?= 0
+TICKLESS_PROBE_FROM ?= 500
+TICKLESS_PROBE_SPAN ?= 500
+ifeq ($(TICKLESS_PROBE),1)
+CFLAGS += -DTICKLESS_PROBE -DTICKLESS_PROBE_FROM=$(TICKLESS_PROBE_FROM) -DTICKLESS_PROBE_SPAN=$(TICKLESS_PROBE_SPAN)
+endif
+TICKLESS_OFF ?= 0
+ifeq ($(TICKLESS_OFF),1)
+CFLAGS += -DTICKLESS_OFF
+endif
+TICKLESS_NO_KICK ?= 0
+ifeq ($(TICKLESS_NO_KICK),1)
+CFLAGS += -DTICKLESS_NO_KICK
 endif
 
 # SHOOTDOWN_DEAF_CPU=1 (instrument) makes one CPU flush without acknowledging a
@@ -14904,6 +14925,42 @@ smoke-sched-invariants-stress:
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 horus.iso
 	@STRESS_RUNS=$${STRESS_RUNS:-30} SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		FAIL_MARKER='PANIC:' STRESS_GATE=marker tools/stress_boot.sh horus.iso
+
+# An idle AP takes no ticks (docs/design/scheduler.md 3.4, step 3). Eight CPUs
+# boot to the login prompt and sit there; from 5 s of uptime the kernel counts
+# the APs' LAPIC ticks over 500 of the BSP's and requires fewer than 1000: the
+# watcher AP's 500 (smp.c, TICKLESS IDLE), and less than one more AP's worth.
+# Measured 2026-10-16, three boots each: 488 tickless (the watcher alone), and
+# 3402 to 3411 with TICKLESS_OFF=1.
+.PHONY: smoke-tickless
+smoke-tickless:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TICKLESS_PROBE=1
+	@$(MAKE) --no-print-directory TICKLESS_PROBE=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=8 MARKER_ONLY=1 MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='TICKLESS: PASS' FAIL_MARKER='TICKLESS: FAIL' tools/smoke_test.sh horus.iso
+
+# Control arm: every AP re-arms on every tick, idle or not, and the count must
+# exceed the bound.
+.PHONY: smoke-tickless-control
+smoke-tickless-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TICKLESS_PROBE=1 TICKLESS_OFF=1
+	@$(MAKE) --no-print-directory TICKLESS_PROBE=1 TICKLESS_OFF=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=8 MARKER_ONLY=1 MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='TICKLESS: FAIL' tools/smoke_test.sh horus.iso
+
+# Control arm for the wake (sched_wake_tickless): never kick a stopped AP. The
+# selftest waits until every AP but the watcher has stopped before it spawns its
+# workers, so only the watcher ever runs one (cpus_ran names one CPU), and the
+# selftest's requirement that every AP runs a worker fails; smoke-smp goes red.
+.PHONY: smoke-smp-nokick-control
+smoke-smp-nokick-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 TICKLESS_NO_KICK=1
+	@$(MAKE) --no-print-directory SMP_SELFTEST=1 TICKLESS_NO_KICK=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMP_NOSTEAL_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
 
 # Control arm for the run-list audit (docs/design/scheduler.md 3.5): with
 # RUNQ_UNHOMED=1 create_task puts a new task on no CPU's list, so nothing would

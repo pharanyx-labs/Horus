@@ -2469,9 +2469,16 @@ void kfault_dec(int v);
  * place a spawn chooses a slot. */
 int sched_slot_reusable(int id);
 int sched_pick_free_slot(void);
-/* smp.c: interrupt CPU `cpu` with the kill IPI, so it stops running a task that
- * has just been torn down (HORUS-20260921-04). No-op for this CPU and unmapped. */
+/* smp.c: interrupt CPU `cpu` with the kick (vector 0xFC), so it stops running a
+ * task that has just been torn down (HORUS-20260921-04), or wakes from tickless
+ * idle to take waiting work. No-op for this CPU and unmapped. */
 void smp_kick_cpu(int cpu);
+/* Tickless idle (docs/design/scheduler.md 3.4): after a LAPIC tick (`fired`)
+ * or a kick, an AP re-arms its one-shot timer if it has a task and otherwise
+ * stops it and waits to be woken; the BSP's PIT tick wakes stopped APs while
+ * tasks are waiting. */
+void smp_timer_after_tick(int fired);
+void sched_wake_tickless(void);
 void kfault_task(int t);                 /* "N 'name'", name bounded */
 void kfault_pf_err(uint64_t err);        /* #PF error bits, spelled out */
 void kfault_frame(const struct interrupt_frame64 *f);   /* rip/cs/rflags/rsp/rbp/cpu */

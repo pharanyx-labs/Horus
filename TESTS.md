@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 575 `smoke-*` targets: 245 gates and 330 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 578 `smoke-*` targets: 246 gates and 332 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -130,7 +130,8 @@ There are 575 `smoke-*` targets: 245 gates and 330 control arms. Each row is a g
 | `smoke-kstack-imp` | The stack-collision detector identifies CPUs by what they run, not by the task they are impersonating | S20 | `smoke-kstack-imp-control` |
 | `smoke-claim-reread` | The claim auditor re-reads a suspect state before accusing it |  | `smoke-claim-reread-control` |
 | `smoke-enter-user-claim` | The first entry to ring 3 never claims a task another CPU already holds | S20 | `smoke-enter-user-claim-control`, `smoke-enter-user-collide-control` |
-| `smoke-smp` | Every CPU in the MADT comes online and runs a task, taking it from the BSP's run list, no task runs on an SMT sibling, and TLB shootdown completes | S80 | `smoke-smp-nosteal-control` |
+| `smoke-smp` | Every CPU in the MADT comes online and runs a task, taking it from the BSP's run list after another CPU's tick wakes it (the selftest waits until every AP but the watcher has stopped before it creates work), no task runs on an SMT sibling, and TLB shootdown completes | S80 | `smoke-smp-nosteal-control`, `smoke-smp-nokick-control` |
+| `smoke-tickless` | Eight CPUs idle at the login prompt: over 500 of the BSP's ticks the APs take fewer LAPIC ticks than two APs ticking all the time would (the watcher is one) |  | `smoke-tickless-control` |
 | `smoke-sibling-kick` | No task runs on an SMT sibling even when every sibling is interrupted while work is waiting | S101 | `smoke-sibling-kick-control` |
 | `smoke-shootdown-unacked` | A TLB shootdown that one CPU never acknowledges halts the kernel instead of returning | S124 | `smoke-shootdown-unacked-control` |
 | `smoke-wait-after-death` | A `SYS_WAIT` returns only once its child is dead, with the dying CPU held in the old window on every wait | S125 | `smoke-wait-after-death-control` |

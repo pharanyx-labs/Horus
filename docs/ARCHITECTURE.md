@@ -475,7 +475,8 @@ SMP is on by default; `SMP=0` compiles it out.
 - **SMT siblings are parked** in `ap_entry64`, identified by LAPIC id (S101), so no task shares a
   core's L1 and L2 with another. A parked sibling keeps interrupts on to answer shootdowns, so
   `preempt_on_tick` also refuses to schedule on one, whatever interrupts it.
-- **Each CPU takes its own LAPIC timer tick** and chooses from its own run list first. Every live
+- **Each AP takes its own one-shot LAPIC timer tick** while it has a task, and an idle AP stops
+  ticking until another CPU's tick wakes it for waiting work; one AP, the watcher, always ticks. Each CPU chooses from its own run list first. Every live
   task is homed on one CPU's list; a CPU with nothing of its own takes another's waiting task, and
   the tasks waiting on a CPU stuck in the kernel go to the others ([`design/scheduler.md`](design/scheduler.md) §3.5).
 - **TLB shootdown** is an acknowledged IPI, and a wait that runs out with a CPU unacknowledged

@@ -2265,6 +2265,14 @@ jobs:
       # only by taking it from the BSP's run list (docs/design/scheduler.md 3.5).
       - name: Control arm, without stealing no AP runs a worker
         run: make smoke-smp-nosteal-control
+      # An idle AP's one-shot timer stops, and the BSP's tick wakes it when work
+      # waits (docs/design/scheduler.md 3.4).
+      - name: Control arm, a stopped AP the BSP never wakes runs no worker
+        run: make smoke-smp-nokick-control
+      - name: Idle APs take no ticks at the login prompt
+        run: make smoke-tickless
+      - name: Control arm, APs that keep ticking while idle exceed the bound
+        run: make smoke-tickless-control
       # Eight CPUs on the topologies firmware produces, not only QEMU's default:
       # sparse LAPIC ids, SMT, and more threads than slots (docs/ARCHITECTURE.md
       # section 7). Every schedulable AP must run a task and none may be an SMT

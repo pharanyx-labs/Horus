@@ -377,7 +377,7 @@ static void pool_put(int slot) {
 }
 
 /* Only an owned object changes: one that is lent (a mount's, the working
- * directory's, anything on the uid path) is still the lender's and stays usable,
+ * directory's, anything through an endpoint mount) is still the lender's and stays usable,
  * so a caller may release on every path out without asking which it has. */
 void hvfs_release(struct hvfs_obj *o) {
     if (!o || !o->owned) return;
@@ -443,7 +443,14 @@ int hvfs_link_cap(const struct hvfs_obj *dir, const struct hvfs_obj *file, const
 /* Split `p` into components, resolving "." and ".." against the components
  * already taken, so ".." pops what this walk descended through and never
  * rises above where it started: the same pin walk_body keeps, and the server
- * never sees either name. Returns the count, or -1. */
+ * never sees either name. Returns the count, or -1.
+ *
+ * POSIX_LEGACY_WALK=1 is the control arm for make smoke-newlib-walk-control:
+ * the components go to the server as written, the way posix.c's private
+ * walker took them until 2026-08-23, and fs_server refuses "." and ".." as
+ * names (§5.4), so every libc path holding one fails. HVFS_DOTDOT_SERVER=1,
+ * the ".." branch hvfs shipped with, is ported here too: walk_body's copy now
+ * serves only endpoint mounts. Never ship. */
 static int split(const char *p, char comps[][FS_NAME_MAX]) {
     int n = 0, depth = 0;
     while (*p) {
@@ -452,9 +459,19 @@ static int split(const char *p, char comps[][FS_NAME_MAX]) {
         if (clen == 0) { p++; continue; }
         if (clen >= FS_NAME_MAX) return -1;
         if (++depth > HVFS_MAX_DEPTH) return -1;
+#ifndef POSIX_LEGACY_WALK
         if (clen == 1 && p[0] == '.') { }
+#ifndef HVFS_DOTDOT_SERVER
         else if (clen == 2 && p[0] == '.' && p[1] == '.') { if (n > 0) n--; }
-        else { umemcpy(comps[n], p, clen); comps[n][clen] = '\0'; n++; }
+#else
+        /* CONTROL ARM (smoke-newlib-dotdot-control): ".." at the start of the
+         * walk stays pinned, as it did, and any other is asked of the server,
+         * which has no such entry and refuses the name. */
+        else if (clen == 2 && p[0] == '.' && p[1] == '.' && n == 0) { }
+#endif
+        else
+#endif
+        { umemcpy(comps[n], p, clen); comps[n][clen] = '\0'; n++; }
         p += clen;
         if (*p == '/') p++;
     }
@@ -481,7 +498,7 @@ int hvfs_lookup(const char *path, const struct hvfs_obj *cwd, int want_parent,
     }
 
     if (!start.cap) {
-        /* The uid path: the inode walker, as before. */
+        /* An endpoint mount (another server's, hvfs_mount): the inode walker. */
         int slot;
         uint32_t ino, type = 0;
         int r = walk_body(path, cwd->ino, cwd->slot, want_parent, &slot, &ino, out_name, &type);

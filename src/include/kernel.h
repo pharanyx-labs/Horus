@@ -668,8 +668,10 @@ static inline int reply_ep_for_task(int tid) {
                                    * CAPSLOT_STORAGE: a task that reads and
                                    * writes the object store must not thereby
                                    * be able to erase it. See CAP_STORAGE_FORMAT. */
-/* CAP_ENDPOINT to the filesystem service, installed by SYS_CONNECT_FS_SERVER
- * at the slot the caller names; every client names this one (include/syscall.h). */
+/* An untokened CAP_ENDPOINT to a filesystem service. Since phase 1b step 6 no
+ * task is handed one for fs_server (a client holds a root in CAPSLOT_FS_ROOT);
+ * it remains the slot a client mounts another server's endpoint in, as
+ * vfstest does dev_server's (include/syscall.h). */
 #define CAPSLOT_FS_EP      20
 
 /* THE FIRST SLOT THE KERNEL ALLOCATES ON A TASK'S BEHALF (S122): a pipe's two
@@ -1290,8 +1292,8 @@ void users_init(void);
 #define SYS_REGISTER_STORAGE_BACKEND 46
 #define SYS_BLOCK_READ   47
 #define SYS_BLOCK_WRITE  48
-#define SYS_REGISTER_FS_SERVER 49
-#define SYS_CONNECT_FS_SERVER  50
+#define SYS_REGISTER_FS_SERVER 49   /* withdrawn 2026-10-16: SYS_ERR_NOSYS to every caller */
+#define SYS_CONNECT_FS_SERVER  50   /* withdrawn 2026-10-16: SYS_ERR_NOSYS to every caller */
 /* Capability-algebra syscalls. 4/8/9 predate the SYS_* naming and lived in the
  * dispatch table as bare numeric literals; they are named here because roadmap
  * 2.1 made SYS_CAP_MINT reachable from ring 3, and a syscall userspace can call
@@ -1324,7 +1326,7 @@ void users_init(void);
 #define SYS_EXEC_IMAGE         71   /* (image, len, 0, argv, argc) -> replace the caller's own image with a caller-supplied one; no return on success */
 #define SYS_SIGALTSTACK        72   /* (ss_sp, ss_size) -> 0; register this task's own alternate signal stack (ss_size 0 disables) */
 #define SYS_IPC_SENDER         73   /* (ep, uint32_t *out_gid) -> uid; kernel-attested identity of the last sender on `ep` (unforgeable, set at login) */
-#define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode. CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, and that alone: the FS server is whoever holds it. No uid check. */
+#define SYS_FS_SET_META        74   /* withdrawn 2026-10-16: SYS_ERR_NOSYS to every caller */
 #define SYS_IPC_REPLY_TO       75   /* (req_ep, msg, len) -> 0; reply to the task that sent the last request on req_ep (routed by kernel-recorded sender, not a shared reply endpoint) — multi-client safe */
 #define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count. CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, and that alone. No uid check. */
 #define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> module count. CAP_BOOT_MODULE at CAPSLOT_BOOT_MODULE -- a capability of its own, NOT the object store's, and no uid check. */
@@ -2372,8 +2374,6 @@ typedef struct mounted_fs {
  * now the only filesystem. */
 extern uint8_t kernel_pepper[16];
 
-extern int fs_server_task_id;
-extern int fs_server_listen_ep_idx;
 
 
 extern char keyboard_buffer[256];
@@ -3146,7 +3146,6 @@ bool cap_mint_token(uint32_t dest_slot, uint32_t src_slot, uint32_t new_rights, 
  * through. Called with endpoint_lock held. See capability.c. */
 bool cap_reply_mint_into(int pid, uint32_t inv_slot, uint64_t inv_serial, uint32_t ep_index,
                          uint32_t dest_slot, uint32_t new_rights, uint64_t token);
-bool cap_install_endpoint(uint32_t dest_slot, uint32_t object, uint32_t rights, uint64_t badge);
 /* Install a fresh capability into the first free slot at or above `min_slot` of
  * the CURRENT task's own cspace, scan and write under one cap_lock, reporting the
  * slot in `*out_slot` (may be NULL). The replacement for a scan-then-raw-store,
@@ -3157,9 +3156,8 @@ bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t ob
                                    uint32_t rights, uint64_t badge, uint32_t *out_slot);
 /* Install a freshly-minted capability of `type` naming `object` into the CURRENT
  * task's own cspace, under cap_lock and with the same authority guard,
- * reserved-slot rule and MAX_CAPS_PER_TASK accounting as cap_mint. The general
- * form of cap_install_endpoint, used by SYS_RETYPE to name a newly created
- * kernel object. */
+ * reserved-slot rule and MAX_CAPS_PER_TASK accounting as cap_mint. Used by
+ * SYS_RETYPE to name a newly created kernel object. */
 bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
                         uint32_t rights, uint64_t badge);
 

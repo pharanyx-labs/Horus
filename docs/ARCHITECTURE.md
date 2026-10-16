@@ -656,12 +656,12 @@ request through a tokened capability is authorised by that capability: its objec
 token names and its rights are the capability's, both attested by the kernel (`SYS_IPC_INVOKER`),
 and lookup, create and mkdir hand back the child's capability, narrowed and revocable with its
 parent (S120). A walk of several names below a directory hands back one capability, to the last,
-derived from the one invoked, so a client holds one per path and not one per component. A rename or link that would cross directories is refused on every path (S121).
-Every other request is authorised against the uid the kernel recorded for the sender at login
-(`SYS_IPC_SENDER`), never a claim from the client (S13, S14). On that path a file's mode may be set
-by its owner or root and its owner by root alone (S77), and every account gets a home directory it
-owns (S78). It
-rebuilds the system trees (`/bin`, `/sbin`, `/lib`, `/usr` and below) from the verified boot
+derived from the one invoked, so a client holds one per path and not one per component. A rename
+or link that would cross directories is refused (S121). No request is decided by who sent it: an
+untokened capability, which only `init` holds, opens and ends sessions and is refused everything
+else, and no task can be handed one any more (S14). A file's mode and owner are never stored
+(S77), and every account gets a home directory, which the policy's `@self` line grants it (S78).
+It rebuilds the system trees (`/bin`, `/sbin`, `/lib`, `/usr` and below) from the verified boot
 modules once the volume is open: a file that matches its module byte for byte stays, any other is
 rewritten, and anything no module names is removed. Every request that would change a file or an
 entry in those trees is refused before its permission check, for every client, root included
@@ -679,8 +679,8 @@ policy node the token names, which the session's compiled tree also holds (S130)
 chown through it succeeds only when it asks for what is already true (S131). After each login the
 shell asks `init` for its session; `init` names the account by `SYS_IPC_SENDER`, never by the
 request, grants the shell the session's root and working directory, and revokes and ends the
-session at logout or when the shell dies, and a shell holding a session never reaches the uid path
-(S141). The shell walks by the root in its slot only while a session is open, and drops its root
+session at logout or when the shell dies, and a login given no session reaches no file, so the
+shell ends it (S141, S14). The shell walks by the root in its slot only while a session is open, and drops its root
 and working directory at logout whatever `init` did, so no login holds an earlier one's
 filesystem (S147). The administrator's session, and no other, is also lent what administration
 needs: when the kernel attests a login as uid 0, `init` grants the shell `CAP_USER`, the kernel
@@ -688,8 +688,7 @@ log and `CAP_DEBUG`, each minted from a copy `init` keeps and revokes at logout,
 capability test is what refuses `dmesg`, `capview`, `useradd` and the rest to a standard account,
 and the shell asks no uid (S149). `fs_server` writes `/etc/fs.policy` into a new installed volume when it first
 provisions it, the live default with read on `/etc/shell.conf` and `/etc/login.conf` for every
-account, and never writes it again, so a deleted policy leaves the administrator alone (S148). An
-account the policy gives nothing stays on the uid path until phase 1b step 6 removes it
+account, and never writes it again, so a deleted policy leaves the administrator alone (S148)
 (`docs/design/filesystem.md`, roadmap 2.10).
 
 ### `console_server`

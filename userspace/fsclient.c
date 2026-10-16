@@ -1,10 +1,18 @@
 /* FS self-test client (FS_SELFTEST builds only).
  *
- * Connects to the userspace fs_server over IPC and exercises the full Phase 2
- * path — mkdir, create, write, read-back+compare, stat, readdir, lookup,
- * delete, and delete-verify — all persisted through the kernel's encrypted
- * object store. Prints "FS_SELFTEST: PASS" on success (the marker `make
- * smoke-fs` asserts) or "FS_SELFTEST: FAIL <stage>" on the first failure.
+ * Drives the userspace fs_server through capabilities, as every client does
+ * since phase 1b step 6 removed the uid path: mkdir, create, write,
+ * read-back+compare, stat, readdir, lookup, delete, and delete-verify, all
+ * persisted through the kernel's encrypted object store. Prints
+ * "FS_SELFTEST: PASS" on success (the marker `make smoke-fs` asserts) or
+ * "FS_SELFTEST: FAIL <stage>" on the first failure.
+ *
+ * WHERE ITS ROOT COMES FROM. Under init (INIT_FS_SELFTEST) init grants it a
+ * root directory capability at CAPSLOT_FS_ROOT, as a spawner grants any
+ * program its root. Under a kernel harness the kernel stands in for init: it
+ * lends an untokened capability to fs_server's endpoint holding MINT at
+ * SLOT_PLAIN, and this task mints the root from it (fs_root), as fscapposix
+ * does, since the harness cannot mint a tokened capability into a task.
  */
 
 #include "syscall.h"
@@ -18,113 +26,267 @@
 static void fail(const char *stage) { kput("FS_SELFTEST: FAIL "); kput(stage); kput("\n"); sys_exit(); }
 static void fail2(const char *stage, int v) { kput("FS_SELFTEST: FAIL "); kput(stage); kput("="); kput_int(v); kput("\n"); sys_exit(); }
 
-/* Busy-wait in ring 3 between non-blocking IPC polls so the timer preempts us
- * and runs the server (cooperative yield() cannot switch two ring-3 tasks). */
+#define SLOT_PLAIN  30   /* the harness's untokened endpoint capability, with MINT */
+#define SLOT_ROOT   CAPSLOT_FS_ROOT
+/* Capabilities the replies mint, one slot each, in the range the kernel never
+ * allocates in (as the hvfs pool uses). Never reused: a test this size does
+ * not run out. */
+#define SLOT_FIRST  32
+#define SLOT_LAST   63
+static unsigned g_next_slot = SLOT_FIRST;
 
-/* One request/reply round-trip via blocking IPC (sys_ipc_call); returns rc.
- * Using ipc_call (not send + poll-recv on the shared FS_EP_REP) is what makes
- * concurrent clients safe: the server replies with SYS_IPC_REPLY_TO, which
- * routes the reply to THIS caller's blocked call by kernel-recorded identity, so
- * one client can never poll another's reply off a shared endpoint. Retries on -2
- * (request mailbox momentarily full — another client's request is in flight). */
-static int rpc(struct fs_request *rq, struct fs_response *rp) {
-    rq->magic = FS_PROTO_MAGIC;
-    /* Retry ONLY the transient code, and bound even that -- the contract in
-     * syscall.h, implemented once in libhorus's ipc_call_retry rather than
-     * re-derived per program. The previous form was `while (r < 0)
-     * spin_delay();`, which retried SYS_ERR_PERM -- "you hold no capability for
-     * this endpoint" -- forever: finding G-8 signature C, a clean authorisation
-     * refusal turned into an unkillable silent hang. The reporting stays here
-     * because the marker strings are this selftest's, not the library's. */
-    int r = ipc_call_retry(CAPSLOT_FS_EP, 0, rq, sizeof(*rq), rp);
-    if (r == IPC_ERR_RETRY_EXHAUSTED) {
-        kput("FS_SELFTEST: FAIL ipc-retry-exhausted\n");
-        return r;
-    }
-    if (r < 0) {
-        kput("FS_SELFTEST: FAIL ipc-refused rc="); kput_int(r); kput("\n");
-        return r;                           /* permanent: report, never spin */
-    }
-    if (rp->magic != FS_PROTO_MAGIC) return -102;
-    return rp->rc;
+static unsigned new_slot(void) {
+    if (g_next_slot > SLOT_LAST) fail("out-of-slots");
+    return g_next_slot++;
 }
 
-/* Acquire the fs endpoint capability, retrying while the server is not yet
- * registered.
+static struct fs_response rp;
+static union { struct fs_response r; uint8_t raw[256]; } g_in;   /* IPC_MSG_MAX */
+
+/* One request through `slot`, with `recv` naming an empty slot for the
+ * capability a LOOKUP, CREATE or MKDIR reply carries (IPC_NO_CAP for none).
+ * Returns the reply's rc, its payload in `rp`.
  *
- * SYS_CONNECT_FS_SERVER fails with -1 until fs_server has completed
- * SYS_REGISTER_FS_SERVER, and the clients are made runnable at the same moment
- * the server is, so losing that race is ordinary rather than exceptional. The
- * old code called connect ONCE and discarded the result, leaving the client with
- * an empty capability slot and no way to ever notice: every later IPC returned
- * SYS_ERR_PERM into a loop that retried it forever.
- *
- * fs_server already retries its own registration for exactly this reason (it can
- * run before init has granted it the listen capability). This is the same
- * discipline on the other side of the same race. Returns 0 on success. */
-static int fs_connect_retry(void) {
-    for (unsigned attempt = 0; attempt < 200000u; attempt++) {
-        if (sys_connect_fs_server(CAPSLOT_FS_EP, CAP_R_W) == 0) return 0;
+ * sys_ipc_call routes the reply to THIS caller's blocked call by kernel-recorded
+ * identity (SYS_IPC_REPLY_TO), so concurrent clients never receive each other's
+ * replies. Only IPC_AGAIN is retried, and that is bounded: retrying a permanent
+ * refusal (SYS_ERR_PERM, "you hold no capability for this endpoint") forever is
+ * finding G-8 signature C, a clean refusal turned into a silent hang. */
+static int rpc_cap(unsigned slot, unsigned recv, struct fs_request *rq) {
+    rq->magic = FS_PROTO_MAGIC;
+    for (unsigned tries = 0; tries < 200000u; tries++) {
+        int r = sys_ipc_call_cap(slot, recv, rq, sizeof(*rq), g_in.raw, IPC_NO_CAP);
+        if (r >= (int)sizeof(struct fs_response)) {
+            rp = g_in.r;
+            if (rp.magic != FS_PROTO_MAGIC) return -102;
+            return rp.rc;
+        }
+        if (r >= 0) return -101;
+        if (r != IPC_AGAIN) return r;            /* permanent: report, never spin */
         sys_yield();
+    }
+    kput("FS_SELFTEST: FAIL ipc-retry-exhausted\n");
+    return -103;
+}
+
+static int rpc(unsigned slot, struct fs_request *rq) { return rpc_cap(slot, IPC_NO_CAP, rq); }
+
+static void req(struct fs_request *rq, uint32_t op, const char *name) {
+    umemset(rq, 0, sizeof(*rq));
+    rq->op = op;
+    if (name) ustrncpy(rq->name, name, FS_NAME_MAX);
+}
+
+/* LOOKUP, CREATE or MKDIR `name` in the directory `dir`, the child's capability
+ * minted into a fresh slot. Returns the slot, or the negative rc. */
+static int child(unsigned dir, uint32_t op, const char *name) {
+    struct fs_request rq;
+    req(&rq, op, name);
+    unsigned s = new_slot();
+    int rc = rpc_cap(dir, s, &rq);
+    return rc == 0 ? (int)s : rc;
+}
+
+/* The root directory: granted at SLOT_ROOT (under init), or minted here from
+ * SLOT_PLAIN (under a kernel harness). Then a stat through it must answer
+ * before anything else is asked, since the server may still be starting. */
+static void fs_root(void) {
+    struct fs_request rq;
+    req(&rq, FS_OP_STAT, 0);
+    if (rpc(SLOT_ROOT, &rq) == 0) return;
+    uint32_t kern = CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE | CAP_RIGHT_MINT;
+    if (sys_cap_mint_token(SLOT_ROOT, SLOT_PLAIN, kern | FS_R_ALL, fs_token(0, 0)) != 0)
+        fail("no-root (neither granted nor mintable)");
+    for (unsigned i = 0; i < 2000u; i++) {
+        req(&rq, FS_OP_STAT, 0);
+        if (rpc(SLOT_ROOT, &rq) == 0) return;
+        sys_yield();
+    }
+    fail("server-never-answered");
+}
+
+#ifdef PERM_SELFTEST
+/* NO FILESYSTEM REQUEST IS DECIDED BY WHO SENT IT (phase 1b step 6, S14), and a
+ * file is never a directory operand ([HORUS-20261008-01]). */
+static void pfail(const char *s) { kput_marker("PERM_SELFTEST: FAIL ", s); sys_exit(); }
+
+static int content_is(const char *s, unsigned n) {
+    for (unsigned i = 0; i < n; i++) if (rp.data[i] != (uint8_t)s[i]) return 0;
+    return 1;
+}
+
+static int p_write(unsigned slot, const char *s) {
+    struct fs_request rq;
+    unsigned n = uslen(s);
+    req(&rq, FS_OP_WRITE, 0);
+    rq.len = n;
+    umemcpy(rq.data, s, n);
+    return rpc(slot, &rq);
+}
+
+static int p_read(unsigned slot, unsigned n) {   /* rc = bytes (data in rp.data) or negative */
+    struct fs_request rq;
+    req(&rq, FS_OP_READ, 0);
+    rq.len = n;
+    return rpc(slot, &rq);
+}
+
+/* A request through `slot` that names its objects by inode, as every request
+ * did on the uid path: dir_ino, ino and name are the request's own. */
+static int p_ino(unsigned slot, uint32_t op, uint32_t dir_ino, uint32_t ino, const char *name) {
+    struct fs_request rq;
+    req(&rq, op, name);
+    rq.dir_ino = dir_ino;
+    rq.ino = ino;
+    if (op == FS_OP_READ || op == FS_OP_WRITE || op == FS_OP_APPEND) {
+        rq.len = 4;
+        umemcpy(rq.data, "pwnd", 4);
+    }
+    if (op == FS_OP_RENAME) ustrncpy((char *)rq.data, "moved", FS_DIRENT_NAME);
+    if (op == FS_OP_CHMOD) rq.mode = 0777;
+    return rpc(slot, &rq);
+}
+
+/* A capability to inode `ino` carrying every right, directory rights included,
+ * minted from SLOT_PLAIN: what no client can hold (a reply gives a file only a
+ * file's rights, FS_R_FILE_MASK), made here to show that the server's type
+ * check stands even if a narrowing ever failed. The generation is found by
+ * asking: a stale one is refused NOENT, the live one answers a stat. */
+static int forge_cap(uint32_t ino) {
+    uint32_t kern = CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE | CAP_RIGHT_MINT;
+    unsigned s = new_slot();
+    for (uint32_t gen = 0; gen < 64u; gen++) {
+        if (sys_cap_mint_token(s, SLOT_PLAIN, kern | FS_R_ALL, fs_token(ino, gen)) != 0) return -1;
+        struct fs_request rq;
+        req(&rq, FS_OP_STAT, 0);
+        if (rpc(s, &rq) == 0) return (int)s;
+        (void)sys_cap_revoke(s);
     }
     return -1;
 }
 
-#ifdef PERM_SELFTEST
-/* Ownership/permission test helpers. Each drives one fs_server request and
- * returns the server's rc (>=0 / bytes on success, negative SYS_ERR_* on denial);
- * read/stat payloads land in `pp`. The server derives the caller's identity from
- * the kernel (SYS_IPC_SENDER), so these calls are enforced against whichever user
- * this task last authenticated as — never anything placed in the request. */
-static struct fs_request  pq;
-static struct fs_response pp;
-static void pfail(const char *s) { kput("PERM_SELFTEST: FAIL "); kput(s); kput("\n"); sys_exit(); }
+static void perm_selftest(void) {
+    /* --- victims, made through the root capability ----------------------- */
+    int sv = child(SLOT_ROOT, FS_OP_CREATE, "victim");        if (sv < 0) pfail("mk-victim");
+    uint32_t v_ino = rp.ino;
+    if (p_write((unsigned)sv, "intact") != 6)                 pfail("wr-victim");
+    int svd = child(SLOT_ROOT, FS_OP_MKDIR, "vdir");          if (svd < 0) pfail("mk-vdir");
+    uint32_t vd_ino = rp.ino;
+    if (child((unsigned)svd, FS_OP_CREATE, "kid") < 0)        pfail("mk-vdir-kid");
+    uint32_t vk_ino = rp.ino;
+    int sud = child(SLOT_ROOT, FS_OP_MKDIR, "udir");          if (sud < 0) pfail("mk-udir");
 
-static int p_make(uint32_t dir, const char *name, int is_dir) {
-    umemset(&pq, 0, sizeof(pq)); pq.op = is_dir ? FS_OP_MKDIR : FS_OP_CREATE;
-    pq.dir_ino = dir; ustrncpy(pq.name, name, FS_NAME_MAX);
-    if (rpc(&pq, &pp) != 0) return -1;
-    return (int)pp.ino;
-}
-static int p_write(uint32_t ino, const char *s) {
-    unsigned n = uslen(s);
-    umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_WRITE; pq.ino = ino; pq.offset = 0; pq.len = n;
-    umemcpy(pq.data, s, n);
-    return rpc(&pq, &pp);
-}
-static int p_read(uint32_t ino, unsigned n) {   /* rc = bytes (data in pp.data) or negative */
-    umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_READ; pq.ino = ino; pq.offset = 0; pq.len = n;
-    return rpc(&pq, &pp);
-}
-static int p_chmod(uint32_t ino, uint32_t mode) {
-    umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_CHMOD; pq.ino = ino; pq.mode = mode;
-    return rpc(&pq, &pp);
-}
-static int p_chown(uint32_t ino, uint32_t uid, uint32_t gid) {
-    umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_CHOWN; pq.ino = ino; pq.arg_uid = uid; pq.arg_gid = gid;
-    return rpc(&pq, &pp);
-}
-static int content_is(const char *s, unsigned n) {
-    for (unsigned i = 0; i < n; i++) if (pp.data[i] != (uint8_t)s[i]) return 0;
-    return 1;
-}
-/* The requests that name a DIRECTORY operand, for the forged-dirent probe below.
- * Each returns the server's rc; LOOKUP's and READDIR's payloads land in `pp`. */
-static int p_dirop(uint32_t op, uint32_t dir, const char *name) {
-    umemset(&pq, 0, sizeof(pq)); pq.op = op; pq.dir_ino = dir; ustrncpy(pq.name, name, FS_NAME_MAX);
-    return rpc(&pq, &pp);
-}
-static int p_rename(uint32_t from_dir, const char *from, uint32_t to_dir, const char *to) {
-    umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_RENAME;
-    pq.dir_ino = from_dir; ustrncpy(pq.name, from, FS_NAME_MAX);
-    pq.ino = to_dir;       ustrncpy((char *)pq.data, to, FS_DIRENT_NAME);
-    return rpc(&pq, &pp);
+    /* --- the uid path is gone --------------------------------------------
+     *
+     * This task is uid 0, as the kernel attests it (sys_auth above), the
+     * identity the uid path let through everything. It asks by inode, through
+     * the two untokened capabilities a task could ever hold: a WRITE-only copy,
+     * the shape SYS_CONNECT_FS_SERVER handed every task that asked, and the
+     * MINT-holding one, init's. Every operation must be refused PERM, and the
+     * victims must be as they were. FS_UID_PATH_RESTORED=1 serves them again;
+     * its arm, smoke-fs-perms-uid-control, requires the first marker below. */
+    {
+        unsigned plain_w = new_slot();
+        if (sys_cap_mint((int)plain_w, SLOT_PLAIN, CAP_RIGHT_WRITE) != 0) pfail("uid-mint-write-only");
+        static const struct { uint32_t op; const char *what; } ops[] = {
+            { FS_OP_READ,     "uid-path-read"     },
+            { FS_OP_STAT,     "uid-path-stat"     },
+            { FS_OP_LOOKUP,   "uid-path-lookup"   },
+            { FS_OP_READDIR,  "uid-path-readdir"  },
+            { FS_OP_WRITE,    "uid-path-write"    },
+            { FS_OP_APPEND,   "uid-path-append"   },
+            { FS_OP_TRUNCATE, "uid-path-truncate" },
+            { FS_OP_CREATE,   "uid-path-create"   },
+            { FS_OP_MKDIR,    "uid-path-mkdir"    },
+            { FS_OP_LINK,     "uid-path-link"     },
+            { FS_OP_RENAME,   "uid-path-rename"   },
+            { FS_OP_CHMOD,    "uid-path-chmod"    },
+            { FS_OP_CHOWN,    "uid-path-chown"    },
+            { FS_OP_DELETE,   "uid-path-delete"   },
+        };
+        const unsigned slots[2] = { plain_w, SLOT_PLAIN };
+        for (unsigned k = 0; k < 2; k++)
+            for (unsigned i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+                /* The names are the victim's, so a request served would reach it. */
+                const char *nm = (ops[i].op == FS_OP_CREATE || ops[i].op == FS_OP_MKDIR ||
+                                  ops[i].op == FS_OP_LINK) ? "planted" : "victim";
+                uint32_t dir = 0, ino = v_ino;
+                if (ops[i].op == FS_OP_RENAME) ino = 0;           /* new parent: the root */
+                if (p_ino(slots[k], ops[i].op, dir, ino, nm) != SYS_ERR_PERM) pfail(ops[i].what);
+            }
+        if (p_read((unsigned)sv, 8) != 6 || !content_is("intact", 6)) pfail("uid-victim-changed");
+        if (child(SLOT_ROOT, FS_OP_LOOKUP, "planted") != SYS_ERR_NOENT) pfail("uid-planted");
+    }
+
+    /* --- a FILE is never a directory operand -------------------------------
+     *
+     * fs_server reads a directory as an array of fs_dirent records in ordinary
+     * inode data, and the bytes of a regular file are written by whoever may
+     * write it. Until 2026-10-08 the requests that take a directory operand
+     * checked permission on it and never its TYPE, so a user could write a
+     * forged entry {ino = anything, type = FILE} into a file of their own and
+     * pass the file as the "directory": DELETE through it freed the named inode,
+     * root's /bin programs or /bin itself (a forged FILE type also skipped the
+     * not-empty check), and RENAME did the same.
+     *
+     * Through capabilities a client is never given directory rights on a file,
+     * so the type check stands behind that narrowing; the probe uses a forged
+     * capability (forge_cap) to reach it anyway. The claim is that NO directory
+     * operation interprets a file as a directory: each is refused with
+     * SYS_ERR_INVAL and both victims are untouched. FS_DIR_OPERAND_UNCHECKED=1
+     * restores the unchecked server; make smoke-fs-dir-operand-control requires
+     * the first stage below. */
+    {
+        if (child((unsigned)sud, FS_OP_CREATE, "forge") < 0)   pfail("dir-operand-mk-forge");
+        uint32_t f_ino = rp.ino;
+        int sf = forge_cap(f_ino);                             if (sf < 0) pfail("dir-operand-forge-cap");
+        unsigned f = (unsigned)sf;
+        struct fs_dirent forged[2];
+        umemset(forged, 0, sizeof(forged));
+        forged[0].ino = v_ino;  forged[0].type = FS_TYPE_FILE; ustrncpy(forged[0].name, "x", FS_DIRENT_NAME);
+        forged[1].ino = vd_ino; forged[1].type = FS_TYPE_FILE; ustrncpy(forged[1].name, "y", FS_DIRENT_NAME);
+        struct fs_request rq;
+        req(&rq, FS_OP_WRITE, 0);
+        rq.len = sizeof(forged);
+        umemcpy(rq.data, forged, sizeof(forged));
+        if (rpc(f, &rq) != (int)sizeof(forged))                pfail("dir-operand-wr-forge");
+
+        /* The report's attack, first, so the control arm's marker is the headline:
+         * free root's file through a forged entry. */
+        req(&rq, FS_OP_DELETE, "x");
+        if (rpc(f, &rq) != SYS_ERR_INVAL)                      pfail("dir-operand-delete-file");
+        /* The same against root's non-empty directory: the forged FILE type is
+         * what skipped the not-empty check. */
+        req(&rq, FS_OP_DELETE, "y");
+        if (rpc(f, &rq) != SYS_ERR_INVAL)                      pfail("dir-operand-delete-nonempty");
+        /* RENAME within the forgery: a new name for root's inode, with no link
+         * counted for it. (A rename through a capability names one directory.) */
+        req(&rq, FS_OP_RENAME, "x");
+        ustrncpy((char *)rq.data, "stolen", FS_DIRENT_NAME);
+        if (rpc(f, &rq) != SYS_ERR_INVAL)                      pfail("dir-operand-rename");
+        req(&rq, FS_OP_LOOKUP, "x");
+        if (rpc_cap(f, new_slot(), &rq) != SYS_ERR_INVAL)      pfail("dir-operand-lookup");
+        req(&rq, FS_OP_READDIR, 0);
+        if (rpc(f, &rq) != SYS_ERR_INVAL)                      pfail("dir-operand-readdir");
+        req(&rq, FS_OP_CREATE, "z");
+        if (rpc_cap(f, new_slot(), &rq) != SYS_ERR_INVAL)      pfail("dir-operand-create");
+        req(&rq, FS_OP_MKDIR, "w");
+        if (rpc_cap(f, new_slot(), &rq) != SYS_ERR_INVAL)      pfail("dir-operand-mkdir");
+
+        /* THE PROPERTY, not only the codes: both victims are as root left them.
+         * A refusal code over a destroyed victim would be a worse lie than either. */
+        if (p_read((unsigned)sv, 8) != 6 || !content_is("intact", 6)) pfail("dir-operand-victim-lost");
+        if (child((unsigned)svd, FS_OP_LOOKUP, "kid") < 0 || rp.ino != vk_ino)
+            pfail("dir-operand-vdir-lost");
+    }
+
+    kput("PERM_SELFTEST: PASS\n");
+    sys_exit();
 }
 #endif
 
 void _start(void) {
     struct fs_request rq;
-    struct fs_response rp;
 
     /* Unlock the encrypted store. With the persistent ATA backend the disk comes
      * up mounted-but-locked (disk_key is only unwrapped by a password), so a login
@@ -132,21 +294,13 @@ void _start(void) {
      * first mkdir fails. Authenticate as the seeded root user (a test-login stand-in
      * for the console login that unlocks a real deployment); storage_unlock is
      * idempotent, so on the ephemeral RAM backend (already unlocked at boot) this is
-     * a harmless no-op. */
+     * a harmless no-op. It authorises nothing in the filesystem: the uid path is
+     * gone, and the root capability below is what every request goes through. */
 #ifndef CONC_SELFTEST
     (void)sys_auth("root", "toor", 0);   /* CONC workers are already uid 0 (kernel-set), RAM store unlocked */
 #endif
 
-    /* Acquire the fs endpoint capability before issuing a single request. This is
-     * the ONLY way a client reaches the server since IPC became
-     * capability-addressed (finding C-1): no ambient endpoint cap exists to fall
-     * back on, so a failed connect is not a missed optimisation, it is the
-     * difference between working and hanging forever. Must be retried — see
-     * fs_connect_retry. */
-    if (fs_connect_retry() != 0) {
-        kput("FS_SELFTEST: FAIL connect (fs_server never registered)\n");
-        sys_exit();
-    }
+    fs_root();
 
 #ifdef CONC_SELFTEST
     /* Multi-client concurrency test. Several client tasks hammer the one
@@ -182,11 +336,10 @@ void _start(void) {
              * value. */
             for (unsigned i = 1; i <= NWORK; i++) {
                 char fn[8]; fn[0]='w'; fn[1]=(char)('0'+i); fn[2]=0;
-                umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0; ustrncpy(rq.name, fn, FS_NAME_MAX);
-                if (rpc(&rq, &rp) != 0) { kput("CONC_SELFTEST: FAIL vlookup\n"); sys_exit(); }
-                uint32_t vino = rp.ino;
-                umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READ; rq.ino = vino; rq.offset = 0; rq.len = 16;
-                if (rpc(&rq, &rp) != 16) { kput("CONC_SELFTEST: FAIL vread\n"); sys_exit(); }
+                int s = child(SLOT_ROOT, FS_OP_LOOKUP, fn);
+                if (s < 0) { kput("CONC_SELFTEST: FAIL vlookup\n"); sys_exit(); }
+                req(&rq, FS_OP_READ, 0); rq.len = 16;
+                if (rpc((unsigned)s, &rq) != 16) { kput("CONC_SELFTEST: FAIL vread\n"); sys_exit(); }
                 for (int b = 0; b < 16; b++)
                     if (rp.data[b] != (uint8_t)(0xA0u + i)) { kput("CONC_SELFTEST: FAIL vcontent\n"); sys_exit(); }
             }
@@ -198,19 +351,17 @@ void _start(void) {
          * distinct bytes. A mis-routed read reply yields another worker's bytes. */
         char fn[8]; fn[0]='w'; fn[1]=(char)('0'+role); fn[2]=0;
         uint8_t want = (uint8_t)(0xA0u + role);
-        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_CREATE; rq.dir_ino = 0; ustrncpy(rq.name, fn, FS_NAME_MAX);
-        (void)rpc(&rq, &rp);                                  /* ok if it already exists */
-        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0; ustrncpy(rq.name, fn, FS_NAME_MAX);
-        if (rpc(&rq, &rp) != 0) { kput("CONC_SELFTEST: FAIL lookup\n"); sys_exit(); }
-        uint32_t ino = rp.ino;
+        (void)child(SLOT_ROOT, FS_OP_CREATE, fn);              /* ok if it already exists */
+        int s = child(SLOT_ROOT, FS_OP_LOOKUP, fn);
+        if (s < 0) { kput("CONC_SELFTEST: FAIL lookup\n"); sys_exit(); }
 
         for (unsigned k = 0; k < ITERS; k++) {
-            umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_WRITE; rq.ino = ino; rq.offset = 0; rq.len = 16;
+            req(&rq, FS_OP_WRITE, 0); rq.len = 16;
             for (int b = 0; b < 16; b++) rq.data[b] = want;
-            if (rpc(&rq, &rp) != 16) { kput("CONC_SELFTEST: FAIL write\n"); sys_exit(); }
+            if (rpc((unsigned)s, &rq) != 16) { kput("CONC_SELFTEST: FAIL write\n"); sys_exit(); }
 
-            umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READ; rq.ino = ino; rq.offset = 0; rq.len = 16;
-            if (rpc(&rq, &rp) != 16) { kput("CONC_SELFTEST: FAIL readlen\n"); sys_exit(); }
+            req(&rq, FS_OP_READ, 0); rq.len = 16;
+            if (rpc((unsigned)s, &rq) != 16) { kput("CONC_SELFTEST: FAIL readlen\n"); sys_exit(); }
             for (int b = 0; b < 16; b++)
                 if (rp.data[b] != want) { kput("CONC_SELFTEST: FAIL crosstalk\n"); sys_exit(); }
         }
@@ -219,23 +370,20 @@ void _start(void) {
 #endif
 
 #ifdef PERSIST_SELFTEST
-    /* Reboot-persistence check. Look up a sentinel file in the root directory
-     * (ino 0). Absent  -> this is the first boot on a fresh disk: create it and
-     * write known content, then print WROTE. Present -> a later boot against the
-     * same disk image: read it back and compare, printing PASS/FAIL. The two-boot
+    /* Reboot-persistence check. Look up a sentinel file in the root directory.
+     * Absent  -> this is the first boot on a fresh disk: create it and write
+     * known content, then print WROTE. Present -> a later boot against the same
+     * disk image: read it back and compare, printing PASS/FAIL. The two-boot
      * `make smoke-fs-persist` target asserts WROTE on boot 1 and PASS on boot 2. */
     {
         const char *sentinel = "persist.txt";
         const char *content  = "horus-persist-v1";
         unsigned    clen     = uslen(content);
 
-        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = 0;
-        ustrncpy(rq.name, sentinel, FS_NAME_MAX);
-        if (rpc(&rq, &rp) == 0) {
-            uint32_t fino = rp.ino;                     /* later boot: verify */
-            umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READ; rq.ino = fino;
-            rq.offset = 0; rq.len = clen;
-            int rr = rpc(&rq, &rp);
+        int s = child(SLOT_ROOT, FS_OP_LOOKUP, sentinel);
+        if (s >= 0) {                                   /* later boot: verify */
+            req(&rq, FS_OP_READ, 0); rq.len = clen;
+            int rr = rpc((unsigned)s, &rq);
             if (rr != (int)clen) { kput("PERSIST_SELFTEST: FAIL read-len\n"); sys_exit(); }
             for (unsigned i = 0; i < clen; i++)
                 if (rp.data[i] != (uint8_t)content[i]) { kput("PERSIST_SELFTEST: FAIL cmp\n"); sys_exit(); }
@@ -243,221 +391,50 @@ void _start(void) {
             sys_exit();
         }
         /* first boot: create + write the sentinel, then report WROTE */
-        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_CREATE; rq.dir_ino = 0;
-        ustrncpy(rq.name, sentinel, FS_NAME_MAX);
-        if (rpc(&rq, &rp) != 0) { kput("PERSIST_SELFTEST: FAIL create\n"); sys_exit(); }
-        uint32_t fino = rp.ino;
-        umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_WRITE; rq.ino = fino;
-        rq.offset = 0; rq.len = clen; umemcpy(rq.data, content, clen);
-        if (rpc(&rq, &rp) != (int)clen) { kput("PERSIST_SELFTEST: FAIL write\n"); sys_exit(); }
+        s = child(SLOT_ROOT, FS_OP_CREATE, sentinel);
+        if (s < 0) { kput("PERSIST_SELFTEST: FAIL create\n"); sys_exit(); }
+        req(&rq, FS_OP_WRITE, 0); rq.len = clen; umemcpy(rq.data, content, clen);
+        if (rpc((unsigned)s, &rq) != (int)clen) { kput("PERSIST_SELFTEST: FAIL write\n"); sys_exit(); }
         kput("PERSIST_SELFTEST: WROTE\n");
         sys_exit();
     }
 #endif
 
 #ifdef PERM_SELFTEST
-    /* Zero-trust ownership & permissions. We start as root (authenticated above),
-     * build a scenario, then switch this task's identity to a non-root user and
-     * confirm the server enforces access against the kernel-attested uid: a client
-     * cannot read/modify what its real uid disallows, cannot create where it lacks
-     * write, cannot chmod files it doesn't own, cannot chown at all — and root
-     * bypasses. Crucially the client never tells the server who it is. */
-
-    /* --- as root: a private file, a world-readable file, a user-owned dir --- */
-    int s_ino = p_make(0, "secret", 0);              if (s_ino < 0) pfail("mk-secret");
-    if (p_write((uint32_t)s_ino, "topsecret") != 9)  pfail("wr-secret");
-    if (p_chmod((uint32_t)s_ino, 0600) != 0)         pfail("chmod-secret");
-
-    int pub_ino = p_make(0, "public", 0);            if (pub_ino < 0) pfail("mk-public");
-    if (p_write((uint32_t)pub_ino, "hello") != 5)    pfail("wr-public");   /* default 0644 */
-
-    int d_ino = p_make(0, "udir", 1);                if (d_ino < 0) pfail("mk-udir");
-    if (p_chown((uint32_t)d_ino, 1000, 100) != 0)    pfail("chown-udir");  /* give it to user */
-
-    /* The forged-dirent probe's victims, both root's: a file standing in for a
-     * /bin program, and a non-empty directory standing in for /bin itself. */
-    int v_ino = p_make(0, "victim", 0);              if (v_ino < 0) pfail("mk-victim");
-    if (p_write((uint32_t)v_ino, "intact") != 6)     pfail("wr-victim");
-    int vd_ino = p_make(0, "vdir", 1);               if (vd_ino < 0) pfail("mk-vdir");
-    int vk_ino = p_make((uint32_t)vd_ino, "kid", 0); if (vk_ino < 0) pfail("mk-vdir-kid");
-
-    /* --- become uid 1000 (gid 100): the kernel now attests this identity --- */
-    if (sys_auth("user", "password", 0) != 0)        pfail("auth-user");
-
-    /* world-readable file: allowed */
-    if (p_read((uint32_t)pub_ino, 8) != 5)           pfail("user-read-public-denied");
-    if (!content_is("hello", 5))                     pfail("public-content");
-
-    /* root's 0600 file, and writes/creates/chmod it isn't entitled to: DENIED */
-    if (p_read((uint32_t)s_ino, 8)   != SYS_ERR_PERM) pfail("secret-read-not-denied");
-    if (p_write((uint32_t)s_ino, "x") != SYS_ERR_PERM) pfail("secret-write-not-denied");
-    if (p_make(0, "nope", 0)          != -1)          pfail("root-dir-create-not-denied");
-    if (pp.rc                         != SYS_ERR_PERM) pfail("root-dir-create-wrong-rc");
-
-    /* in a directory it owns: allowed to create/write/read/chmod */
-    int m_ino = p_make((uint32_t)d_ino, "mine", 0);  if (m_ino < 0) pfail("user-create-owned");
-    if (p_write((uint32_t)m_ino, "mydata") != 6)     pfail("user-write-owned");
-    if (p_read((uint32_t)m_ino, 8) != 6)             pfail("user-read-owned");
-    if (!content_is("mydata", 6))                    pfail("owned-content");
-    if (p_chmod((uint32_t)m_ino, 0600) != 0)         pfail("user-chmod-owned");
-
-    /* The two metadata rules (S77): a mode is set by its owner or root, so
-     * root's file is refused; an owner is set by root alone, so even the
-     * user's own file is. Both are asked BEFORE either is reported, and the
-     * answer is one line naming both, because each rule has an arm
-     * (FS_CHMOD_ANY_OWNER=1, FS_CHOWN_ANY_UID=1) that must show its own refusal
-     * gone AND the other one standing: that is what shows two independent
-     * rules rather than one rule read twice. A selftest that stopped at the
-     * first could show only one half of that. */
-    {
-        int chmod_rc = p_chmod((uint32_t)s_ino, 0666);
-        int chown_rc = p_chown((uint32_t)m_ino, 0, 0);
-        if (chmod_rc != SYS_ERR_PERM || chown_rc != SYS_ERR_PERM) {
-            /* One write, so no other task's output can split the line an arm
-             * asserts (LIMITATIONS 2.6a). */
-            const char *parts[4] = {
-                "metadata chmod=",
-                chmod_rc == SYS_ERR_PERM ? "refused" : chmod_rc == 0 ? "ALLOWED" : "error",
-                " chown=",
-                chown_rc == SYS_ERR_PERM ? "refused" : chown_rc == 0 ? "ALLOWED" : "error",
-            };
-            char line[64];
-            unsigned n = 0;
-            for (int k = 0; k < 4; k++)
-                for (const char *c = parts[k]; *c && n < sizeof(line) - 1; c++) line[n++] = *c;
-            line[n] = 0;
-            kput_marker("PERM_SELFTEST: FAIL ", line);
-            sys_exit();
-        }
-    }
-
-    /* --- the account's home is the account's (S78, uid path) ---------------
-     *
-     * fs_server makes /home/<name> for every account in the table when it
-     * mounts (provision_home_dirs), owned by that account. A login session
-     * reaches its home through the policy's capability since phase 1b step
-     * 3(b), where ownership is not what decides, so the uid path's half of the
-     * claim is witnessed here until step 6 removes that path. Ownership is
-     * asked of the server, and then USED: a home that stat called the
-     * account's and that refused the account a file would be the lie.
-     * HOME_DIR_ROOT_OWNED=1 leaves the home root's; its arm requires the
-     * first marker below. */
-    {
-        if (p_dirop(FS_OP_LOOKUP, 0, "home") != 0)          pfail("home-missing");
-        uint32_t h = pp.ino;
-        if (p_dirop(FS_OP_LOOKUP, h, "user") != 0)          pfail("home-user-missing");
-        uint32_t hu = pp.ino;
-        umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_STAT; pq.ino = hu;
-        int st = rpc(&pq, &pp);
-        /* A home its account may not even stat is not the account's: a root-
-         * owned 0700 home is refused here, before its owner can be read. */
-        if (st == SYS_ERR_PERM || (st == 0 && pp.uid != 1000)) pfail("home-not-owned");
-        if (st != 0 || pp.type != FS_TYPE_DIR)               pfail("home-user-stat");
-        if (p_make(hu, "inhome", 0) < 0)                     pfail("home-not-writable");
-    }
-
-    /* --- a FILE is never a directory operand -------------------------------
-     *
-     * fs_server reads a directory as an array of fs_dirent records in ordinary
-     * inode data, and the bytes of a regular file are written by its owner. Until
-     * 2026-10-08 the requests that take a directory operand checked the caller's
-     * permission on it and never its TYPE, so a user who owns a file could write
-     * a forged entry {ino = anything, type = FILE} into it and pass the file as
-     * the "directory". DELETE through it then had fs_server free the named inode
-     * (the kernel honours SYS_FS_INODE_FREE from the store's holder for any inode
-     * but root): root's /bin programs, or /bin itself, since a forged FILE type
-     * also skipped the not-empty check. The lowest-free inode allocator then
-     * handed the number to the user's next create, which a root-owned dirent
-     * still named. RENAME did the same from either side.
-     *
-     * The claim is that NO directory operation interprets a file as a directory:
-     * each such request is refused with SYS_ERR_INVAL, and both victims are
-     * untouched afterwards. FS_DIR_OPERAND_UNCHECKED=1 restores the unchecked
-     * server; make smoke-fs-dir-operand-control requires the first stage below. */
-    {
-        int f_ino = p_make((uint32_t)d_ino, "forge", 0); if (f_ino < 0) pfail("dir-operand-mk-forge");
-        /* rwx for its owner, as an attacker would set it on their own file, so
-         * every request below passes its PERMISSION check (lookup needs x,
-         * readdir r, the rest w) and the only thing left to refuse it is the
-         * type. At the default 0644, lookup was refused for want of x, which
-         * would let this probe pass with no type check at all. */
-        if (p_chmod((uint32_t)f_ino, 0700) != 0)     pfail("dir-operand-chmod-forge");
-        struct fs_dirent forged[2];
-        umemset(forged, 0, sizeof(forged));
-        forged[0].ino = (uint32_t)v_ino;  forged[0].type = FS_TYPE_FILE; ustrncpy(forged[0].name, "x", FS_DIRENT_NAME);
-        forged[1].ino = (uint32_t)vd_ino; forged[1].type = FS_TYPE_FILE; ustrncpy(forged[1].name, "y", FS_DIRENT_NAME);
-        umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_WRITE; pq.ino = (uint32_t)f_ino;
-        pq.offset = 0; pq.len = sizeof(forged); umemcpy(pq.data, forged, sizeof(forged));
-        if (rpc(&pq, &pp) != (int)sizeof(forged))    pfail("dir-operand-wr-forge");
-        uint32_t f = (uint32_t)f_ino, ud = (uint32_t)d_ino;
-
-        /* The report's attack, first, so the control arm's marker is the headline:
-         * free root's file through a forged entry. */
-        if (p_dirop(FS_OP_DELETE, f, "x") != SYS_ERR_INVAL)  pfail("dir-operand-delete-file");
-        /* The same against root's non-empty directory: the forged FILE type is
-         * what skipped the not-empty check. */
-        if (p_dirop(FS_OP_DELETE, f, "y") != SYS_ERR_INVAL)  pfail("dir-operand-delete-nonempty");
-        /* RENAME out of the forgery: a real name, in the user's own directory,
-         * for root's inode, with no link counted for it. */
-        if (p_rename(f, "x", ud, "stolen") != SYS_ERR_INVAL) pfail("dir-operand-rename-from");
-        /* RENAME into the forgery: the target name "x" exists there, so the
-         * server "replaces" it, freeing the inode the forged entry names. */
-        if (p_rename(ud, "mine", f, "x") != SYS_ERR_INVAL)   pfail("dir-operand-rename-into");
-        if (p_dirop(FS_OP_LOOKUP, f, "x") != SYS_ERR_INVAL)  pfail("dir-operand-lookup");
-        umemset(&pq, 0, sizeof(pq)); pq.op = FS_OP_READDIR; pq.dir_ino = f; pq.offset = 0;
-        if (rpc(&pq, &pp) != SYS_ERR_INVAL)                  pfail("dir-operand-readdir");
-        if (p_dirop(FS_OP_CREATE, f, "z") != SYS_ERR_INVAL)  pfail("dir-operand-create");
-        if (p_dirop(FS_OP_MKDIR, f, "w") != SYS_ERR_INVAL)   pfail("dir-operand-mkdir");
-
-        /* THE PROPERTY, not only the codes: both victims are as root left them.
-         * A refusal code over a destroyed victim would be a worse lie than either. */
-        if (p_read((uint32_t)v_ino, 8) != 6 || !content_is("intact", 6)) pfail("dir-operand-victim-lost");
-        if (p_dirop(FS_OP_LOOKUP, (uint32_t)vd_ino, "kid") != 0 || pp.ino != (uint32_t)vk_ino)
-            pfail("dir-operand-vdir-lost");
-        if (p_dirop(FS_OP_LOOKUP, ud, "stolen") != SYS_ERR_NOENT) pfail("dir-operand-stolen-name");
-        if (p_dirop(FS_OP_LOOKUP, ud, "mine") != 0)          pfail("dir-operand-mine-moved");
-    }
-
-    /* --- back to root: superuser bypasses the 0600 owner-only file --- */
-    if (sys_auth("root", "toor", 0) != 0)        pfail("reauth-root");
-    if (p_read((uint32_t)m_ino, 8) != 6)             pfail("root-read-owned");
-    if (!content_is("mydata", 6))                    pfail("root-content");
-    if (p_chown((uint32_t)m_ino, 0, 0) != 0)         pfail("root-chown");
-
-    kput("PERM_SELFTEST: PASS\n");
-    sys_exit();
+    perm_selftest();
 #endif
 
     /* mkdir /docs */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_MKDIR; rq.dir_ino = 0; ustrncpy(rq.name, "docs", FS_NAME_MAX);
-    if (rpc(&rq, &rp) != 0) fail("mkdir");
-    uint32_t dino = rp.ino;
+    int sd = child(SLOT_ROOT, FS_OP_MKDIR, "docs");
+    if (sd < 0) fail("mkdir");
+    unsigned docs = (unsigned)sd;
 
     /* create /docs/hello.txt */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_CREATE; rq.dir_ino = dino; ustrncpy(rq.name, "hello.txt", FS_NAME_MAX);
-    if (rpc(&rq, &rp) != 0) fail("create");
+    int sfile = child(docs, FS_OP_CREATE, "hello.txt");
+    if (sfile < 0) fail("create");
+    unsigned file = (unsigned)sfile;
     uint32_t fino = rp.ino;
 
     /* write */
     const char *msg = "Horus phase 2: userspace FS over encrypted blocks.\n";
     unsigned mlen = uslen(msg);
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_WRITE; rq.ino = fino; rq.offset = 0; rq.len = mlen;
+    req(&rq, FS_OP_WRITE, 0); rq.len = mlen;
     umemcpy(rq.data, msg, mlen);
-    if (rpc(&rq, &rp) != (int)mlen) fail("write");
+    if (rpc(file, &rq) != (int)mlen) fail("write");
 
     /* read back and compare */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READ; rq.ino = fino; rq.offset = 0; rq.len = mlen;
-    { int rr = rpc(&rq, &rp); if (rr != (int)mlen) fail2("read-len", rr); }
+    req(&rq, FS_OP_READ, 0); rq.len = mlen;
+    { int rr = rpc(file, &rq); if (rr != (int)mlen) fail2("read-len", rr); }
     for (unsigned i = 0; i < mlen; i++) if (rp.data[i] != (uint8_t)msg[i]) fail("read-cmp");
 
     /* stat: size matches */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_STAT; rq.ino = fino;
-    if (rpc(&rq, &rp) != 0) fail("stat");
+    req(&rq, FS_OP_STAT, 0);
+    if (rpc(file, &rq) != 0) fail("stat");
     if (rp.size != mlen) fail("stat-size");
 
     /* readdir /docs -> hello.txt */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READDIR; rq.dir_ino = dino; rq.offset = 0;
-    if (rpc(&rq, &rp) != 0) fail("readdir");
+    req(&rq, FS_OP_READDIR, 0);
+    if (rpc(docs, &rq) != 0) fail("readdir");
     if (!ustreq(rp.name, "hello.txt")) fail("readdir-name");
 
     /* ---- the end of a directory is not the absence of one -------------------
@@ -476,27 +453,31 @@ void _start(void) {
      * there both are NOENT, and neither equals FS_RC_ENDDIR -- which is a check
      * that cannot fail for the reason it was written. The equality goes first
      * because this probe stops at its first failure, and this is the marker that
-     * names the defect. */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READDIR; rq.dir_ino = dino; rq.offset = 1;
-    int endrc = rpc(&rq, &rp);                 /* past the single entry */
+     * names the defect. "A directory that is not there" is one this task holds a
+     * capability to and has deleted: a capability names an object, so a missing
+     * directory can no longer be named by a number. */
+    req(&rq, FS_OP_READDIR, 0); rq.offset = 1;
+    int endrc = rpc(docs, &rq);                /* past the single entry */
 
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_READDIR; rq.dir_ino = 0xFFFFu; rq.offset = 0;
-    int badrc = rpc(&rq, &rp);                 /* a directory that is not there */
+    int sgone = child(docs, FS_OP_MKDIR, "gone");
+    if (sgone < 0) fail("mkdir-gone");
+    req(&rq, FS_OP_DELETE, "gone");
+    if (rpc(docs, &rq) != 0) fail("delete-gone");
+    req(&rq, FS_OP_READDIR, 0);
+    int badrc = rpc((unsigned)sgone, &rq);     /* a directory that is not there */
 
     if (endrc == badrc) fail2("readdir-end-and-missing-dir-are-the-same", endrc);
     if (endrc != FS_RC_ENDDIR)  fail2("readdir-end-wrong-code", endrc);
     if (badrc != SYS_ERR_NOENT) fail2("readdir-missing-dir-wrong-code", badrc);
 
     /* lookup returns the same inode */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = dino; ustrncpy(rq.name, "hello.txt", FS_NAME_MAX);
-    if (rpc(&rq, &rp) != 0) fail("lookup");
+    if (child(docs, FS_OP_LOOKUP, "hello.txt") < 0) fail("lookup");
     if (rp.ino != fino) fail("lookup-ino");
 
     /* delete, then lookup must miss */
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_DELETE; rq.dir_ino = dino; ustrncpy(rq.name, "hello.txt", FS_NAME_MAX);
-    if (rpc(&rq, &rp) != 0) fail("delete");
-    umemset(&rq, 0, sizeof(rq)); rq.op = FS_OP_LOOKUP; rq.dir_ino = dino; ustrncpy(rq.name, "hello.txt", FS_NAME_MAX);
-    if (rpc(&rq, &rp) != SYS_ERR_NOENT) fail("delete-verify");
+    req(&rq, FS_OP_DELETE, "hello.txt");
+    if (rpc(docs, &rq) != 0) fail("delete");
+    if (child(docs, FS_OP_LOOKUP, "hello.txt") != SYS_ERR_NOENT) fail("delete-verify");
 
     kput("FS_SELFTEST: PASS\n");
     sys_exit();

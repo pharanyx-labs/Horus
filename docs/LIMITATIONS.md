@@ -64,12 +64,11 @@ account may write (`@all /srv all` beside `alice /srv/alice all`) lets the secon
 what `alice` is given. The default policy and the one the installer will write grant nothing of
 the kind; v12's back-references (phase 3) are what would let the server tell the objects apart.
 
-Sessions' private `/tmp`s (S129) live in `/.session-tmp`, which every session finds absent. The
-uid path, until phase 1b step 6 removes it, still reaches it as it reaches any file: the store
-and each `/tmp` are mode 0700, so only root's uid can look them up or list them that way, but a
-file inside answers to its own mode bits to anyone who names its inode (1.31).
+Sessions' private `/tmp`s (S129) live in `/.session-tmp`, which every session finds absent. A
+capability with no grant set reaches it as it reaches any directory; only `init` holds one, and it
+lends none to a login.
 
-### 1.26 Mode bits leave out the administrator, and the uid path can move a file under a grant
+### 1.26 Mode bits leave out the administrator, and a capability with no grant set can move a file under a grant
 
 A stat through a session's capability (S130) reports as other bits every grant of every other
 principal at or above the object, except the administrator's (filesystem decision 16): mode bits
@@ -78,23 +77,9 @@ account's files as `rwx` to everyone. So `0700` means that no account but the ad
 reach the file. An account the policy grants `/` by name is counted like any other.
 
 The bound holds because a rename through a session's capability may not move an object onto or
-off a name the policy names. The uid path, until phase 1b step 6 removes it, and a capability with
-no grant set (held by system tasks, never by a session) rename without that rule, so a file moved
-that way under another principal's grant can show a bound that is low through a capability
-minted before the move, until it is opened again.
-
-### 1.31 The uid path reaches a file by inode number, whatever its directories allow **[HORUS-20261012-05]**
-
-On the uid path, which a login still uses when the policy gives its account nothing (on an
-installed volume whose `/etc/fs.policy` was deleted or does not parse, every account but the
-administrator's), read,
-write, append, stat and truncate name an inode number and check that inode's own mode bits only.
-Nothing checks that the caller could have reached it through directories it may search, so a
-mode 0644 file inside another account's mode 0700 directory is readable by anyone who names its
-inode, and inode numbers are small and handed out lowest first. The capability path does not have
-this gap: a capability names one object reached by a walk. Phase 1b step 6 removes the uid path.
-
----
+off a name the policy names. A capability with no grant set (held by system tasks, never by a
+session) renames without that rule, so a file moved that way under another principal's grant can
+show a bound that is low through a capability minted before the move, until it is opened again.
 
 ### 1.33 A revocation cannot reach through a task that has died **[HORUS-20261013-01]**
 
@@ -394,8 +379,8 @@ this.
   refuses moves across directories (S121) and opens sessions from the policy (S128), and the POSIX
   layer and the shell walk with capabilities when they hold a root (S126, S127), and every login
   asks for its session (S141). A new installed volume is given a policy that gives every account
-  one (S148). An account the policy gives nothing still reaches files by the uid path (phase 1b
-  step 6).
+  one (S148). Nothing reaches a file any other way (S14), so a login the policy gives nothing is
+  ended.
 - **Swap has no way to keep a secret out of it.** On an installed boot idle pages go to the
   sealed partition under pressure, an idle task's included, and come back on touch (S118, S119,
   S123). A page goes out sealed under a key that dies with the boot, but a task cannot yet ask for
@@ -541,6 +526,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.28 | [HORUS-20261012-02] | A crafted program header offset wrapped the spawn path's premap bound (S84) | 2026-10-12, #551 |
 | 1.29 | [HORUS-20261012-03] | A forked or granted pipe end was not counted, so the pipe could be freed under its holder (S41, S133) | 2026-10-12, #553, #555 |
 | 1.30 | [HORUS-20261012-04] | The inode table and allocation bitmaps were not authenticated at rest, so an owner, mode, size, link count or bitmap could be changed on the disk undetected (S143) | 2026-10-14, #575 |
+| 1.31 | [HORUS-20261012-05] | The uid path reached a file by inode number and checked only that inode's mode bits, so a file inside another account's private directory answered to anyone who named its number; the uid path is gone, and every filesystem request is decided by the capability it came through (S14) | 2026-10-16, #583 |
 | 1.32 | [HORUS-20261012-06] | A reply, and the sender identity a server authorises on, named a task slot, so a dead client's successor could receive both (S13, S13b) | 2026-10-12, #554 |
 | 1.34 | [HORUS-20261013-02] | A register BAR smaller than a page handed its driver the whole page, so a neighbour's registers in that page were reachable (S43) | 2026-10-13, #562 |
 | 1.35 | [HORUS-20261014-01] | Once authenticated, the inode table and allocation bitmaps were still in the clear, so every file's size, owner, mode and link count could be read off the disk; every block of them the kernel writes is now sealed (S143) | 2026-10-14, #575 |

@@ -1,10 +1,11 @@
 # A capability-addressed filesystem for Horus
 
-**Status: phase 1a and phase 1b steps 1 to 5 are built; step 6 and phases 2 to 4 are not.**
+**Status: phases 1a and 1b are built; phases 2 to 4 are not.**
 Phase 1a, the kernel primitive file capabilities need (§5.1: tokens, the reply-mint and the
 carried capability), landed on 2026-09-25 (**S105**, `make smoke-captoken`). Phase 1b's steps are
 in §11.1: `fs_server` answers through capabilities, every login works through a session compiled
-from the policy, and a new installed volume is given one (S148); the uid path stays until step 6.
+from the policy, a new installed volume is given one (S148), and since step 6 (2026-10-16) nothing
+reaches a file by identity (S14).
 Every load-bearing question has been answered by the maintainer, and §13 records them all as
 decisions. What remains open is listed there too.
 
@@ -41,7 +42,7 @@ and the parts worth keeping are the parts most systems get wrong.
 | Privilege separation | `fs_server` runs in ring 3 and **never sees key material**; the kernel does the crypto behind `SYS_FBLOCK_READ`/`WRITE` |
 | Layout | Superblock, nonce and tag region, TPM blob, key slots, user table, Merkle nodes, journal, inode bitmap, block bitmap, inode table, data region (format v14) |
 | Directories | An array of `fs_dirent` records in ordinary inode data; root is inode 0. Only an inode typed as a directory is ever read as one, whatever the authority model (S113) |
-| Authority | Kernel-attested uid/gid (`SYS_IPC_SENDER`) and Unix mode bits |
+| Authority | Capabilities: every request is decided by the one it came through, never by who sent it (S14, S120), and a session's grants come from the policy (S128). No mode or owner is stored (S77) |
 
 The first six rows are better than most filesystems in use. A redesign that lost any of them
 would be a regression however modern the rest looked.
@@ -63,17 +64,17 @@ the largest piece of evictable policy in the kernel. Second, the feature set is 
 
 ## 2. The defect worth redesigning around
 
-**The filesystem authorises by identity, in a system whose entire thesis is that nothing
-authorises by identity.**
+**The filesystem authorised by identity, in a system whose entire thesis is that nothing
+authorises by identity.** It did until phase 1b step 6 (2026-10-16).
 
-`FS_OP_CHMOD` is "owner or root". `FS_OP_CHOWN` is "root only". `FS_OP_STAT` returns `uid` and
-`gid`, and `perm_ok` in `userspace/fs_server.c` compares them against the caller's. The uid is
-not forgeable, because it comes from `SYS_IPC_SENDER` and never from anything the client asserts,
-so this is not a hole an attacker walks through today. It is something worse in the long run: it
-is **`uid == 0` ambient authority**, the exact thing roadmap 0.2 retired from the kernel on
-2026-07-27, still running in ring 3 because the filesystem was written before that change and
-never revisited. And any client may connect: `SYS_CONNECT_FS_SERVER` mints a send capability for
-whoever asks, so reaching the filesystem at all is ambient.
+`FS_OP_CHMOD` was "owner or root". `FS_OP_CHOWN` was "root only". `FS_OP_STAT` returned the
+stored `uid` and `gid`, and `perm_ok` in `userspace/fs_server.c` compared them against the
+caller's. The uid was not forgeable, because it came from `SYS_IPC_SENDER` and never from anything
+the client asserted, so it was not a hole an attacker walked through. It was something worse in
+the long run: **`uid == 0` ambient authority**, the exact thing roadmap 0.2 retired from the
+kernel on 2026-07-27, still running in ring 3 because the filesystem was written before that
+change. And any client could connect: `SYS_CONNECT_FS_SERVER` minted a send capability for
+whoever asked, so reaching the filesystem at all was ambient.
 
 CLAUDE.md §1 says it plainly. Nothing is granted for who you are. A filesystem that asks "are you
 root?" has an answer for that question, and the answer is a standing grant that no capability
@@ -120,7 +121,8 @@ must, because it holds the key.
 ### 4.1 The kernel interface
 
 Three calls replace `SYS_FS_INODE_ALLOC`, `SYS_FS_INODE_FREE`, `SYS_FBLOCK_READ`,
-`SYS_FBLOCK_WRITE`, `SYS_FS_STAT`, `SYS_FS_SET_SIZE`, `SYS_FS_SET_META` and `SYS_FS_INODE_LINK`,
+`SYS_FBLOCK_WRITE`, `SYS_FS_STAT`, `SYS_FS_SET_SIZE` and `SYS_FS_INODE_LINK` (`SYS_FS_SET_META`
+was withdrawn in phase 1b step 6),
 each gated by a `CAP_VOLUME` capability whose rights say which calls it permits:
 
 - **Seal** `(vol, phys, buf, kind) -> (ciphertext, nonce, tag)`: the kernel chooses the nonce
@@ -206,8 +208,8 @@ more:
 can only narrow the one a client invoked. The receive right is stripped from every tokened
 capability; MINT is not, so a client can still make narrowed copies of its own file capabilities
 with `SYS_CAP_MINT` (they keep the token), while `SYS_CAP_MINT_TOKEN` refuses every tokened
-source, so no client can mint a new token. `SYS_CONNECT_FS_SERVER` and the uid/gid half of
-`SYS_IPC_SENDER` retire from the filesystem path. The first capability, the root directory, is
+source, so no client can mint a new token. `SYS_CONNECT_FS_SERVER` is withdrawn and the
+filesystem never asks `SYS_IPC_SENDER` (phase 1b step 6). The first capability, the root directory, is
 minted by `init`, which creates the endpoint and so holds its mint right (§6.1).
 
 ### 5.2 The token
@@ -454,9 +456,10 @@ GNU coreutils will ship (installed-system decision 2), and `ls -l`, `chmod`, `cp
   through any path that reaches it. That is a sound upper bound, because a capability anyone
   holds at run time descends from some grant and cannot exceed it. It can overstate who may read
   a file; it can never understate it.
-- **`st_uid`** is the caller's own uid, and **`st_gid`** its primary group, as the kernel attests
-  them for the request. They say "you", and they authorise nothing: the capability already
-  decided.
+- **`st_uid`** is the uid, and **`st_gid`** the primary group, of the account the capability's
+  session was opened for, and 0 for a capability with no session, which only system tasks hold
+  (decision 21). They say "you", and they authorise nothing: the capability already decided. They
+  are never taken from who sent the request, which the filesystem does not ask.
 - Timestamps, size, link count and inode number (the object id, truncated to 64 bits) are real.
 
 **Which grants are "other"** (decision 16). Every grant whose principal is not the session's own
@@ -500,9 +503,9 @@ of one's own rights claims no protection that is false; that is what lets `chmod
 a home's files, which the default policy grants `EXEC`. The set-user-id, set-group-id and sticky
 bits are always refused (§6.3). It needs the right `stat` needs, `READ`.
 
-`chown` to the caller's own uid and primary group (or to `-1`, which leaves either unchanged)
-succeeds; to anyone else it fails. "Own" is what `stat` reports, the identity the kernel attests
-for the request, so `chown` agrees with `stat` and is decided by nothing else.
+`chown` to the session's own uid and primary group (or to `-1`, which leaves either unchanged)
+succeeds; to anyone else it fails. "Own" is what `stat` reports, the account the session was
+opened for, so `chown` agrees with `stat` and is decided by nothing else.
 
 ### 7.3 `EXEC`, honestly
 
@@ -707,17 +710,17 @@ other, because phase 1b can name the compiled-in accounts until `auth_server` ex
 ### 11.1 Phase 1b, in steps
 
 Each step is one pull request that leaves the system working, with its own gate and a control
-arm that reddens it. The old identity path stays alive beside the new one until step 6 removes
-it, so no step has to land the whole change at once.
+arm that reddens it. The old identity path stayed alive beside the new one until step 6 removed
+it, so no step had to land the whole change at once.
 
 | Step | What lands | Gate, and the defect its arm puts back |
 |---|---|---|
 | 1 ✅ | `fs_server` answers capability-addressed requests: the object comes from the token the kernel attests, rights from the invoking capability, `LOOKUP` reply-mints a child capability narrowed to the directory's rights (§5.3), and a name that is `.`, `..` or holds `/` is refused (§5.4). `init` mints the root directory capability (§6.1). Old ino-addressed requests still work | A read-only capability cannot write, `LOOKUP` refuses `..`, and revoking a directory capability revokes what was opened through it; the arm skips the rights check |
-| 2 ✅ | Clients walk with capabilities: `hvfs`, the POSIX layer and the shell (`fsclient`, a self-test client, stays on the uid path until step 6 removes it). The shell keeps a root and a current-directory capability, and before a child runs its spawner grants it derived copies of both, never wider than its own (decision 10). Open files are not inherited | A child given a read-only root cannot write anywhere; the arm grants the child the spawner's capability unnarrowed |
+| 2 ✅ | Clients walk with capabilities: `hvfs`, the POSIX layer and the shell. The shell keeps a root and a current-directory capability, and before a child runs its spawner grants it derived copies of both, never wider than its own (decision 10). Open files are not inherited | A child given a read-only root cannot write anywhere; the arm grants the child the spawner's capability unnarrowed |
 | 3 ✅ | Sessions from the policy (§6.2, §6.4): the shell authenticates as today and asks `init` for its session; `fs_server` compiles the principal's grants, and `init` grants the session one root naming them, and its home as the working directory, and revokes both at logout. `fs_server` writes `/etc/fs.policy` into a new installed volume. A live boot uses a compiled-in default; an installed volume without a policy file grants the root capability to the administrator only (decision 9) | A session reaches only what its grants name; the arm grants every session the root |
 | 4 ✅ | The truthful view (§7): `stat` from the caller's rights and a bound on everyone else's, `chmod` and `chown` succeed only when they ask for what is true, and `link` within one directory through a capability. Lands before step 3(b) | `chmod 600` on a file another grant reaches fails; the arm reports success |
 | 5 ✅ | Cross-directory `rename` and `link` return `EXDEV` (decision 11); same-directory rename needs `CREATE` and `DELETE` on that directory | A cross-directory move is refused; the arm lets it through |
-| 6 | The identity path is removed: `perm_ok`, `FS_OP_CHOWN`'s root check, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER` | No filesystem operation succeeds on the strength of a uid; the arm restores `perm_ok` (the Falsification list below) |
+| 6 ✅ | The identity path is removed: `perm_ok`, `FS_OP_CHOWN`'s root check, the uid half of `SYS_IPC_SENDER` in the filesystem, `SYS_FS_SET_META` and `SYS_CONNECT_FS_SERVER` | No filesystem operation succeeds on the strength of a uid; the arm restores the uid path (the Falsification list below) |
 
 **Step 1 as built (#515).** Create and mkdir reply-mint the new object's capability too, as
 lookup does. A child keeps the kernel rights its parent had to send, pass on, make narrowed copies
@@ -735,15 +738,12 @@ bad name in any position refuses the whole walk. Each step is then an ordinary `
 from a file is refused and the system-tree rule (S116) runs, as for a single name. The reply mints
 one capability, derived from the one invoked, with the rights a `LOOKUP` would give. Up to 176
 bytes of names fit in one request; a longer path walks again from the capability the first walk
-gave. The uid path has no walk.
+gave.
 
 **Step 2, the client half, as built so far: `hvfs` and the POSIX layer.** A task that holds a
 directory capability in `CAPSLOT_FS_ROOT` (slot 24) walks by capability and nothing else: the mode
-is chosen once, in `posix_init`, by a stat through that slot, and such a task never connects to the
-uid path, so no request of its can fall back there when a capability refuses. A task holding
-nothing there uses the uid path as before. Until step 3 nothing grants a root, so ordinary sessions
-stay on the uid path (decided 2026-10-10: a task walks by capability only if it already holds a
-root). As built:
+is chosen once, in `posix_init`, by a stat through that slot. A task holding nothing there has
+had no "/" at all since step 6. As built:
 
 - **One capability per open object.** A path, `.` and `..` resolved by the client and pinned where
   the walk starts, goes in one `WALK` from the root (absolute) or the working directory
@@ -779,18 +779,16 @@ files only while its spawner vouches for it, and revoking the spawner's root swe
 below it. Each live child costs its spawner two pool slots. Witness: the same gate (S127).
 
 **Step 2, the shell, as built.** The shell walks by capability when it holds a root in slot 24,
-chosen at its first connection to the filesystem, and never connects to the uid path then. Every
+chosen at its first connection to the filesystem. Every
 filesystem request it makes names the object it is about (`fss_call_on`), and the form that let a
 request pick its own slot is gone, so none can reach the server through anything else. The working
 directory is an object, walked afresh from the root on `cd`. Each program it runs, alone or in a
 pipeline, is handed its root and working directory (`hvfs_grant_fs`) before it resumes and gives
 them back when it is waited for; one that cannot be handed them is killed, not run. The `spawn`
 builtin, which waits for nothing, hands nothing. Through capabilities `ln`, `chmod` and `chown` are
-refused by the server (step 4 and §5.5), and so is `useradd`'s setting of a new home's owner.
-Nothing grants the shell a root before step 3; the witness, `make smoke-fs-cap-shell`, is an
-instrument build in which `init` hands it one read-only, and a root session's `mkdir`, `touch` and
-`rm` are refused. `fsclient` is a self-test client and stays on the uid path until step 6 removes
-it. Steps 3, 4 and 6 follow.
+refused by the server (step 4 and §5.5). The witness, `make smoke-fs-cap-shell`, is an
+instrument build in which `init` hands it a root read-only at launch, with no session, and a root
+session's `mkdir`, `touch` and `rm` are refused.
 
 **Step 3, in order.** (a) `fs_server`: the policy parser and compiler, the decision 9 defaults,
 `FS_OP_SESSION` and `FS_OP_SESSION_END`, and tracked capabilities (§6.4), witnessed by a
@@ -845,11 +843,11 @@ identity: `init` names the account by `SYS_IPC_SENDER`, asks `fs_server` for `FS
 keeps copies of the root and working directory with `REVOKE`, and grants the shell narrower ones
 in slots 24 and 25, then answers with the grant set and the working directory's path, which is
 only a name for `pwd`. The shell walks by those capabilities from its next request, passes them
-to every program it runs (decision 10), and, holding a session, refuses rather than reaching the
-uid path if its root will not mount. `SESS_OP_END` at logout, the shell's death, and the next
-login each have `init` revoke its copies, which takes everything derived from them, and end the
-grant set in `fs_server`. An account the policy gives nothing is answered with no grant set and
-keeps the uid path until step 6. Witness: `make smoke-session` (root, then a standard user, in one
+to every program it runs (decision 10), and, holding a session, refuses if its root will not
+mount. `SESS_OP_END` at logout, the shell's death, and the next login each have `init` revoke its
+copies, which takes everything derived from them, and end the grant set in `fs_server`. An account
+the policy gives nothing is answered with no grant set, and since step 6 its login is ended.
+Witness: `make smoke-session` (root, then a standard user, in one
 boot), arm `smoke-session-login-control` (`INIT_SESSION_AS_ADMIN=1`: every login is given the
 administrator's session).
 
@@ -873,16 +871,33 @@ the root), `smoke-fs-cap-session-rights-control` (a tracked capability uses ever
 carries) and `smoke-fs-cap-session-caller-control` (a session opens through a capability without
 `MINT`).
 
-**Step 5 as built.** The refusal is on both paths, since a move through the uid path changes who
-may reach a file just as much. A rename across directories is `EXDEV`. A link is too unless the
+**Step 5 as built.** A rename across directories is `EXDEV`. A link is too unless the
 new parent already holds a name for the file, because v11 keeps no back-references and that is
 the only way to ask which directory a file is in. Through a capability, rename works within that
 capability's directory, needs `CREATE` and `DELETE` there, and refuses a new name that is `.`,
 `..` or holds `/`; a request naming a second directory is `EXDEV`, since reaching one would need a
-second capability. Link is not on the capability path: it names its source by inode, which a
-capability never does. Nothing in the tree moves a file across directories today (the shell's
+second capability. Link names its source by a carried capability since step 4(c). Nothing in the tree moves a file across directories today (the shell's
 `mv` and `ln` work within the current directory), so no copy fallback was needed yet; a mover
 that meets `EXDEV` copies.
+
+**Step 6 as built (S14, S77).** `fs_server` asks the kernel only which capability a request came
+through (`SYS_IPC_INVOKER`), never who sent it: `perm_ok` and the per-operation uid checks are
+gone, and a request through an untokened capability that is not `FS_OP_SESSION` or
+`FS_OP_SESSION_END` is refused `EPERM`. `SYS_CONNECT_FS_SERVER`, which minted any task that asked
+an untokened send capability, and `SYS_REGISTER_FS_SERVER`, which existed only for it, answer
+`ENOSYS` to everyone, and so does `SYS_FS_SET_META`: nothing stamps an owner or a mode, so the
+stored ones are whatever the inode's allocation wrote and nothing reads them. A stat's uid and gid
+are the session's account (decision 21), and a chown is true only to that account. A task with no
+root has no "/" (the POSIX layer and the shell both), the self-test clients mint their root from
+an untokened capability their harness lends them, as `init` mints every session's, and the shell
+ends a login that gets no session, saying that the policy grants the account nothing (decision
+20). `login.conf` is read at logout, through the session that is ending (decision 22). Witness:
+`make smoke-fs-perms` (as uid 0, every request by inode through a write-only and a `MINT`
+untokened capability is refused, and the files it names are untouched), arm
+`smoke-fs-perms-uid-control` (`FS_UID_PATH_RESTORED=1`); `make smoke-installer-policy` (a login the
+deleted policy gives nothing is ended, root's is not), arm `smoke-installer-policy-nogrant-control`
+(`SHELL_NO_SESSION_ALLOWED=1`); `make smoke-captest` (the three calls answer nobody), arm
+`smoke-captest-setmeta-control` (`FS_SET_META_RESTORED=1`).
 
 **Authentication stays where it is.** Until `auth_server` exists, the shell's login (`SYS_AUTH`,
 the compiled-in accounts) is what authenticates, and `init` reads the result as the kernel attests
@@ -1009,6 +1024,19 @@ still asks a settled question is stale.
     can already do, and over `init` polling, which would keep it on the run queue for the life of
     the machine.
 
+**2026-10-16, for phase 1b step 6:**
+
+20. **A login the policy gives nothing is ended**, saying why, rather than left at a prompt where
+    every file command fails. With no uid path nothing else reaches a file, and saying so at once
+    is both fail-closed and the clearest answer an operator can get.
+21. **A stat's uid and gid are the account the capability's session was opened for**, and 0 for a
+    capability with no session; `chown` is true only to that account. Chosen over keeping
+    `SYS_IPC_SENDER` in `fs_server` for stat alone, which would leave the filesystem asking who
+    sent a request.
+22. **`login.conf` is read at logout, through the session that is ending.** Between logins the
+    shell holds no session, and reading it then would need a standing grant to the shell. A session
+    that cannot read it leaves the defaults, which is safe because `failure_delay` only tightens.
+
 **Still open, none of them blocking phase 1:**
 
 1. **Clean break from v11?** Recommendation: yes, refuse to mount v11 rather than ship a converter
@@ -1031,8 +1059,8 @@ control arm that reddens the base gate, per §2:
 
 - A task holding a read-only file capability cannot write, and the arm removes the rights check.
 - Revoking a directory capability revokes every file capability derived through it.
-- No filesystem operation succeeds on the strength of the caller's uid, and the arm restores
-  `perm_ok` so the gate can be shown to catch it.
+- No filesystem operation succeeds on the strength of the caller's uid (`smoke-fs-perms`, S14,
+  arm `FS_UID_PATH_RESTORED=1`, which serves an untokened request as the uid path served uid 0).
 - `LOOKUP` of `..`, of `.` and of a name containing `/` is refused, and so is a `WALK` holding
   one in any position (`smoke-fs-cap`, arm `FS_WALK_NAMES_UNCHECKED=1`); a symbolic link to
   `../../etc` from a capability rooted at a home directory does not escape it.

@@ -50,9 +50,7 @@ Horus is a research system, and nobody independent has reviewed it.
   defect it guards against is put back; that is evidence, not a second pair of eyes.
 - **Some security limitations are open.** A revocation cannot reach a copy derived through a task
   that has died (1.33), measured boot is opt-in on a machine without a TPM (2.9), and the
-  cryptography is unaudited (5.4). A source review found
-  one more that is still open (1.31): the older by-user-id file path checks a file's own mode, not
-  its directories.
+  cryptography is unaudited (5.4).
 
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) is the single authoritative status of every known
 finding, and the numbers above are its entries. Read it before drawing conclusions.
@@ -104,8 +102,8 @@ slot number; it never sees the capability itself.
 - `console_server` owns the serial port, the screen (VGA text or a framebuffer, under BIOS or
   UEFI) and the PS/2 keyboard.
 - `fs_server` serves files from the encrypted volume. It answers through tokened capabilities,
-  the object from the token and the rights from the capability (S120), and refuses a move across
-  directories (S121).
+  the object from the token and the rights from the capability (S120), never asks who sent a
+  request (S14), and refuses a move across directories (S121).
 - A driver's capability names one device, and the IOMMU confines that device's DMA to the memory
   its driver mapped.
 - `netd`, an Intel network driver built the same way, exchanges ARP with its gateway in a test
@@ -165,9 +163,6 @@ slot number; it never sees the capability itself.
   driver reads and writes a disk from ring 3 in a self-test build, but the kernel's storage cannot
   use it yet.
 - **No USB**, and so no keyboard on a machine without PS/2 emulation.
-- **The uid path is still there.** Every login on a live boot or a new installed system works
-  through a filesystem session (S141, S148), but an account the policy gives nothing still
-  reaches files by user id and mode until filesystem phase 1b step 6 removes that path.
 - **No RAM above 4 GiB.** A machine's memory up to 4 GiB is used; what lies above is reported
   and left alone.
 - **No threads, job control, `/proc`, wall clock or kernel address randomisation.**
@@ -177,14 +172,11 @@ The full list, with the reasons, is in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.
 
 ## What comes next
 
-[`docs/ROADMAP.md`](docs/ROADMAP.md) holds the open work and the route through it, in four waves,
-with the decisions it waits on listed first. The first wave closes the remaining holes and builds
-what later work needs:
+[`docs/ROADMAP.md`](docs/ROADMAP.md) holds the open work and the route through it, in waves, with
+the decisions it waits on listed first. The first wave, which closed the remaining holes, is done:
+the filesystem authorises nothing by user id (1.31 closed).
 
-1. **Sessions at login, then the uid path removed** (2.10): `init` grants each login a session from
-   the policy, and the filesystem stops authorising anything by user id (closing 1.31).
-
-The later waves finish moving authority to capabilities (accounts as files, exec by capability),
+The waves that remain finish moving authority to capabilities (accounts as files, exec by capability),
 add job control, tighten the boot chain, move the kernel's remaining services to
 ring 3, and then grow the drivers and networking on top.
 
@@ -274,7 +266,7 @@ test does not exist or does not run.
 | Layer | What it covers |
 |---|---|
 | Security properties | 151 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 572 `smoke-*` targets: 245 base gates and 327 control arms |
+| QEMU integration tests | 573 `smoke-*` targets: 245 base gates and 328 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 41 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

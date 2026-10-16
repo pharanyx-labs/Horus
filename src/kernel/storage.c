@@ -1,8 +1,5 @@
 #include "kernel.h"
 
-int fs_server_task_id = -1;
-int fs_server_listen_ep_idx = -1;
-
 static int storage_format_sealed(struct block_device *bd, const char *password, size_t plen,
                                  uint64_t volume_blocks, int unsealed);
 

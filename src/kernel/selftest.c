@@ -2504,7 +2504,7 @@ void vfs_selftest(void) {
     print("VFS_SELFTEST: begin\n");
 
     /* The ROOT mount's server. Endowed exactly as fs_selftest endows it -- the
-     * listen endpoint, the CAP_USER that gates registration, the object store,
+     * listen endpoint, the CAP_USER that reads the account list, the object store,
      * and the boot-module surface. It is here to be the OTHER server: the whole
      * point of the mount table is that two paths reach two different tasks, and
      * with one server that is unfalsifiable. */
@@ -2513,7 +2513,7 @@ void vfs_selftest(void) {
     if (fss <= 0) { print("VFSTEST: FAIL spawn-fs-server\n"); for (;;) asm volatile("hlt"); }
     tasks[fss].uid = 0;
     cap_install_from_root(fss, CAPSLOT_FS_LISTEN,   13, FS_EP_REQ);
-    cap_install_from_root(fss, 6, 6, 0);                      /* CAP_USER, registration */
+    cap_install_from_root(fss, 6, 6, 0);                      /* CAP_USER: the account list */
     cap_install_from_root(fss, CAPSLOT_AUDIT,        9, 0);   /* CAP_ENCRYPTED_STORAGE  */
     cap_install_from_root(fss, CAPSLOT_BOOT_MODULE, 16, 0);   /* CAP_BOOT_MODULE        */
 
@@ -2528,13 +2528,17 @@ void vfs_selftest(void) {
                                 embedded_vfstest_bin_end, "vfstest");
     if (cli <= 0) { print("VFSTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
     cap_install_from_root(cli, 21, 12, CON_EP_REQ);   /* /dev client: WRITE only */
+    /* The root filesystem: an untokened capability to fs_server's endpoint with
+     * MINT, the kernel standing in for init, from which vfstest mints the root
+     * directory's capability (phase 1b step 6: nothing else reaches fs_server). */
+    cap_install_from_root(cli, 31, 13, FS_EP_REQ);
     /* Slot 30 is left EMPTY on purpose -- it is the uncapable slot vfstest
      * mounts against to prove a prefix alone installs nothing. */
 
-    /* fs_server first: it must REGISTER before vfstest's sys_connect_fs_server
-     * can succeed, and it blocks on an empty endpoint once it has. The switch
-     * that follows runs dev_server, then the client. vfstest retries the connect
-     * with a bound, so this ordering is belt-and-braces rather than relied on. */
+    /* fs_server first, so it is serving when vfstest's root mount probes it.
+     * The switch that follows runs dev_server, then the client. vfstest retries
+     * the mount with a bound, so this ordering is belt-and-braces rather than
+     * relied on. */
     selftest_resume_all();
     sched_enable_preemption();
     sched_enter_user(fss);
@@ -2562,7 +2566,7 @@ void fscap_selftest(void) {
     if (fss <= 0) { print("FSCAPTEST: FAIL spawn-fs-server\n"); for (;;) asm volatile("hlt"); }
     tasks[fss].uid = 0;
     cap_install_from_root(fss, CAPSLOT_FS_LISTEN,   13, FS_EP_REQ);
-    cap_install_from_root(fss, 6, 6, 0);                      /* CAP_USER, registration */
+    cap_install_from_root(fss, 6, 6, 0);                      /* CAP_USER: the account list */
     cap_install_from_root(fss, CAPSLOT_AUDIT,        9, 0);   /* CAP_ENCRYPTED_STORAGE  */
     cap_install_from_root(fss, CAPSLOT_BOOT_MODULE, 16, 0);   /* CAP_BOOT_MODULE        */
 
@@ -2931,10 +2935,9 @@ void fs_selftest(void) {
     int srv = fs_spawn_embedded(embedded_fsserver_bin_start, embedded_fsserver_bin_end, "fsserver");
     if (srv <= 0) { print("FS_SELFTEST: FAIL spawn-server\n"); for (;;) asm volatile("hlt"); }
     tasks[srv].uid = 0;
-    /* Provision the server: an endpoint cap for the IPC gate (slot 3) and for
-     * registration (slot 4, bound to FS_EP_REQ), a CAP_USER admin cap (slot 6)
-     * for SYS_REGISTER_FS_SERVER, and an all-rights cap (slot 7) to satisfy the
-     * object-store gate. */
+    /* Provision the server: its listen endpoint (bound to FS_EP_REQ), a
+     * CAP_USER admin cap (slot 6) for the account list, and the object-store
+     * capability. */
     cap_install_from_root(srv, CAPSLOT_FS_LISTEN, 13, FS_EP_REQ);  /* fs listen (READ|WRITE) */
     cap_install_from_root(srv, 6, 6, 0);          /* root_cnode[6] = CAP_USER (ALL) */
     /* The object-store capability, BY TYPE (finding I-1). This used to install
@@ -2958,6 +2961,8 @@ void fs_selftest(void) {
         if (c <= 0) { print("CONC_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
         tasks[c].uid       = 0;
         tasks[c].spawn_arg = (uint32_t)i;       /* 0 = coordinator, 1..3 = workers */
+        /* Each mints its own root from this (fsclient fs_root). */
+        cap_install_from_root(c, 30, 13, FS_EP_REQ);
         /* Only the coordinator polls the OTHER clients' task state to know when
          * they have finished. Cross-task introspection now requires a real
          * CAP_AUDIT (finding I-1) — it used to work merely because the caller was
@@ -2972,10 +2977,12 @@ void fs_selftest(void) {
     int cli = fs_spawn_embedded(embedded_fsclient_bin_start, embedded_fsclient_bin_end, "fsclient");
     if (cli <= 0) { print("FS_SELFTEST: FAIL spawn-client\n"); for (;;) asm volatile("hlt"); }
     tasks[cli].uid = 0;
-    /* No endpoint endowment needed: the client acquires a WRITE-only capability
-     * to the fs service itself via SYS_CONNECT_FS_SERVER (into CAPSLOT_FS_EP).
-     * That is now the only way a client reaches a server — the ambient slot-3
-     * endpoint capability this used to rely on no longer exists (finding C-1). */
+    /* An untokened capability to the fs service's endpoint with MINT, the kernel
+     * standing in for init: the client mints the root directory's capability
+     * from it (fsclient fs_root). Since phase 1b step 6 that is the only way a
+     * client reaches fs_server; SYS_CONNECT_FS_SERVER, which handed any task a
+     * WRITE-only copy to be served by its uid, is withdrawn. */
+    cap_install_from_root(cli, 30, 13, FS_EP_REQ);
 #endif
 
     /* Launch the server; when it blocks in IPC the full-context path runs the
@@ -3191,9 +3198,8 @@ void newlib_selftest(void) {
 
     /* Bring up the userspace fs_server so the client can exercise the real
      * newlib file paths (open/write/close/unlink). Provisioned exactly as in
-     * fs_selftest: an endpoint cap for the IPC gate (slot 3) and registration
-     * (slot 4, bound to FS_EP_REQ), a CAP_USER admin cap (slot 6), and an
-     * all-rights cap (slot 7) for the object-store gate. */
+     * fs_selftest: its listen endpoint (bound to FS_EP_REQ), a CAP_USER admin
+     * cap (slot 6), and the object-store capability. */
     int srv = fs_spawn_embedded(embedded_fsserver_bin_start, embedded_fsserver_bin_end, "fsserver");
     if (srv <= 0) { print("NEWLIB_SELFTEST: FAIL spawn-server\n"); for (;;) asm volatile("hlt"); }
     tasks[srv].uid = 0;
@@ -3211,9 +3217,10 @@ void newlib_selftest(void) {
         for (;;) asm volatile("hlt");
     }
     tasks[pid].uid = 0;
-    /* The client acquires its fs capability itself via SYS_CONNECT_FS_SERVER
-     * (the RAM store is auto-unlocked at boot and the client is kernel-attested
-     * uid 0, so no login is needed). */
+    /* An untokened capability to fs_server's endpoint with MINT, the kernel
+     * standing in for init: hello_newlib mints its root from it before
+     * posix_init (its own _start), as fscapposix does. */
+    cap_install_from_root(pid, 30, 13, FS_EP_REQ);
 
     /* Enter the server; when it blocks in IPC recv the full-context path runs
      * the client, whose FS requests wake the server. Does not return. */
@@ -3491,7 +3498,7 @@ void captest_selftest(void) {
      * already holds its private reply endpoint (slot 4) from create_task.
      *
      *  slot 5  — a WRITE-ONLY endpoint capability, i.e. a CLIENT capability, the
-     *            shape SYS_CONNECT_FS_SERVER mints. captest asserts it permits
+     *            shape every client's copy has. captest asserts it permits
      *            send and REFUSES recv / reply_to / sender: those refusals are
      *            the interception and reply-forgery halves of C-1.
      *  slot 11 — a CAP_NOTIFICATION, so the type-separation checks can prove an

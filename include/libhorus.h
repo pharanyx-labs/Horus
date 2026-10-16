@@ -224,8 +224,9 @@ int hvfs_walk_parent(const char *path, uint32_t cwd_ino, int cwd_slot,
 /* ---- walking by capability (filesystem phase 1b step 2) --------------------
  *
  * An object a path resolved to: the slot a request about it is sent through,
- * and the inode to put in the request. Through the uid path that is the mount's
- * endpoint slot and a real inode. Through a capability mount it is a directory
+ * and the inode to put in the request. Through an endpoint mount (another
+ * server's, hvfs_mount) that is the mount's endpoint slot and a real inode.
+ * Through a capability mount it is a directory
  * or file CAPABILITY and the inode is 0, because the server takes the object
  * from the capability's token and never from the request (S120).
  *

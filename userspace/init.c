@@ -16,8 +16,8 @@
  *
  * init is the delegation root for the system's servers. At boot it:
  *   1. launches the userspace fs_server and provisions it entirely by delegation
- *      (SYS_CAP_GRANT of the IPC gate, listen endpoint, CAP_USER for
- *      registration, and the object-store cap) — no direct kernel cap installs;
+ *      (SYS_CAP_GRANT of the listen endpoint, CAP_USER for the account list,
+ *      and the object-store cap) — no direct kernel cap installs;
  *   2. launches the shell, delegates it CAP_CONSOLE + CAP_ENCRYPTED_STORAGE, and
  *      supervises it with a blocking SYS_WAIT, relaunching it if it exits/faults.
  *
@@ -313,7 +313,7 @@ static void report_storage(void) {
 
 /* Slots init holds its delegable caps in, matching the kernel endowment in
  * spawn_initial_userspace_init(). */
-#define CAP_SLOT_USER       6    /* CAP_USER admin cap (SYS_REGISTER_FS_SERVER gate) */
+#define CAP_SLOT_USER       6    /* CAP_USER admin cap (fs_server's account list) */
 #define CAP_SLOT_CONSOLE    8    /* CAP_CONSOLE                                      */
 #define CAP_SLOT_STORAGE    9    /* CAP_ENCRYPTED_STORAGE (also the object-store cap)*/
 #define INIT_FS_LISTEN      11   /* CAP_ENDPOINT FS_EP_REQ,  READ|WRITE (fs listen)  */
@@ -402,10 +402,10 @@ static void __attribute__((unused)) init_slots_distinct(int slot)
 }
 
 /* Launch the userspace fs_server and provision it entirely by delegation: init
- * grants the server all four capabilities it needs — the coarse IPC gate (slot
- * 3), its listen endpoint (slot 4, so SYS_REGISTER_FS_SERVER binds it), the
- * CAP_USER that gates registration (slot 6), and the object-store cap (slot 7) —
- * with no direct kernel cap installs. The grants are authorised because init is
+ * grants the server the capabilities it needs — its listen endpoint, the
+ * CAP_USER that reads the account list (SYS_USERLIST), the object-store cap,
+ * the ready notification and the boot modules — with no direct kernel cap
+ * installs. The grants are authorised because init is
  * uid 0 and holds the server's CAP_TCB from the spawn. Returns the server's task
  * id, or a negative value on a spawn/grant failure. */
 static int launch_fs_server(void) {
@@ -413,8 +413,10 @@ static int launch_fs_server(void) {
     if (srv <= 0) return -1;
     /* The fs LISTEN capability (carries READ, the receive right) goes to the
      * server and to nobody else — that is what makes it, and only it, able to
-     * dequeue requests and answer them with SYS_IPC_REPLY_TO. Clients get a
-     * WRITE-only capability from SYS_CONNECT_FS_SERVER instead.
+     * dequeue requests and answer them with SYS_IPC_REPLY_TO. A client holds a
+     * tokened capability derived from the root below, and nothing else: the
+     * WRITE-only copy SYS_CONNECT_FS_SERVER once handed any task is withdrawn
+     * (phase 1b step 6).
      *
      * A COPY WITHOUT MINT (phase 1b): init's own carries MINT, to make the root
      * directory's capability below; the server's must not, so it can only
@@ -427,7 +429,7 @@ static int launch_fs_server(void) {
                              CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE | CAP_RIGHT_MINT |
                              FS_R_ALL,
                              fs_token(0, 0));
-    if (sys_cap_grant(srv, CAP_SLOT_USER,  CAPSLOT_USER)      != 0) return -3;  /* registration gate */
+    if (sys_cap_grant(srv, CAP_SLOT_USER,  CAPSLOT_USER)      != 0) return -3;  /* account list     */
     if (sys_cap_grant(srv, CAP_SLOT_STORAGE, CAPSLOT_AUDIT)   != 0) return -4;  /* object store      */
     if (sys_cap_grant(srv, INIT_NOTIFY,    CAPSLOT_NOTIFY)    != 0) return -5;  /* ready rendezvous  */
     /* Boot-module read surface. Formerly ambient uid==0 (finding I-1); now an
@@ -1006,8 +1008,9 @@ static int launch_shell(void) {
      * capability (phase 1b step 2) and so does everything it runs. Ordinary
      * sessions get their grants from the policy in step 3 and nothing before;
      * this exists so step 2's shell can be witnessed through a real session.
-     * Read-only on purpose: the session is root, so on the uid path every write
-     * would succeed, and a refused one shows the capability decided. */
+     * Read-only on purpose: the session is root, the identity the uid path let
+     * write anywhere before step 6, so a refused write shows the capability
+     * decided. */
     if (sys_cap_mint(INIT_FS_SHELL_RO, INIT_FS_ROOT,
                      CAP_RIGHT_WRITE | CAP_RIGHT_GRANT | CAP_RIGHT_REVOKE | CAP_RIGHT_MINT |
                      FS_R_READ | FS_R_LOOKUP | FS_R_EXEC) != 0 ||
@@ -1021,10 +1024,11 @@ static int launch_shell(void) {
     /* The shell may ask for its session only while init is listening for it,
      * which is while a watcher waits on the shell in init's place. Without one,
      * init blocks in SYS_WAIT and would never answer, so the shell is given no
-     * way to ask and reaches files by the uid path, as before step 3(b). */
+     * way to ask, and every login is ended for want of a session (phase 1b step
+     * 6: there is no other way to reach a file). */
 #ifndef INIT_SHELL_ROOT_READONLY
     if (wrc == 0 && sys_cap_grant(sh, INIT_SESS_SHELL, SESS_SHELL_SLOT) != 0)
-        report("init: could not give the shell its session capability; the uid path it is\n");
+        report("init: could not give the shell its session capability; no login will reach a file\n");
 #else
     /* The instrument's read-only root above is what smoke-fs-cap-shell
      * measures; a session at login would replace it with the policy's. */
@@ -1289,6 +1293,11 @@ void _start(void) {
     if (cli <= 0) { report("INIT_FS_SELFTEST: FAIL spawn-client\n"); for (;;) settle(); }
     if (sys_cap_grant(cli, INIT_CON_CLIENT, CAPSLOT_CONSOLE_EP) != 0) {
         report("INIT_FS_SELFTEST: FAIL grant-client\n"); for (;;) settle();
+    }
+    /* Its root, as any spawner grants one (decision 10): a copy of init's own,
+     * every right. Since phase 1b step 6 there is no other way to the files. */
+    if (sys_cap_grant(cli, INIT_FS_ROOT, CAPSLOT_FS_ROOT) != 0) {
+        report("INIT_FS_SELFTEST: FAIL grant-client-root\n"); for (;;) settle();
     }
     if (sys_task_resume(cli) != 0) { report("INIT_FS_SELFTEST: FAIL resume-client\n"); for (;;) settle(); }
     sys_wait(cli);   /* block until the client finishes driving the server */

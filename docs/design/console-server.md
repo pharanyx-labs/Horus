@@ -235,12 +235,13 @@ Modelled directly on `fs_server` (`userspace/fs_server.c`).
 ## 6. Client cutover
 
 `SYS_WRITE`, `SYS_GET_LINE`, `SYS_READ`, `SYS_GET_PASS` (`src/kernel/syscall.c`) become thin IPC
-shims to `console_server`, or clients connect and call it directly. Add
-`SYS_CONNECT_CONSOLE_SERVER`, modelled on `h_connect_fs_server` (`src/kernel/syscall_fs.c`), so
-any task can obtain an endpoint cap; the server is a reference monitor. The console is a shared
-resource, so kernel-attested identity matters mostly for **reply routing** (`SYS_IPC_REPLY_TO`
-delivers each reply into the requesting client's blocked call, never a shared mailbox) rather
-than for authorisation, but the attested-identity discipline is kept.
+shims to `console_server`, or clients call it directly through the console capability `init`
+grants them (`CAPSLOT_CONSOLE_EP`, S135). There is no connect call: a task reaches the console only
+through a capability something handed it, never by asking, as the filesystem's
+`SYS_CONNECT_FS_SERVER` once allowed until it was withdrawn in its phase 1b step 6. The console is
+a shared resource, so kernel-attested identity matters mostly for **reply routing**
+(`SYS_IPC_REPLY_TO` delivers each reply into the requesting client's blocked call, never a shared
+mailbox) rather than for authorisation.
 
 The ring-3 shell (`userspace/shell.c`) needs **no logic change**: its `println` /
 `sys_get_line` / `sys_get_pass` calls traverse IPC transparently.

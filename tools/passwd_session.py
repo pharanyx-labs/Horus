@@ -33,7 +33,8 @@ the volume (root's password must still open it: root's login alone proves
 nothing, since the compiled-in account table answers it while the volume is
 locked), and boot 3 logs bob in first and requires his old password refused and
 his new one to open the volume. PASSWD_EXPECT_FIRST_SLOT=1 is that defect's arm:
-boot 2's `ls` must say it cannot read the volume.
+root's login on boot 2 must open no volume, so the shell ends it for want of a
+session (or, were it to reach a prompt, `ls` must say it cannot read the volume).
 
 Usage:  passwd_session.py [horus.iso]
 Env:    SESSION_DISK    the disk image; REQUIRED, and the same one for both boots
@@ -50,6 +51,7 @@ Exit:   0 and "PASSWD_SESSION: PASS"; 1 and a FAIL line otherwise.
 """
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from session_test import Serial, SessionFail  # noqa: E402
@@ -70,20 +72,46 @@ def step(msg):
     print(f"PASSWD_SESSION: ok - {msg}", flush=True)
 
 
-def login(s, user, pw, timeout=STEP):
-    """Try one login. Returns True on a shell prompt, False on a refusal."""
+def login_state(s, user, pw, timeout=STEP):
+    """Try one login. Returns "prompt" on a shell prompt, "incorrect" on a
+    refusal of the password, and "ended" when the password was accepted but
+    the shell ended the login because no filesystem session opened for it
+    (phase 1b step 6: a login whose volume did not open is one). Each is a line
+    the shell printed; silence raises, so a boot that got nowhere is none of
+    them. Until 2026-10-16 a timeout here read as a refusal."""
     s.expect("horus login:", timeout)
     s.send(user)
     s.expect("Password:", timeout)
+    start = s.pos
     s.send(pw)
-    try:
-        # "@horus" and not "@horus#": the prompt's last character is the uid --
-        # `#` for root and `$` for everyone else -- so matching the root form
-        # would make every non-root login in this file look like a refusal.
-        s.expect("@horus", timeout)
-        return True
-    except SessionFail:
-        return False
+    # "@horus" and not "@horus#": the prompt's last character is the uid --
+    # `#` for root and `$` for everyone else -- so matching the root form
+    # would make every non-root login in this file look like a refusal.
+    needles = (("@horus", "prompt"), ("Login incorrect", "incorrect"),
+               ("Login ended.", "ended"))
+    deadline = time.time() + timeout
+    while True:
+        hits = [(s.buf.find(n, s.pos), n, what) for n, what in needles]
+        hits = [h for h in hits if h[0] >= 0]
+        if hits:
+            idx, n, what = min(hits)
+            s.pos = idx + len(n)
+            if what == "ended" and "No filesystem session could be opened" not in s.buf[start:s.pos]:
+                raise SessionFail("%s's login was ended, but not for want of a session" % user)
+            return what
+        if time.time() >= deadline:
+            raise SessionFail("no answer to %s's login: no prompt, refusal or ended login" % user)
+        s._pump(0.25)
+
+
+def login(s, user, pw, timeout=STEP):
+    """Try one login. Returns True on a shell prompt, False on a refusal; a
+    login ended for want of a session is neither, and raises."""
+    what = login_state(s, user, pw, timeout)
+    if what == "ended":
+        raise SessionFail("%s's password was accepted, but no filesystem session "
+                          "opened for the login" % user)
+    return what == "prompt"
 
 
 def refused(s, user, pw, timeout=STEP):
@@ -106,9 +134,8 @@ def volume_listed(s):
     s.send("ls /")
     s.expect("@horus", STEP)
     out = s.buf[start:s.pos]
-    # A locked volume answers in one of two ways, depending on whether the
-    # shell lists by capability or by the uid path: fs_server cannot stat the
-    # root of a volume it cannot read, or the uid path says it is not unlocked.
+    # A locked volume answers in one of two ways: fs_server cannot stat the
+    # root of a volume it cannot read, or the shell reports it not unlocked.
     if "the volume is not unlocked" in out or "ls: no such directory: /" in out:
         return False
     if "bin/" in out:
@@ -186,12 +213,16 @@ def boot2():
                     "CONTROL: the volume did not re-seal to the other account's password")
             step("CONTROL: the volume opens with the password meant for another account")
         else:
-            if not login(s, "root", ROOT_PW, BOOT):
+            # root's login answers from the compiled-in table even when the
+            # volume stays locked, so the volume's answer is asked separately:
+            # since phase 1b step 6 a login the volume did not open for has no
+            # session and is ended before its prompt, and otherwise `ls /`
+            # says whether the volume answers.
+            what = login_state(s, "root", ROOT_PW, BOOT)
+            if what == "incorrect":
                 raise SessionFail(
                     "the volume no longer opens with the password it was sealed to")
-            # root's login answers from the compiled-in table even when the
-            # volume stays locked, so the volume's answer is asked separately.
-            listed = volume_listed(s)
+            listed = what == "prompt" and volume_listed(s)
             if FIRST_SLOT:
                 if listed:
                     raise SessionFail(

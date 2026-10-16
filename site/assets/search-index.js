@@ -217,12 +217,6 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "1.31Findings from a source review",
-"p": "Limitations",
-"u": "limitations.html#source-review-findings",
-"k": 3
-},
-{
 "t": "1.33A revocation cannot reach through a task that has died",
 "p": "Limitations",
 "u": "limitations.html#1-33a-revocation-cannot-reach-through-a-task-that-has-died",

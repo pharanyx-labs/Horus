@@ -19,10 +19,9 @@
  *   - revoking a directory's capability revokes it and everything opened
  *     through it, and leaves the capability it came from working;
  *   - a rename or link that would give an object a name in a second directory
- *     is refused EXDEV, through a capability and through the identity path
- *     alike (step 5, decision 11; `cross-dir-rename` is the check the control
- *     arm FS_XDEV_UNCHECKED=1 must turn red), while a rename within one
- *     directory works and needs both CREATE and DELETE there;
+ *     is refused EXDEV (step 5, decision 11; `cross-dir-rename` is the check
+ *     the control arm FS_XDEV_UNCHECKED=1 must turn red), while a rename within
+ *     one directory works and needs both CREATE and DELETE there;
  *   - a session (step 3(a), §6.4, decision 13) reaches only what its grants
  *     name: an ordinary account's root lists only the paths that lead to its
  *     grants and refuses every other name NOENT (`session-reached-ungranted` is
@@ -52,6 +51,7 @@
 #include "fs_proto.h"
 #include "libhorus.h"
 
+#define SLOT_M      29    /* the file the move checks move */
 #define SLOT_PLAIN  30
 #define SLOT_ROOT   31
 #define SLOT_DIR    32
@@ -179,14 +179,17 @@ static uint32_t rights_of(unsigned slot)
 }
 
 /* The permission bits a stat through `slot` reports, or 0xFFFFFFFF if it
- * failed or did not name the caller as the owner (§7.1: uid and gid say "you"). */
-static uint32_t mode_of(unsigned slot)
+ * failed or did not name `uid` as the owner. §7.1: uid and gid say "you", and
+ * "you" is the account the capability's session was opened for, never who
+ * sent the request (phase 1b step 6). This task is uid 0 and opens sessions
+ * for other accounts, so the two differ here, which is the point. */
+static uint32_t mode_of(unsigned slot, uint32_t uid)
 {
     struct fs_request rq;
     fill(&rq, FS_OP_STAT, 0);
     if (call(slot, IPC_NO_CAP, &rq) != 0) return 0xFFFFFFFFu;
     const struct fs_response *rp = (const struct fs_response *)rbuf;
-    if (rp->uid != sys_getuid()) return 0xFFFFFFFFu;
+    if (rp->uid != uid) return 0xFFFFFFFFu;
     return rp->mode & 07777u;
 }
 
@@ -346,17 +349,20 @@ static void sessions(void)
     /* THE TRUTHFUL VIEW (§7.1, S130): owner bits are the capability's rights,
      * other bits the bound on everyone else's. A file in its own home is its
      * alone; /bin is read and run by every account. */
-    if (mode_of(SLOT_SF) != 0700u) fail("session-stat-home-not-private");
-    if (mode_of(SLOT_SBIN) != 0505u) fail("session-stat-bin-not-shared");
+    if (mode_of(SLOT_SF, 1000u) != 0700u) fail("session-stat-home-not-private");
+    if (mode_of(SLOT_SBIN, 1000u) != 0505u) fail("session-stat-bin-not-shared");
     ok();
 
     /* CHMOD AND CHOWN SUCCEED WHEN THEY ASK FOR WHAT IS TRUE (§7.2, S131), and
      * change nothing: the file is the user's alone, so 600 and 700 are true,
-     * and so is a chown to the caller itself. */
+     * and so is a chown to the session's own account. A chown to the uid of the
+     * task asking (0, here) is not: who sends a request decides nothing. */
     if (chmod_rc(SLOT_SF, 0600u) != 0) fail("session-chmod-600-private-refused");
     if (chmod_rc(SLOT_SF, 0700u) != 0) fail("session-chmod-700-private-refused");
-    if (chown_rc(SLOT_SF, sys_getuid(), 0xFFFFFFFFu) != 0) fail("session-chown-self-refused");
-    if (mode_of(SLOT_SF) != 0700u) fail("session-chmod-stored-something");
+    if (chown_rc(SLOT_SF, 1000u, 0xFFFFFFFFu) != 0) fail("session-chown-self-refused");
+    if (sys_getuid() == 1000u || chown_rc(SLOT_SF, sys_getuid(), 0xFFFFFFFFu) != SYS_ERR_PERM)
+        fail("session-chown-to-sender-succeeded");
+    if (mode_of(SLOT_SF, 1000u) != 0700u) fail("session-chmod-stored-something");
     ok();
 
     /* LINK WITHIN ONE DIRECTORY (step 4(c), S132). The file goes with the
@@ -406,7 +412,7 @@ static void sessions(void)
     }
     if (walk1(SLOT_SROOT, SLOT_SX, FS_SESSION_TMP_STORE_NAME, 0) != SYS_ERR_NOENT)
         fail("session-tmp-store-visible-to-user");
-    if (mode_of(SLOT_STMP) != 0700u) fail("session-stat-tmp-not-private");
+    if (mode_of(SLOT_STMP, 1000u) != 0700u) fail("session-stat-tmp-not-private");
     ok();
 
     /* THE KERNEL STILL BOUNDS IT: a read-only copy of the root walks to the home
@@ -453,7 +459,7 @@ static void sessions(void)
     if (walk1(SLOT_AROOT, SLOT_AX, "home", "user") != 0) fail("session-admin-walk-home");
     fill(&rq, FS_OP_LOOKUP, "notes");
     if (call(SLOT_AX, SLOT_TX, &rq) != 0) fail("session-admin-lookup-notes");
-    if (mode_of(SLOT_TX) != 0707u) fail("session-stat-admin-bound-low");
+    if (mode_of(SLOT_TX, 0u) != 0707u) fail("session-stat-admin-bound-low");
     /* ... AND ARE REFUSED WHEN THEY DO NOT. The user reaches this file too, so
      * a chmod 600 that would claim otherwise fails (the design's step 4 gate),
      * and so does every mode that is not exactly true, and a chown to anyone
@@ -465,7 +471,7 @@ static void sessions(void)
     if (chown_rc(SLOT_TX, 1000u, 0xFFFFFFFFu) != SYS_ERR_PERM) fail("session-chown-away-succeeded");
     if (sys_cap_revoke(SLOT_TX) != 0 || sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke3");
     if (walk1(SLOT_AROOT, SLOT_AX, "etc", 0) != 0) fail("session-admin-walk-etc");
-    if (mode_of(SLOT_AX) != 0700u) fail("session-stat-admin-etc-not-private");
+    if (mode_of(SLOT_AX, 0u) != 0700u) fail("session-stat-admin-etc-not-private");
     if (chmod_rc(SLOT_AX, 0705u) != SYS_ERR_PERM) fail("session-chmod-looser-succeeded");
     if (sys_cap_revoke(SLOT_AX) != 0) fail("session-admin-revoke4");
     ok();
@@ -486,8 +492,8 @@ static void sessions(void)
     ok();
 
     /* ONLY THROUGH THE UNTOKENED CAPABILITY HOLDING MINT. A WRITE-only copy of
-     * it (what SYS_CONNECT_FS_SERVER hands a client) is refused, and so is any
-     * tokened capability, however wide. */
+     * it (what SYS_CONNECT_FS_SERVER handed every client until phase 1b step 6)
+     * is refused, and so is any tokened capability, however wide. */
     if (sys_cap_mint(SLOT_SNOW, SLOT_PLAIN, CAP_RIGHT_WRITE) != 0) fail("session-mint-nomint");
     fill(&rq, FS_OP_SESSION, 0);
     rq.arg_uid = 1000;
@@ -662,11 +668,13 @@ void _start(void)
     }
     ok();
 
-    /* EVERY NAME IS CHECKED, not only the first. The uid path (until step 6)
-     * will make an entry called ".." inside wa, so a server that checked only the
-     * first name would find it and hand back a capability to it, which is the
-     * defect FS_WALK_NAMES_UNCHECKED=1 puts back. Its result is not asserted:
-     * the refusals below must hold whether or not it was made. */
+    /* EVERY NAME IS CHECKED, not only the first. Before step 6 the uid path
+     * would make an entry called ".." inside wa, so a server that checked only
+     * the first name would find it and hand back a capability to it, which is
+     * the defect FS_WALK_NAMES_UNCHECKED=1 puts back; with no such entry the
+     * arm's walk answers NOENT where INVAL is due. The attempt stays, refused
+     * now, and its result is not asserted: the refusals below must hold whether
+     * or not it was made. */
     fill(&rq, FS_OP_MKDIR, "..");
     rq.dir_ino = wa_ino;
     (void)call(SLOT_PLAIN, IPC_NO_CAP, &rq);
@@ -695,7 +703,7 @@ void _start(void)
     ok();
 
     /* Each step is a LOOKUP: through a file is refused, a missing name is
-     * NOENT, and the uid path has no walk at all. */
+     * NOENT. */
     {
         const char *thru[] = { "wa", "wb", "wf", "x" };
         const char *miss[] = { "wa", "nope" };
@@ -704,7 +712,8 @@ void _start(void)
         fill_walk(&rq, miss, 2);
         if (call(SLOT_DIR, SLOT_WSCRAP, &rq) != SYS_ERR_NOENT) fail("walk-missing");
         fill_walk(&rq, thru, 1);
-        if (call(SLOT_PLAIN, IPC_NO_CAP, &rq) != SYS_ERR_NOSYS) fail("walk-on-uid-path");
+        /* Through an untokened capability nothing but a session is answered. */
+        if (call(SLOT_PLAIN, IPC_NO_CAP, &rq) != SYS_ERR_PERM) fail("walk-through-untokened");
     }
     /* More names than one request holds: the client is told, not truncated. */
     {
@@ -742,41 +751,28 @@ void _start(void)
     /* MOVES (step 5). Two directories, a file in the first. */
     fill(&rq, FS_OP_MKDIR, "mva");
     if (call(SLOT_ROOT, SLOT_MVA, &rq) != 0) fail("mkdir-mva");
-    uint32_t a_ino = ((struct fs_response *)rbuf)->ino;
     fill(&rq, FS_OP_MKDIR, "mvb");
     if (call(SLOT_ROOT, SLOT_MVB, &rq) != 0) fail("mkdir-mvb");
     uint32_t b_ino = ((struct fs_response *)rbuf)->ino;
     fill(&rq, FS_OP_CREATE, "m");
-    if (call(SLOT_MVA, IPC_NO_CAP, &rq) != 0) fail("create-m");
-    uint32_t m_ino = ((struct fs_response *)rbuf)->ino;
+    if (call(SLOT_MVA, SLOT_M, &rq) != 0) fail("create-m");
 
-    /* Across directories, through the identity path: refused, and the file
-     * stays where it was. */
+    /* Across directories: a rename naming a second directory is refused, and
+     * the file stays where it was. A link carrying the file into a directory
+     * that holds no name for it is refused too. */
     fill(&rq, FS_OP_RENAME, "m");
-    rq.dir_ino = a_ino;
     rq.ino = b_ino;
     rq.data[0] = 'n';
-    if (call(SLOT_PLAIN, IPC_NO_CAP, &rq) != SYS_ERR_XDEV) fail("cross-dir-rename");
+    if (call(SLOT_MVA, IPC_NO_CAP, &rq) != SYS_ERR_XDEV) fail("cross-dir-rename");
     fill(&rq, FS_OP_LOOKUP, "m");
     if (call(SLOT_MVA, IPC_NO_CAP, &rq) != 0) fail("cross-dir-rename-moved-it");
-    fill(&rq, FS_OP_LINK, "l");
-    rq.dir_ino = b_ino;
-    rq.ino = m_ino;
-    if (call(SLOT_PLAIN, IPC_NO_CAP, &rq) != SYS_ERR_XDEV) fail("cross-dir-link");
+    if (link_rc(SLOT_MVB, SLOT_M, "l") != SYS_ERR_XDEV) fail("cross-dir-link");
     /* A second name beside the first is not a move. */
-    fill(&rq, FS_OP_LINK, "l");
-    rq.dir_ino = a_ino;
-    rq.ino = m_ino;
-    if (call(SLOT_PLAIN, IPC_NO_CAP, &rq) != 0) fail("same-dir-link");
+    if (link_rc(SLOT_MVA, SLOT_M, "l") != 0) fail("same-dir-link");
     ok();
 
-    /* Through a capability: a request naming a second directory is EXDEV, a
-     * rename within the capability's directory works, and it needs DELETE as
+    /* Within the capability's directory a rename works, and it needs DELETE as
      * well as CREATE. */
-    fill(&rq, FS_OP_RENAME, "m");
-    rq.ino = b_ino;
-    rq.data[0] = 'n';
-    if (call(SLOT_MVA, IPC_NO_CAP, &rq) != SYS_ERR_XDEV) fail("cap-cross-dir-rename");
     if (sys_cap_mint(SLOT_CRONLY, SLOT_MVA, CAP_RIGHT_WRITE | FS_R_CREATE | FS_R_LOOKUP) != 0)
         fail("mint-create-only");
     fill(&rq, FS_OP_RENAME, "m");

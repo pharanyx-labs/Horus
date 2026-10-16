@@ -56,24 +56,25 @@ control_arms:
   smoke-captest-split-control: smoke-captest
   smoke-captest-storage-format-control: smoke-captest
   smoke-captest-userlist-control: smoke-captest
+  smoke-captest-setmeta-control: smoke-captest
   smoke-installer-refuse-control: smoke-installer-refuse
   smoke-installer-provision-control: smoke-installer-provision
   smoke-installer-accounts-control: smoke-installer-accounts
   smoke-installer-policy-noseed-control: smoke-installer-policy
   smoke-installer-policy-reseed-control: smoke-installer-policy
+  smoke-installer-policy-nogrant-control: smoke-installer-policy
   smoke-installer-target-control: smoke-installer-target
   smoke-passwd-target-control: smoke-passwd-target
   smoke-passwd-own-control: smoke-passwd-target
   smoke-session-fs-err-control: smoke-session
   smoke-shellwatch-control: smoke-shellwatch
   smoke-session-login-control: smoke-session
+  smoke-session-home-control: smoke-session
   smoke-session-handover-control: smoke-session-handover
   smoke-session-handover-stale-control: smoke-session-handover
   smoke-session-admin-caps-control: smoke-session-admin-caps
   smoke-session-admin-caps-launch-control: smoke-session-admin-caps
-  smoke-fs-perms-chmod-control: smoke-fs-perms
-  smoke-fs-perms-chown-control: smoke-fs-perms
-  smoke-fs-perms-home-control: smoke-fs-perms
+  smoke-fs-perms-uid-control: smoke-fs-perms
   smoke-session-usage-control: smoke-session
   smoke-session-hardlink-control: smoke-session
   smoke-kstack-imp-control: smoke-kstack-imp
@@ -127,7 +128,7 @@ control_arms:
   smoke-fs-policy-pass-control: smoke-fs-policy
   smoke-fs-cap-posix-close-control: smoke-fs-cap-posix
   smoke-fs-cap-posix-grant-control: smoke-fs-cap-posix
-  smoke-fs-cap-shell-fallback-control: smoke-fs-cap-shell
+  smoke-fs-cap-shell-rights-control: smoke-fs-cap-shell
   smoke-auditprobe-control: smoke-auditprobe
   smoke-auditprobe-abi-control: smoke-auditprobe
   smoke-blockprobe-control: smoke-blockprobe

@@ -129,8 +129,8 @@ struct task_info {
 #define SYS_REGISTER_STORAGE_BACKEND 46
 #define SYS_BLOCK_READ   47
 #define SYS_BLOCK_WRITE  48
-#define SYS_REGISTER_FS_SERVER 49
-#define SYS_CONNECT_FS_SERVER  50
+#define SYS_REGISTER_FS_SERVER 49   /* withdrawn 2026-10-16 (phase 1b step 6): SYS_ERR_NOSYS to every caller */
+#define SYS_CONNECT_FS_SERVER  50   /* withdrawn 2026-10-16 (phase 1b step 6): SYS_ERR_NOSYS to every caller */
 /* Capability-algebra syscalls. 4/8/9 predate the SYS_* naming and lived in the
  * dispatch table as bare numeric literals until roadmap 2.1 needed to CALL one
  * from ring 3: SYS_CAP_MINT is how a task narrows a capability's rights before
@@ -170,7 +170,7 @@ struct task_info {
 #define SYS_EXEC_IMAGE         71   /* (image, len, 0, argv, argc) -> replace the caller's own image with a caller-supplied one; no return on success */
 #define SYS_SIGALTSTACK        72   /* (ss_sp, ss_size) -> 0; register this task's alternate signal stack (ss_size 0 disables) */
 #define SYS_IPC_SENDER         73   /* (ep, uint32_t *out_gid) -> uid; kernel-attested identity of an endpoint's last sender */
-#define SYS_FS_SET_META        74   /* (ino, mode, uid, gid) -> 0; persist an inode's owner/mode (fs server only) */
+#define SYS_FS_SET_META        74   /* withdrawn 2026-10-16 (phase 1b step 6): SYS_ERR_NOSYS to every caller */
 #define SYS_IPC_REPLY_TO       75   /* (req_ep, msg, len) -> 0; reply to the last sender on req_ep (multi-client safe routing) */
 #define SYS_FS_INODE_LINK      76   /* (ino) -> 0; increment an inode's hard-link count (fs server only) */
 #define SYS_BOOT_MODULE_INFO   77   /* (index, struct boot_module_info*) -> total module count; fills *info for a valid index (store owner only) */
@@ -530,7 +530,7 @@ static inline int sys_console_owned(void) {
  *
  * A task is born with exactly one endpoint capability: its own private reply
  * endpoint. Everything else arrives by delegation (SYS_CAP_GRANT from a
- * supervisor, propagation at spawn, or SYS_CONNECT_FS_SERVER). */
+ * supervisor, or propagation at spawn). */
 /* Capability rights, mirroring src/include/kernel.h. These are ABI in the same
  * sense the CAPSLOT_* numbers are: the kernel compares against these exact bits,
  * so the two lists must not drift. Ring 3 needs them because SYS_CAP_MINT and
@@ -572,7 +572,7 @@ static inline int sys_console_owned(void) {
 #define CAPSLOT_REPLY      21    /* CAP_REPLY: one-shot right to answer the
                                  * request just received (minted by RECV,
                                  * consumed by REPLY_TO). Server-side only. */
-#define CAPSLOT_FS_EP      20    /* CAP_ENDPOINT: fs service (sys_connect_fs_server) */
+#define CAPSLOT_FS_EP      20    /* CAP_ENDPOINT: a mounted filesystem service (hvfs_mount) */
 /* The kernel puts the capabilities it allocates for a task (pipe ends, a child's
  * CAP_TCB) at or above this slot, never in one of the well-known slots above, so
  * nothing the kernel later installs there can land on top of them. 24 to 63 are
@@ -584,8 +584,8 @@ static inline int sys_console_owned(void) {
  * directory capability walks by capability alone: hvfs mints each file's and
  * directory's capability into the pool 32..63, which the kernel never allocates
  * in. A program that fills those slots itself must not also hold a root here.
- * A task with nothing in CAPSLOT_FS_ROOT reaches files by the uid path, as
- * before, until step 6 removes it. */
+ * A task with nothing in CAPSLOT_FS_ROOT reaches no file at all: the uid path
+ * it once fell back to was removed in phase 1b step 6. */
 #define CAPSLOT_FS_ROOT       24
 #define CAPSLOT_FS_CWD        25
 #define CAPSLOT_FS_POOL_FIRST 32
@@ -1665,14 +1665,6 @@ static inline int sys_block_write(uint64_t block, const void *buf, uint32_t len)
     return (int)syscall6(SYS_BLOCK_WRITE, (uint32_t)(block >> 32), (uint32_t)block, (uint64_t)(uintptr_t)buf, len, 0, 0);
 }
 
-static inline int sys_register_fs_server(uint32_t ep_slot) {
-    return syscall(SYS_REGISTER_FS_SERVER, ep_slot, 0, 0);
-}
-
-static inline int sys_connect_fs_server(uint32_t dest_slot, uint32_t rights) {
-    return syscall(SYS_CONNECT_FS_SERVER, dest_slot, rights, 0);
-}
-
 
 static inline int sys_cap_revoke(uint32_t slot) {
     return syscall(SYS_CAP_REVOKE, slot, 0, 0);
@@ -1745,13 +1737,6 @@ static inline int sys_fs_stat(uint32_t ino, struct fs_stat *out) {
  * stores fixed-size encrypted blocks). Returns 0 or a negative SYS_ERR_*. */
 static inline int sys_fs_set_size(uint32_t ino, uint32_t size) {
     return syscall(SYS_FS_SET_SIZE, ino, size, 0);
-}
-
-/* Persist an inode's permission bits (low 12 of `mode`) and owner (uid/gid).
- * Object-store server only (CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT); the file-type bits are
- * preserved. Returns 0 or a negative SYS_ERR_*. */
-static inline int sys_fs_set_meta(uint32_t ino, uint32_t mode, uint32_t uid, uint32_t gid) {
-    return (int)syscall6(SYS_FS_SET_META, ino, mode, uid, gid, 0, 0);
 }
 
 /* SYS_MAP_PHYS access flags (the `flags` word). READ is implied; WRITE adds the

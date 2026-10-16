@@ -7,13 +7,14 @@ SYNOPSIS
     stat PATH
 
 DESCRIPTION
-    Print what the filesystem records about PATH: its type, its mode both
+    Print what the filesystem says about PATH: its type, its mode both
     symbolically and in octal, its owner (name, uid and gid), its size,
     its link count and its inode number.
 
-    Through a session's capability the mode shown is the truth about who
-    may do what, which is not always the bits stored on the disk; see
-    fs.policy(5).
+    The mode is the truth about who may do what: the owner bits are your
+    session's rights, the other bits a bound on everyone else's grants
+    (fs.policy(5)). The owner is your session's account. Nothing about
+    either is stored on the disk.
 
 SEE ALSO
     chmod(1), chown(8), ls(1), ln(1)

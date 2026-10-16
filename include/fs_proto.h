@@ -37,28 +37,23 @@
  * (CAPSLOT_REPLY_EP), chosen by the kernel and nameable by no one else. */
 #define FS_EP_REQ   4   /* client -> server requests (object index, not a slot) */
 
-/* Legacy rights word for sys_connect_fs_server. Ignored by the kernel, which
- * now always mints the client capability WRITE-only — a client that could also
- * RECEIVE on the server's endpoint could dequeue its peers' requests and forge
- * the server's replies, which was the C-1 attack. Kept so existing callers
- * compile unchanged. */
-#define CAP_R_W     0x3u
-
-/* Operations. Access is enforced by the server against the caller's
- * kernel-attested uid/gid (SYS_IPC_SENDER) — never an identity the client sends. */
-#define FS_OP_LOOKUP   1   /* dir_ino, name              -> ino, type   (needs x on dir) */
-#define FS_OP_CREATE   2   /* dir_ino, name              -> ino          (needs w on dir) */
-#define FS_OP_MKDIR    3   /* dir_ino, name              -> ino          (needs w on dir) */
-#define FS_OP_DELETE   4   /* dir_ino, name              -> 0            (needs w on dir) */
-#define FS_OP_READDIR  5   /* dir_ino, offset=index      -> name, ino, type (needs r on dir).
+/* Operations. fs_server authorises each by the capability it came through
+ * (the rights in brackets, §5.3), never by who sent it: there is no uid check
+ * (phase 1b step 6). Through a capability the object is the token's, so the
+ * ino and dir_ino fields below are ignored there. */
+#define FS_OP_LOOKUP   1   /* dir_ino, name              -> ino, type   (LOOKUP) */
+#define FS_OP_CREATE   2   /* dir_ino, name              -> ino          (CREATE) */
+#define FS_OP_MKDIR    3   /* dir_ino, name              -> ino          (CREATE) */
+#define FS_OP_DELETE   4   /* dir_ino, name              -> 0            (DELETE) */
+#define FS_OP_READDIR  5   /* dir_ino, offset=index      -> name, ino, type (READ).
                             * Ends with FS_RC_ENDDIR, NOT with SYS_ERR_NOENT: see
                             * the note on FS_RC_ENDDIR below, which is a defect
                             * this protocol used to have rather than a nicety. */
-#define FS_OP_READ     6   /* ino, offset, len           -> data[size], size (needs r on file) */
-#define FS_OP_WRITE    7   /* ino, offset, data[len]     -> size         (needs w on file) */
-#define FS_OP_STAT     8   /* ino                        -> size, type, mode, uid, gid */
-#define FS_OP_CHMOD    9   /* ino, mode                  -> 0   (owner or root) */
-#define FS_OP_CHOWN   10   /* ino, arg_uid, arg_gid      -> 0   (root only) */
+#define FS_OP_READ     6   /* ino, offset, len           -> data[size], size (READ) */
+#define FS_OP_WRITE    7   /* ino, offset, data[len]     -> size         (WRITE) */
+#define FS_OP_STAT     8   /* ino                        -> size, type, mode, uid, gid (READ; §7.1) */
+#define FS_OP_CHMOD    9   /* ino, mode                  -> 0 if already true, else PERM (READ; §7.2) */
+#define FS_OP_CHOWN   10   /* ino, arg_uid, arg_gid      -> 0 if already true, else PERM (READ; §7.2) */
 #define FS_OP_RENAME  11   /* dir_ino=old parent, name=old name, ino=new parent,
                             * data=new name (NUL-terminated) -> 0
                             * (needs w on BOTH parent dirs). Replaces an existing
@@ -153,10 +148,9 @@ struct fs_request {
     uint32_t arg_gid;               /* new owner gid (chown) */
     char     name[FS_NAME_MAX];
     uint8_t  data[FS_IO_MAX];       /* write payload */
-    /* NB: the request carries NO caller identity — the server takes the caller's
-     * uid/gid from the kernel (SYS_IPC_SENDER), so a client cannot claim to be
-     * another user. arg_uid/arg_gid are the *target* owner for chown, not the
-     * caller. */
+    /* NB: the request carries NO caller identity, and the server asks for none:
+     * what it may do is the invoking capability's (SYS_IPC_INVOKER).
+     * arg_uid/arg_gid are the *target* owner for chown, not the caller. */
 };                                  /* 36 + 32 + 176 = 244 <= 256 */
 
 struct fs_response {
@@ -166,9 +160,9 @@ struct fs_response {
     uint32_t type;                  /* result/entry type */
     uint32_t size;                  /* file size (stat), bytes returned (read), or
                                      * end offset of the write (write/append) */
-    uint32_t mode;                  /* permission bits (stat) */
-    uint32_t uid;                   /* owner uid (stat) */
-    uint32_t gid;                   /* owner gid (stat) */
+    uint32_t mode;                  /* permission bits (stat): the truthful view, §7.1 */
+    uint32_t uid;                   /* stat: the session's account ("you"), §7.1 */
+    uint32_t gid;                   /* stat: its primary group */
     uint32_t links;                 /* hard-link count (stat) */
     char     name[FS_NAME_MAX];     /* readdir entry name */
     uint8_t  data[FS_IO_MAX];       /* read payload */
@@ -179,9 +173,10 @@ struct fs_response {
  * A request that arrives through a TOKENED capability to this endpoint names its
  * object by that token, not by the inode fields below: the kernel attests the
  * token and the capability's rights (SYS_IPC_INVOKER), so a client can neither
- * choose the object nor claim a right it was not given. The old ino-addressed
- * path, authorised by the caller's uid, stays beside this one until phase 1b
- * step 6 removes it.
+ * choose the object nor claim a right it was not given. It is the only path:
+ * the ino-addressed one, authorised by the caller's uid, was removed in phase
+ * 1b step 6, and fs_server refuses a request through an untokened capability
+ * unless it opens or ends a session.
  *
  * THE RIGHTS (§5.3) are bits of the endpoint capability's rights word, above the
  * kernel's own (bits 0-6). The kernel intersects them on every mint, so a right

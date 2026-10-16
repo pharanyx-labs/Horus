@@ -164,6 +164,9 @@ covered:
   - SYS_EXEC_NAMED           # captest: a name that is no binary, refused before anything is staged
   - SYS_ROTATE_KEYS          # captest: withdrawn 2026-10-14, answers SYS_ERR_NOSYS to everyone
   - SYS_SUDO                 # captest: withdrawn 2026-10-15, answers SYS_ERR_NOSYS to everyone
+  - SYS_REGISTER_FS_SERVER   # captest: withdrawn 2026-10-16 (phase 1b step 6), SYS_ERR_NOSYS to everyone
+  - SYS_CONNECT_FS_SERVER    # captest: likewise
+  - SYS_FS_SET_META          # captest: likewise
   - SYS_FRAME_PAGES          # empty slot, and the legacy slot-3 decoy
   - SYS_REGISTER_STORAGE_BACKEND  # retired syscall 46; must still fail closed
 
@@ -384,8 +387,6 @@ covered:
   - SYS_USERDEL
   - SYS_USERLIST
   - SYS_PASSWD
-  - SYS_REGISTER_FS_SERVER
-  - SYS_CONNECT_FS_SERVER
   - SYS_CAP_REVOKE
   - SYS_FS_INODE_ALLOC
   - SYS_FBLOCK_READ
@@ -401,7 +402,6 @@ covered:
   - SYS_SPAWN_IMAGE
   - SYS_SIGALTSTACK
   - SYS_IPC_SENDER
-  - SYS_FS_SET_META
   - SYS_IPC_REPLY_TO
   - SYS_BOOT_MODULE_INFO
   - SYS_BOOT_MODULE_READ

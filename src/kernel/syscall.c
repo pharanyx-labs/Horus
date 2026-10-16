@@ -1608,10 +1608,10 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * held -- 0 on a never-used slot (.bss), the previous occupant's uid on a
      * reused one. Every legitimate spawn path sets the child's identity from
      * its parent; this one predates all of them. Since S18, uid 0 confers no
-     * KERNEL authority -- but fs_server enforces file permissions against the
-     * kernel-attested uid (S13/S14), so a uid-0 task holds root's access to the
-     * filesystem, and a reused slot is identity confusion in the other
-     * direction.
+     * KERNEL authority, and since phase 1b step 6 no filesystem authority
+     * either (S14) -- but init still names a login's session by the
+     * kernel-attested uid (S13, S141), so a reused slot is identity confusion
+     * in the other direction.
      *
      * The [H-3] sweep did not miss it through carelessness: this entry was
      * written `[14]`, a bare number, so it matched none of the `[SYS_NAME]`
@@ -1694,7 +1694,11 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * (READ|WRITE|GRANT) on a capability of ANY type. Type confusion in an
      * authorisation check, the same class as finding C-1. They now require the
      * object-store capability BY TYPE. */
-    [SYS_FS_SET_META]              = { h_fs_set_meta,             CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE },
+#ifdef FS_SET_META_RESTORED
+    [SYS_FS_SET_META]              = { h_fs_set_meta,             CAPSLOT_AUDIT, CAP_RIGHT_READ | CAP_RIGHT_WRITE, CAP_ENCRYPTED_STORAGE }, /* CONTROL ARM only */
+#else
+    [SYS_FS_SET_META]              = { h_fs_set_meta,             SC_NONE, 0, SC_ANYTYPE }, /* withdrawn 2026-10-16: SYS_ERR_NOSYS to everyone */
+#endif
     /* Reply routed to the request's kernel-recorded sender (multi-client safe).
      * Slot-3 WRITE, same as the other send/reply paths. */
     [SYS_IPC_REPLY_TO]             = { h_ipc_reply_to,            SC_NONE, 0, SC_ANYTYPE },
@@ -1755,8 +1759,8 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 #else
     [SYS_STORAGE_FORMAT]           = { h_storage_format,          CAPSLOT_STORAGE_FORMAT, CAP_RIGHT_WRITE, CAP_STORAGE_FORMAT },
 #endif
-    [SYS_REGISTER_FS_SERVER]       = { h_register_fs_server,      6, CAP_RIGHT_ALL, CAP_USER }, /* + ep lookup in handler */
-    [SYS_CONNECT_FS_SERVER]        = { h_connect_fs_server,       SC_NONE, 0, SC_ANYTYPE },
+    [SYS_REGISTER_FS_SERVER]       = { h_register_fs_server,      SC_NONE, 0, SC_ANYTYPE }, /* withdrawn 2026-10-16: SYS_ERR_NOSYS to everyone */
+    [SYS_CONNECT_FS_SERVER]        = { h_connect_fs_server,       SC_NONE, 0, SC_ANYTYPE }, /* withdrawn 2026-10-16: SYS_ERR_NOSYS to everyone */
     [SYS_CAP_REVOKE]               = { h_cap_revoke,              SC_NONE, 0, SC_ANYTYPE }, /* authority in cap_revoke */
     [SYS_AUDIT_DIGEST]             = { h_audit_digest,            7, CAP_RIGHT_READ, CAP_AUDIT },
 #ifdef PREEMPT_SELFTEST

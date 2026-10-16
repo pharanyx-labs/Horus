@@ -15,8 +15,7 @@
  *
  * WHAT IT PROVES:
  *   - open, read, write, stat, mkdir, opendir/readdir, chdir/getcwd, rename and
- *     unlink work through capabilities, with no uid path at all (this task never
- *     connects to it);
+ *     unlink work through capabilities;
  *   - through the read-only root nothing can be created, written, removed or
  *     renamed, by any call (`readonly-*`);
  *   - a rename whose two parents are different directories is EXDEV;
@@ -83,7 +82,7 @@ void _start(void)
         fail("mint-root-readonly");
 
     /* The server may not be serving yet, and posix_init's mount probe is one
-     * stat: a slow server would put the task on the uid path. So wait for a
+     * stat: a slow server would leave the task with no "/". So wait for a
      * stat through the root to answer first. */
     struct fs_request rq;
     struct fs_response rp;

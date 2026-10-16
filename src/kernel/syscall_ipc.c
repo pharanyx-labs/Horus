@@ -1052,7 +1052,7 @@ void h_ipc_sender(struct interrupt_frame64 *r) {
      * endpoint's own record of the message it dequeued; it is not a field the
      * caller filled in. CLAUDE.md refuses authority granted on a task id the
      * CALLER asserts -- this is the opposite, and it is the same basis
-     * `fs_server` already authorises on (S14), one identity narrower. */
+     * `init` names a login's session on (S13, S141), one identity narrower. */
     if (r->rdx) {
         uint32_t pid = (uint32_t)t;
         if (copy_to_user((void *)(addr_t)r->rdx, &pid, sizeof(pid)) != 0) { r->rax = (uint32_t)-1; return; }

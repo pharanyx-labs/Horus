@@ -158,8 +158,8 @@ void cap_init(void) {
     root_cnode[12].serial = 0xC0DE000CU;
 
     /* Filesystem service listen (fs_server): receive + reply. Clients do NOT get
-     * a copy of this — they acquire a WRITE-only capability at runtime through
-     * SYS_CONNECT_FS_SERVER.
+     * a copy of this — each holds a tokened capability derived from the root
+     * directory's, which init mints from this.
      *
      * MINT AND THE FILE RIGHTS (phase 1b, docs/design/filesystem.md §5.1, §6.1):
      * init, which receives this, mints the root directory's tokened capability
@@ -389,15 +389,13 @@ int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t o
 
 static bool caller_has_authority(void); /* defined below; the no-ambient guard */
 
-/* Install a fresh endpoint capability into the CURRENT task's own cspace under
- * cap_lock, with the same authority guard, reserved-slot rule, and caps_in_use
- * accounting as cap_mint(). Used by SYS_CONNECT_FS_SERVER: any task may connect
- * to the fs_server (the server is a reference monitor that authorizes every
- * request by kernel-attested identity, so connecting grants no file access on
- * its own), but the cap write must go through the same locked discipline as
- * every other cap write rather than a raw, unsynchronised cspace store that
- * races a concurrent rust_cap_revoke_global sweep under SMP and never counts
- * against MAX_CAPS_PER_TASK. Returns false on authority failure, a reserved or
+/* Install a fresh capability into the CURRENT task's own cspace under cap_lock,
+ * with the same authority guard, reserved-slot rule, and caps_in_use accounting
+ * as cap_mint(). Used by SYS_RETYPE to name a new kernel object. The write goes
+ * through the same locked discipline as every other cap write rather than a
+ * raw, unsynchronised cspace store that races a concurrent
+ * rust_cap_revoke_global sweep under SMP and never counts against
+ * MAX_CAPS_PER_TASK. Returns false on authority failure, a reserved or
  * out-of-range slot, or when the task is at its capability ceiling. */
 bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
                         uint32_t rights, uint64_t badge) {
@@ -429,11 +427,6 @@ bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
     if (was_null) tasks[cur].caps_in_use++;
     spin_unlock(&cap_lock);
     return true;
-}
-
-bool cap_install_endpoint(uint32_t dest_slot, uint32_t object,
-                          uint32_t rights, uint64_t badge) {
-    return cap_install_object(dest_slot, CAP_ENDPOINT, (uint64_t)object, rights, badge);
 }
 
 /* Install a fresh capability into the FIRST FREE slot at or above `min_slot` of

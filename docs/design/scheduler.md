@@ -1,22 +1,22 @@
 # Scheduling and SMP
 
-**Decided; steps 0, 1, 1b and 2a are built (section 5).** The maintainer asked on 2026-10-09 for a more robust SMP kernel and a
+**Decided; steps 0, 1, 1b, 2a and 2 are built (section 5).** The maintainer asked on 2026-10-09 for a more robust SMP kernel and a
 scheduler of high quality, chosen with security first. The decisions below were taken the same day.
 
 ## 1. What exists
 
 | Piece | State |
 |---|---|
-| Run pool | One table of `MAX_TASKS` slots. Every switch path scans it linearly through one rule, `sched_selectable` and `sched_pick_after` (#524), under the one global `scheduler_lock` |
+| Run lists | Every live task is homed on one CPU's circular list (`tasks[].rq_home`, `rq_next`, `rq_prev`). Every switch path chooses through one rule, `sched_selectable` and `sched_pick_after` (#524), which looks at its own CPU's list before any other, under the one global `scheduler_lock` (§3.5) |
 | Policy | Round robin. `tasks[].priority` is written (1 at init, copied on spawn) and never read |
 | CPUs | `MAX_CPUS` is 8 (`src/include/cpu_limits.h`). Each costs about 104 KiB of `.bss` whether present or not: a 68 KiB idle stack (`ap_idle_stacks`), 24 KiB of IST stacks (`ap_ist`) and 8 KiB of TSS (`ap_tss`) |
 | SMT | Every secondary thread is parked before its timer starts (S101). A parked sibling keeps interrupts on to answer shootdowns and is marked idle, and `preempt_on_tick` refuses to schedule on one whatever interrupts it (#525) |
 | Time | The PIT at 100 Hz drives `system_ticks`; every CPU's LAPIC timer runs periodically at the same rate. No one-shot timer, no per-task timer, no IPC timeout. Ring 3 sees 10 ms time and nothing finer (S34) |
-| Wake | A wake sets a task runnable and nothing else. When the waker blocks straight after (a call, a reply followed by a receive), its own CPU takes the woken task at once: 59 of 64 wakes in a two-CPU boot ran within 100 µs (2026-10-09, an instrumented build). When the waker keeps running, the woken task waits for the next tick of an idle CPU, up to 10 ms |
+| Wake | A wake sets a task runnable and nothing else; it touches no run list. When the waker blocks straight after (a call, a reply followed by a receive), its own CPU takes the woken task at once, from another CPU's list if need be: 59 of 64 wakes in a two-CPU boot ran within 100 µs (2026-10-09, an instrumented build, before the lists). When the waker keeps running, the woken task waits for the next tick of an idle CPU, up to 10 ms |
 | Isolation on switch | The microarchitectural state is flushed on every switch between tasks; FPU state is saved and restored eagerly (S16) |
 | Stack ownership | One CPU at a time on a task's kernel stack, held by the claim protocol and `sched_release_deferred` (S20) |
 | TLB coherence | An address space is live on at most one CPU, there are no threads and no global pages, and `switch_cr3` flushes. So the ship kernel never needs a cross-CPU shootdown, and `smp_maybe_shootdown` is called only by the selftest. When its bounded wait runs out with an acknowledgement outstanding, it halts with a named panic (S124, #523) |
-| Locks | `scheduler_lock`, `cap_lock`, `endpoint_lock`, `page_lock` and `storage_lock` are each global |
+| Locks | `scheduler_lock`, `cap_lock`, `endpoint_lock`, `page_lock` and `storage_lock` are each global; the run lists have no lock of their own |
 | IPC | An endpoint holds a bounded queue of messages and at most one blocked caller (`struct endpoint`). A server takes a message when it chooses, by `SYS_IPC_RECV` or `SYS_IPC_RECV_BLOCK` |
 
 ## 2. The decisions (2026-10-09)
@@ -31,7 +31,7 @@ scheduler of high quality, chosen with security first. The decisions below were 
 3. **Passive servers.** A server may hold no time of its own and run on the time of the client
    whose call it is serving, so a client cannot make a server spend someone else's time, and the
    priority inversion across IPC that a busy server causes goes away.
-4. **SMP, in scope:** per-CPU run queues; per-CPU one-shot timers and tickless idle; targeted TLB
+4. **SMP, in scope:** per-CPU run queues (built as run lists, §3.5); per-CPU one-shot timers and tickless idle; targeted TLB
    shootdown; more than eight CPUs; affinity as a right that only narrows.
 5. **SMT stays parked.** S101 does not change.
 6. **Order:** LIMITATIONS 5.3e is settled first, then this document, then one pull request per
@@ -119,22 +119,40 @@ TSC-based source is calibrated; `system_ticks` becomes derived from it.
 This step also gives roadmap 2.2 its per-task timers and an IPC call with a timeout, each a later
 syscall change of its own.
 
-### 3.5 Per-CPU run queues
+### 3.5 Per-CPU run lists
 
-Each CPU has its own queue of runnable tasks, with a bitmap of non-empty priority levels, so picking
-the next task is constant time, and its own lock. The global `scheduler_lock` stays only around the
-claim protocol until that is rebuilt over the queues.
+Built in step 2. Each CPU has a list of the tasks homed on it, and a CPU choosing what to run looks
+at its own list first. A task is homed on the CPU that created it, and moves when another CPU takes
+it. Homing is placement only: whether a task may run is still `sched_selectable`'s answer, and
+every candidate passes it, so a list can make a task wait but never makes one run that the rule
+would refuse.
 
-- **A wake goes to a queue and sends a reschedule interrupt** to that CPU if the woken task
-  outranks what it is running. That removes the wait for a tick when the waker keeps running.
-  It is built when a workload shows that wait mattering; the two-CPU boot above does not.
-- **An idle CPU steals only slack work**, from the busiest queue whose slack tasks' masks include
-  it. Budgeted work never moves on its own: its context belongs to one CPU, and moving it is a
-  ring-3 decision made by rebinding it to a context on another CPU.
-- **Migration keeps S20.** A task leaves a queue only under that queue's lock and only once
+- **Membership is not "runnable".** The usual queue holds exactly the runnable tasks, so every
+  wake has to enqueue. Here more than a dozen sites make a task runnable, most of them under an
+  IPC lock, and a wake that forgot to enqueue would leave its task on no queue, for good, found
+  only by a hang. A task's list changes only at creation, at death and when another CPU takes it,
+  so a wake touches no list, the IPC paths take no new lock, and the lost wake cannot be written.
+  The price is that a pick walks past the blocked tasks on its own list, where the old pick walked
+  every slot in the table. `SCHED_INVARIANTS=1` checks that the lists are sound and that every
+  live task is on exactly one; the check is exact, since every list write is under the lock.
+- **Where a CPU looks, in order:** a task waiting on the list of a CPU that has not chosen for more
+  than two ticks (it is inside a long kernel operation, which the kernel never preempts); then its own list,
+  round robin from the task it is leaving; then any other CPU's list. A task taken from another list
+  is homed on the CPU that took it. Until scheduling contexts exist every task is slack work, which
+  any CPU may take. When they do (step 4), budgeted work never moves on its own: its context belongs
+  to one CPU, and moving it is a ring-3 decision made by rebinding it to a context on another CPU.
+- **No policy change.** The old single pool let any CPU take any waiting task at its next choice.
+  The lists keep that: a CPU with nothing else of its own takes another's waiting task, and a CPU
+  stuck in the kernel loses its waiting tasks to the others after two ticks or so.
+- **Migration keeps S20.** A task changes lists only under the scheduler lock and only while
   `task_running_cpu[]` shows it on no CPU, and the outgoing CPU keeps its claim until it has left
-  the task's stack, exactly as now. The existing S20 gates and arms run against the new code
-  unchanged, and they must stay green.
+  the task's stack, exactly as before. The lists never touch the claim. The S20 gates and arms run
+  against the new code unchanged.
+- **Not built yet, and why.** A list of its own lock: every pick still holds the global
+  `scheduler_lock`, so a second lock would protect nothing the first does not; it comes when
+  selection stops holding the global one. A priority bitmap for constant-time choice: there is one
+  priority until step 4. A reschedule interrupt to the woken task's CPU: built when a workload shows
+  the wait for a tick mattering, which the two-CPU boot above does not.
 
 ### 3.6 Affinity
 
@@ -178,7 +196,7 @@ Each gets a `SECURITY.md` row with its S-number when its step merges.
 | Budgeted work never runs off its context's CPU, and slack work never off its mask | a pinned task reports its CPU every tick, under stealing | `AFFINITY_IGNORED=1` |
 | A budget is charged only by its own CPU | a context's charge records the charging CPU; the gate asserts it is the owner | `BUDGET_CROSS_CPU=1` |
 | A shootdown that is not acknowledged halts | the selftest with one CPU made deaf | `SHOOTDOWN_FAIL_OPEN=1` |
-| S20 holds over per-CPU queues | the existing S20 gates | the existing S20 arms |
+| S20 holds over per-CPU run lists | the existing S20 gates | the existing S20 arms |
 
 **What this does not close.** Tasks that share a context, or a passive server, can each observe
 the other's consumption through when they are descheduled: sharing an account is a channel by
@@ -193,7 +211,7 @@ Budget exhaustion is no finer a clock than the 10 ms tick a task can already cou
 | 1 ✅ | The shootdown wait fails closed (#523) | |
 | 1b ✅ | `preempt_on_tick` refuses to schedule on an SMT sibling, whoever interrupts it (#525) | |
 | 2a ✅ | One selection rule for every switch path (#524) | |
-| 2 | Per-CPU run queues, the reschedule interrupt, stealing; no policy change | 0, 1b, 2a |
+| 2 ✅ | Per-CPU run lists and stealing; no policy change (§3.5) | 0, 1b, 2a |
 | 3 | Per-CPU one-shot timers, tickless idle | 2 |
 | 4 | Scheduling contexts, budgets, priorities and their maximum | 3 |
 | 5 | Passive servers | 4 |

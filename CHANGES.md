@@ -47,6 +47,10 @@ here.
 - `make smoke-console-pass` now witnesses both halves: input refused to a client's stdout capability, an input capability lent to a child and gone once taken back, and the kernel's console reads and writes refused without a capability, with four control arms. `captest` asks `SYS_READ` fd 0 and `SYS_GET_PASS` without a capability, so `SYS_GET_PASS` is covered for the first time. (#559)
 - `make smoke-pipe-revoke-child` spawns stages wired to pipe ends, revokes the ends and checks the stages lost theirs, a forked child's revoke spared the original, and no pipe was left allocated; two control arms (the child's end as a root, the removed ends left counted) run beside it in the `smoke-pipe` CI job. A Kani proof shows a revoke counts exactly the pipe ends it removes, with four arms. (#558)
 
+### Changed
+
+- Each CPU now keeps its own list of the tasks homed on it and chooses from that first, instead of every CPU scanning one shared table of every task (ROADMAP 1.8 step 2, `docs/design/scheduler.md` §3.5). A task is homed on the CPU that created it and moves when another CPU, with nothing of its own to run, takes it; the tasks waiting on a CPU stuck in a long kernel operation go to the others after two ticks. What may run is decided exactly as before, and a wake touches no list, so no wake can leave a task where no CPU looks. `SCHED_INVARIANTS=1` checks that every live task is on exactly one list; `smoke-runq-unhomed-control` and `smoke-smp-nosteal-control` are its arms (#584).
+
 ### Fixed
 
 - `smoke-installer-provision-control`, the S74 arm, reproduced its defect in 1 run of 6 and turned main red on a run where the defect had fired: boot 1's copy of the base system often finishes before the power-off, leaving boot 2 nothing to break. The arm now requires the defect's own mark, the startup copy against the locked store writing 0 inodes, and only reports the `/bin` listing. Measured: 8 runs in 8. (#570)

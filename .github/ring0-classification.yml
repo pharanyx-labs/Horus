@@ -624,7 +624,12 @@
 # is running the dead task, with its bound and its KILL_ASYNC arm, and the
 # KILL_IPI_WITHHELD instrument, which compiles out of the ship build. Teardown
 # is the scheduler's, so core.
-core_budget_loc: 11894
+# 2026-10-16: 11894 -> 12029, +135, ROADMAP 1.8 step 2: scheduler.c's per-CPU
+# run lists (rq_home_on, rq_unlink), the list walk and stealing behind
+# sched_pick_after, homing in create_task and task_teardown, and the
+# SCHED_INVARIANTS audit that every live task is on exactly one list, which
+# compiles out of the ship build. Selection is the scheduler's, so core.
+core_budget_loc: 12029
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

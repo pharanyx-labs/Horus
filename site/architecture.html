@@ -341,7 +341,7 @@
   <article>
     <h3 id="multiprocessing">Multiprocessing</h3>
     <p>
-      SMP is on by default: ACPI enumeration, AP bringup, a shared runnable pool,
+      SMP is on by default: ACPI enumeration, AP bringup, per-CPU run lists with stealing,
       acknowledged TLB-shootdown IPIs, and a microarchitectural flush when switching
       between tasks that do not trust each other. SMT siblings are parked in software.
     </p>

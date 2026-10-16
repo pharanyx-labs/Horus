@@ -576,6 +576,11 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * before the scheduler decides who runs next, so a newly-runnable waiter
          * is eligible on this same tick. */
         irq_notify_fire(0);
+#ifdef SMP
+        /* Wake a stopped AP for each task waiting to run, after the notification
+         * above has had its chance to make one runnable (smp.c, TICKLESS IDLE). */
+        sched_wake_tickless();
+#endif
 #ifdef PS2_PROBE
         /* ~1 Hz at the 100 Hz tick. Painted from here rather than from IRQ 1,
          * so the readout keeps updating on a machine where IRQ 1 never fires --
@@ -684,15 +689,26 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
             print("HANDOVER: the probe line was in flight when the console changed hands\n");
         }
 #endif
-        return preempt_on_tick((uint64_t)frame, frame->cs);
+        {
+            uint64_t r = preempt_on_tick((uint64_t)frame, frame->cs);
+            smp_timer_after_tick(1);   /* re-arm only if this CPU now has a task */
+            sched_wake_tickless();     /* and wake a stopped AP per waiting task */
+            return r;
+        }
     } else if (vector == 0xFC) {
-        /* Kill IPI (smp_kick_cpu): the task this CPU is running was torn down by
-         * another CPU. preempt_on_tick never returns into a dead task, so this
-         * takes the CPU back immediately; without it the dead task ran on until
-         * this CPU's next tick at best, and indefinitely if nothing else was
-         * runnable (HORUS-20260921-04). */
+        /* Kick (smp_kick_cpu), for two reasons. The task this CPU is running was
+         * torn down by another CPU: preempt_on_tick never returns into a dead
+         * task, so this takes the CPU back immediately; without it the dead task
+         * ran on until this CPU's next tick at best, and indefinitely if nothing
+         * else was runnable (HORUS-20260921-04). Or this CPU's timer had stopped
+         * and the BSP found work waiting (sched_wake_tickless): preempt_on_tick
+         * on an idle CPU picks it up, and the timer starts again with the task. */
         lapic_eoi();
-        return preempt_on_tick((uint64_t)frame, frame->cs);
+        {
+            uint64_t r = preempt_on_tick((uint64_t)frame, frame->cs);
+            smp_timer_after_tick(0);
+            return r;
+        }
     } else if (vector == 0xFB) {
         /* TLB-shootdown IPI: a remote CPU changed a shared mapping. Flush this
          * CPU's TLB (reload CR3 drops all non-global entries) and acknowledge. */

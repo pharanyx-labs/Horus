@@ -629,7 +629,13 @@
 # sched_pick_after, homing in create_task and task_teardown, and the
 # SCHED_INVARIANTS audit that every live task is on exactly one list, which
 # compiles out of the ship build. Selection is the scheduler's, so core.
-core_budget_loc: 12029
+# 2026-10-16: 12029 -> 12124, +95, ROADMAP 1.8 step 3a: smp.c's one-shot
+# timer and the re-arm decision after each tick or kick (smp_timer_after_tick,
+# the watcher, smp_tickless_stopped), scheduler.c's sched_wake_tickless, which
+# every tick runs to wake stopped APs for waiting work, idt.c's two call sites,
+# and the TICKLESS_PROBE instrument, which compiles out of the ship build. The
+# timer and the wake are the scheduler's, so core.
+core_budget_loc: 12124
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

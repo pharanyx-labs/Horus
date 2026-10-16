@@ -364,7 +364,7 @@ static uint32_t lapic_timer_count = 0;
 
 /* Measure the LAPIC timer frequency against PIT channel 2 (a one-shot mode-0
  * countdown gated on port 0x61) and record the count for a ~10 ms period. Run
- * once on the BSP before the APs start their periodic timers. */
+ * once on the BSP before the APs start their timers. */
 static void lapic_timer_calibrate(void) {
     lapic_write(LAPIC_TIMER_DIV, 0x3);                       /* divide by 16 */
     lapic_write(LAPIC_TIMER_LVT, (1u << 16) | LAPIC_TIMER_VECTOR);  /* masked */
@@ -385,17 +385,89 @@ static void lapic_timer_calibrate(void) {
     if (lapic_timer_count < 1000) lapic_timer_count = 1000000;  /* sane fallback */
 }
 
-/* Start this CPU's LAPIC timer in periodic mode at the calibrated rate. */
-static void lapic_timer_start_periodic(void) {
+/* Arm this CPU's LAPIC timer for ONE tick at the calibrated rate (LVT bit 17
+ * clear: one-shot). It counts down once, fires vector 0x40 and stops; nothing
+ * fires again until something arms it again (docs/design/scheduler.md 3.4,
+ * step 3). The count is the same ~10 ms the periodic mode used, so a busy CPU
+ * is preempted exactly as often as before. */
+static void lapic_timer_arm(void) {
     lapic_write(LAPIC_TIMER_DIV, 0x3);                              /* divide by 16 */
-    lapic_write(LAPIC_TIMER_LVT, (1u << 17) | LAPIC_TIMER_VECTOR);  /* periodic */
+    lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_VECTOR);               /* one-shot */
     lapic_write(LAPIC_TIMER_INIT, lapic_timer_count ? lapic_timer_count : 1000000);
 }
 
-/* The AP idle context: sit with interrupts enabled so the LAPIC timer keeps
- * firing. Each tick runs preempt_on_tick(), which pulls a runnable task onto
- * this CPU when one is available. Reached both as the AP's initial context and
- * whenever it has no task to run. */
+/* ---- TICKLESS IDLE (docs/design/scheduler.md 3.4, step 3) ------------------
+ *
+ * An AP's timer ran periodically, so an idle AP took a hundred interrupts a
+ * second to find, almost always, that there was still nothing to do. Now it is
+ * one-shot and re-armed only while the AP has a task: an AP with nothing to run
+ * takes its pending tick, finds nothing, and stops.
+ *
+ * percpu_tickless[c] says "CPU c's timer is stopped and it waits to be woken".
+ * CPU c sets it, here; whoever wakes c clears it, by compare-and-swap, so two
+ * CPUs never both spend a kick on it (sched_wake_tickless). Every tick, on any
+ * CPU, ends by waking as many stopped APs as there are tasks waiting to run, so
+ * a task waits for a CPU no longer than it did when every idle AP polled at the
+ * same 100 Hz. No wake site changed: a CPU that makes a task runnable is
+ * running, so its own tick follows within one period and does the waking.
+ *
+ * THE WATCHER. One AP never stops: the first to start its timer keeps ticking
+ * while idle. Without it, every CPU can stop at once while the BSP sits in a
+ * long stretch of ring 0 with interrupts masked, when its PIT tick does not
+ * arrive either: smp_selftest runs inside smp_bringup exactly so, and an Argon2
+ * hash in a syscall is seconds of it. Then a task made runnable in that window
+ * would wait for the BSP to come back, where the periodic APs took it at their
+ * next tick. One idle AP ticking is the price of never depending on that.
+ *
+ * The flag is set after the CPU has decided not to re-arm, so a waker can read
+ * it a tick late, never early: a stale 0 costs one tick of latency, and a kick
+ * that lands on a CPU that already woke by itself costs one empty pass through
+ * preempt_on_tick. TICKLESS_OFF=1 re-arms on every tick, the periodic timer
+ * kept as a one-shot, for the control arm of smoke-tickless. */
+volatile int percpu_tickless[MAX_CPUS];
+static volatile int tickless_watcher = -1;
+
+/* How many APs have stopped their timers. The SMP selftest waits for every AP
+ * but the watcher to stop before it creates work, so that work can reach them
+ * only by being woken (smoke-smp-nokick-control). */
+int smp_tickless_stopped(void) {
+    int n = 0;
+    for (int c = 1; c < MAX_CPUS; c++) if (percpu_tickless[c]) n++;
+    return n;
+}
+
+void smp_timer_after_tick(int fired) {
+    int cpu = this_cpu();
+    if (cpu <= 0 || cpu >= MAX_CPUS) return;   /* the BSP's clock is the PIT */
+#ifndef SIBLING_SCHED_UNGUARDED
+    /* A parked SMT sibling runs nothing, so it must never ask to be woken for
+     * work: wakers would spend their kicks on a CPU that refuses them (S101).
+     * Part of the same refusal as preempt_on_tick's, so SIBLING_SCHED_UNGUARDED
+     * drops both; otherwise its control arms, where a misidentified sibling
+     * starts its timer, would lose the sibling's ticks rather than see it
+     * scheduled. */
+    if (cpu_is_smt_sibling(cpu)) return;
+#endif
+#if !defined(TICKLESS_OFF) && !defined(KDIAG_SPLIT_WIDEN)
+    /* KDIAG_SPLIT_WIDEN (an instrument) paces its writer by the APs' ticks, as
+     * the one guest-time clock that moves while the BSP sits in IRQ0 with
+     * interrupts off (kdiag_ch). Idle APs that stopped ticking would take that
+     * clock away, so that build keeps them ticking. */
+    if (tickless_watcher < 0) __sync_val_compare_and_swap(&tickless_watcher, -1, cpu);
+    if (percpu_idle[cpu] && cpu != tickless_watcher) { percpu_tickless[cpu] = 1; return; }
+#endif
+    percpu_tickless[cpu] = 0;
+    /* Re-arm only a stopped timer. After its own tick it has stopped; after a
+     * kick it may still be counting, and re-arming then would push this CPU's
+     * next preemption out by up to a tick. */
+    if (fired || lapic_read(LAPIC_TIMER_CUR) == 0) lapic_timer_arm();
+}
+
+/* The AP idle context: sit with interrupts enabled until a tick or a kick
+ * arrives. Each runs preempt_on_tick(), which pulls a runnable task onto this
+ * CPU when one is available; an idle AP's timer stops (TICKLESS IDLE above), so
+ * after its last tick only the BSP's kick wakes it. Reached both as the AP's
+ * initial context and whenever it has no task to run. */
 void ap_idle_loop(void) {
     for (;;) __asm__ volatile ("sti; hlt");
 }
@@ -423,7 +495,7 @@ uint64_t ap_park_stack_top(int cpu) {
 
 /* 64-bit C entry for every AP, reached from the trampoline on the AP's private
  * idle stack.  Adopt the shared kernel GDT/IDT, install a per-CPU TSS (own RSP0
- * + IST fault stacks), enable the local APIC + its periodic timer, check in, and
+ * + IST fault stacks), enable the local APIC + its one-shot timer, check in, and
  * drop into the idle loop where timer ticks drive the scheduler. */
 void ap_entry64(void) {
     ap_load_kernel_segments();    /* shared kernel GDT: CS=0x08, data=0x10 */
@@ -500,7 +572,7 @@ void ap_entry64(void) {
 
     percpu_idle[cpu] = 1;
 
-    lapic_timer_start_periodic();
+    lapic_timer_arm();            /* the first tick; smp_timer_after_tick decides the rest */
 
     ap_idle_loop();               /* timer ticks now schedule tasks onto this CPU */
 }
@@ -525,7 +597,7 @@ static void lapic_broadcast_init_sipi(uint8_t vector) {
  * may never appear. Only called when expected_cpus > 1. */
 static void smp_start_aps(int expected_cpus) {
     /* Calibrate the LAPIC timer once (on the BSP, using the PIT) so every AP can
-     * start its periodic timer at a known ~100 Hz rate. */
+     * arm its one-shot timer for a known ~10 ms tick. */
     lapic_timer_calibrate();
 
     /* Stage the trampoline at its real-mode SIPI load address. AP_TRAMP_PHYS is

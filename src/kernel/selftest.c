@@ -1366,6 +1366,20 @@ void smp_selftest(void) {
     if (hrc_ != 0)                               { print("SMP_SELFTEST: FAIL size\n");  for (;;) asm volatile("hlt"); }
     const uint8_t *payload = bin + HORUS_IMAGE_HDR_BYTES;
 
+    /* Let the APs go idle first (docs/design/scheduler.md 3.4). Each takes its
+     * first tick before the scheduler is open, finds nothing, and stops, all but
+     * the watcher. Waiting for that here means every worker below reaches an AP
+     * only by a wake, so this test exercises the wake on every run instead of on
+     * the runs where an AP's first tick happens to fall after the spawn. Bounded:
+     * a build that keeps the APs ticking (TICKLESS_OFF, KDIAG_SPLIT_WIDEN) never
+     * gets there, and goes on after the bound with the APs polling as before. */
+    {
+        extern int smp_tickless_stopped(void);
+        for (unsigned long w = 0; w < 400000000ul && smp_tickless_stopped() < online - 2; w++)
+            __asm__ volatile ("pause");
+        print("SMP_SELFTEST: aps stopped="); print_decimal((uint64_t)smp_tickless_stopped()); print("\n");
+    }
+
     /* Spawn one worker per online CPU so an AP always has work to pull. Preserve
      * the kernel address space across do_spawn (which installs the new task's
      * CR3) so the BSP keeps monitoring on the kernel page tables. */

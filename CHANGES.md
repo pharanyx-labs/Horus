@@ -49,6 +49,7 @@ here.
 
 ### Changed
 
+- An idle CPU no longer takes a hundred timer interrupts a second (ROADMAP 1.8 step 3a, `docs/design/scheduler.md` §3.4). Each AP's timer is one-shot and re-armed only while the AP has a task; an idle AP takes its last tick and stops, and every tick on any CPU ends by waking as many stopped APs as there are tasks waiting, so a task still gets a CPU within a tick. One AP keeps ticking, so a waiting task never depends on the boot CPU, which can spend seconds in the kernel with interrupts masked. At the login prompt on eight CPUs the APs took about 3400 ticks in five seconds and now take 488, the watcher's alone. `make smoke-tickless` and two arms (#585).
 - Each CPU now keeps its own list of the tasks homed on it and chooses from that first, instead of every CPU scanning one shared table of every task (ROADMAP 1.8 step 2, `docs/design/scheduler.md` §3.5). A task is homed on the CPU that created it and moves when another CPU, with nothing of its own to run, takes it; the tasks waiting on a CPU stuck in a long kernel operation go to the others after two ticks. What may run is decided exactly as before, and a wake touches no list, so no wake can leave a task where no CPU looks. `SCHED_INVARIANTS=1` checks that every live task is on exactly one list; `smoke-runq-unhomed-control` and `smoke-smp-nosteal-control` are its arms (#584).
 
 ### Fixed

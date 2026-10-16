@@ -1545,6 +1545,46 @@ void timer_handler(void) {
         }
     }
 #endif
+#if defined(SMP) && defined(TICKLESS_PROBE)
+    /* INSTRUMENT, never shipped: the witness for tickless idle (smoke-tickless).
+     * Counts every LAPIC tick the APs take over TICKLESS_PROBE_SPAN of the BSP's
+     * ticks, from a point well past the login prompt, where the machine sits
+     * idle. Each AP's periodic timer took one tick per BSP tick, so seven idle
+     * APs took seven times the span; tickless, an idle AP takes none but the
+     * watcher (smp.c), which ticks all the time, and the little work there is
+     * runs on whichever CPU picks it up. The bound is two spans: the watcher's
+     * one, and less than one more. TICKLESS_OFF=1 keeps every AP ticking and
+     * must fail it. Printed from the BSP's tick, where no
+     * lock is held, as one line, so the marker cannot be split. */
+    {
+        extern volatile unsigned long ap_timer_ticks;
+        static unsigned long tp_a0;
+        if (system_ticks == TICKLESS_PROBE_FROM) tp_a0 = ap_timer_ticks;
+        if (system_ticks == TICKLESS_PROBE_FROM + TICKLESS_PROBE_SPAN) {
+            unsigned long d = ap_timer_ticks - tp_a0;
+            char line[160];
+            int n = 0;
+            const char *verdict = (d < 2 * TICKLESS_PROBE_SPAN) ? "TICKLESS: PASS" : "TICKLESS: FAIL";
+            for (const char *q = verdict; *q && n < 100; q++) line[n++] = *q;
+            const char *mid = " ap_ticks=";
+            for (const char *q = mid; *q; q++) line[n++] = *q;
+            char dig[24]; int k = 0;
+            do { dig[k++] = (char)('0' + d % 10); d /= 10; } while (d && k < 20);
+            while (k) line[n++] = dig[--k];
+            const char *tail = " over_bsp_ticks=";
+            for (const char *q = tail; *q; q++) line[n++] = *q;
+            unsigned long sp = TICKLESS_PROBE_SPAN; k = 0;
+            do { dig[k++] = (char)('0' + sp % 10); sp /= 10; } while (sp && k < 20);
+            while (k) line[n++] = dig[--k];
+            const char *on = " online=";
+            for (const char *q = on; *q; q++) line[n++] = *q;
+            line[n++] = (char)('0' + (smp_get_online_count() % 10));
+            line[n++] = '\n';
+            line[n] = 0;
+            print(line);
+        }
+    }
+#endif
 #ifdef HANG_WATCHDOG
     if (watchdog_dumps < HANG_WATCHDOG_DUMPS &&
         system_ticks > (uint32_t)HANG_WATCHDOG_TICKS * (uint32_t)(watchdog_dumps + 1)) {
@@ -3031,6 +3071,58 @@ static int sched_pick_after(int start, int include_start)
     if (include_start && start > 0 && start < g_max_tasks && sched_selectable(start))
         return start;
     return -1;
+}
+#endif
+
+#ifdef SMP
+/* Wake stopped APs for waiting work (smp.c, TICKLESS IDLE). Called at the end
+ * of every tick: the BSP's PIT tick, after that tick's notifications, and every
+ * AP's LAPIC tick, after its own choice. Counts the tasks that could run now and
+ * are not running, and
+ * kicks that many stopped APs, so each waiting task gets a CPU at the next tick
+ * as it did when every idle AP polled. A woken AP that finds the work already
+ * taken goes back to sleep at no cost but the visit.
+ *
+ * Takes sched_raw_lock only to count, not to kick: smp_kick_cpu writes the
+ * LAPIC and waits, bounded, for the previous IPI to be sent, which has no
+ * business inside the scheduler lock. A count a moment stale is harmless in both
+ * directions (see the note on percpu_tickless). TICKLESS_NO_KICK=1 never kicks,
+ * for the control arm: a stopped AP then never runs again. */
+void sched_wake_tickless(void)
+{
+#ifndef TICKLESS_NO_KICK
+    extern volatile int percpu_tickless[MAX_CPUS];
+    if (!smp_sched_enabled) return;
+    int stopped = 0;
+    for (int c = 1; c < MAX_CPUS; c++) if (percpu_tickless[c]) stopped++;
+    if (!stopped) return;
+
+    int waiting = 0;
+    sched_raw_lock();
+    for (int c = 0; c < MAX_CPUS && waiting < stopped; c++) {
+        int h = rq_head[c];
+        if (h < 0) continue;
+        int t = h;
+        for (int n = 0; n < g_max_tasks; n++) {
+            if (sched_selectable(t) && ++waiting >= stopped) break;
+            t = tasks[t].rq_next;
+            if (t == h) break;
+        }
+    }
+    sched_raw_unlock();
+
+    /* An idle BSP takes one itself at its next PIT tick. */
+    if (percpu_idle[0]) waiting--;
+    int self = this_cpu();
+    for (int c = 1; c < MAX_CPUS && waiting > 0; c++) {
+        /* Never this CPU: it has just decided to stop, and taking its own flag
+         * would leave it stopped with nobody believing it needs a kick. */
+        if (c == self) continue;
+        if (!__sync_bool_compare_and_swap(&percpu_tickless[c], 1, 0)) continue;
+        smp_kick_cpu(c);
+        waiting--;
+    }
+#endif
 }
 #endif
 

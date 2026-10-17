@@ -24,17 +24,10 @@ The recommendation is the one the route is written around; it is not the decisio
 
 | | Question | Recommendation | Blocks |
 |---|---|---|---|
-| D3 | Measured boot mandatory whenever a TPM is present | Yes, failing closed; a machine without a TPM boots with a visible warning | 5.6 |
-| D4 | Refuse an unanchored volume on a TPM machine; advance the rollback counter at a bounded interval; eMMC RPMB as a second anchor | Yes to the first two; RPMB opt-in only, since programming its key is irreversible | 5.7 |
-| D5 | Kernel updates by predicted PCR values and a staged second seal | Yes, over signed kernels, which would make `PCR[4]` the same for every signed kernel | 5.8 |
-| D7 | `SYS_SPAWN_IMAGE` needs a capability no session holds; exec goes through a file capability | Yes | 5.4 |
 | D8 | One capability per grant, bounded by the kernel, instead of one root carrying the union | Yes | 5.10 |
 | D9 | TLA+, and its Java toolchain, as a new verification dependency | Yes, nightly first; a full Isabelle model of the kernel is not recommended at this size of team | 5.11 |
-| D10 | How releases are signed: key type and custody | Sigstore keyless signing from the release workflow with SLSA provenance, actions pinned by SHA, and tags signed by the maintainer's key | 4.4 |
 | D11 | A second reviewer for the capability and IPC paths | The maintainer's to find; the ruleset change follows | 4.1 |
 | D12 | Whether to build virtualisation at all | Defer until there is a hosting need | 3.9 |
-| D13 | A syscall operation by which a task marks pages that hold secrets as never swapped | Yes, as an operation on the task's own pages only, refusing shared and lent frames | 2.12 remainder |
-| D15 | CI throughput: a merge queue, and a fast path that skips the QEMU gates for a change touching only documentation | Yes to both; the fast path decided by a checked allowlist of paths, never by a label | The pace of everything |
 
 ---
 
@@ -56,14 +49,14 @@ The recommendation is the one the route is written around; it is not the decisio
 
 | Lane | Milestone | Items | Closes | Needs |
 |---|---|---|---|---|
-| Filesystem | Accounts as files, then exec by capability | 2.11 step 3, 5.4 | 1.23 | D7 |
+| Filesystem | Accounts as files, then exec by capability | 2.11 step 3, 5.4 | 1.23 | |
 | Console | Job control: stopping and resuming the foreground program | 2.3 job control | | |
-| Boot | Measured boot by default, rollback anchoring | 5.6, 5.7 | 2.9, 1.12 | D3, D4 |
-| Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | D10, D5 |
+| Boot | Measured boot by default, rollback anchoring | 5.6, 5.7 | 2.9, 1.12 | |
+| Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | |
 | SMP | Deadline timers, timers as notifications | 1.8 step 3b, 2.2 | | |
 | Memory | Reclaimable kernel memory | 5.9 | 2.5, 2.3 | |
 | Proofs | Concurrent protocols modelled | 5.11 | narrows 5.5 | D9 |
-| Swap | Secrets kept out of swap | 2.12 | | D13 |
+| Swap | Secrets kept out of swap | 2.12 | | |
 
 ### Wave 3: shrink ring 0
 
@@ -90,7 +83,7 @@ The recommendation is the one the route is written around; it is not the decisio
 ### Beside every wave
 
 Independent review (4.1, D11), the published threat model (4.13), secret scanning beyond
-provider patterns (4.8), and the font's provenance (4.10). An external audit at each release, its
+provider patterns (4.8), the font's provenance (4.10), and CI throughput (4.15). An external audit at each release, its
 findings recorded in `LIMITATIONS.md` and each closed by a gate, until a second reviewer exists.
 
 ---
@@ -173,8 +166,9 @@ truthful. Phases 1a and 1b are done. Open:
 volume under a ring-3 `auth_server`; the kernel keeps only the key-slot unlock
 ([`design/installed-system.md`](design/installed-system.md)). Steps 1 and 2 are done.
 
-**2.12 ⏸ Secrets kept out of swap.** A request by which a task marks pages that hold secrets as
-never swapped ([`design/swap.md`](design/swap.md) step 3); a new syscall operation, so D13 first.
+**2.12 ⬜ Secrets kept out of swap.** A request by which a task marks pages that hold secrets as
+never swapped ([`design/swap.md`](design/swap.md) step 3): a syscall operation on the task's own pages
+only, refusing shared and lent frames.
 Compressed memory stays deferred: if it comes, it is a cache in front of swap that compresses one
 task's pages only, never a page marked secret, and charges each task for its own.
 
@@ -207,8 +201,9 @@ missing is a second person (D11); required approval with one maintainer would bl
 need a bypass actor, which would undo the gating. Until then `SECURITY.md` claims "thoroughly
 automatically verified", not "independently reviewed".
 
-**4.4 ⏸ Build provenance and signed artefacts [I-9].** SLSA provenance and signatures on `kernel.elf`
-and the ISO, in the form D10 picks.
+**4.4 ⬜ Build provenance and signed artefacts [I-9].** SLSA provenance and signatures on `kernel.elf`
+and the ISO: Sigstore keyless signing from the release workflow, its actions pinned by SHA, and
+release tags signed by the maintainer's key.
 
 **4.5 ⬜ Releases that carry their evidence.** The four releases so far carry an ISO and its checksum
 from an unsigned tag. Each release also carries the SBOM, the provenance of 4.4 and the expected PCR
@@ -225,27 +220,34 @@ the release, including the PCR values. Needs 4.5.
 **4.13 ⬜ Publish the threat model [F-4.3].** It is a section of `SECURITY.md`, not a versioned
 document.
 
+**4.15 ⬜ CI throughput.** A merge queue, so a merge to `main` no longer re-runs the whole suite on
+every other open pull request; and a fast path that skips the QEMU gates for a change touching only
+documentation. The fast path is decided by a checked allowlist of paths, never by a label, and its
+checker ships with a harness showing a code change cannot take it. The merge queue is a ruleset
+change, made after the pull request that adds the `merge_group` trigger has merged.
+
 ### Track 5: closing the known limitations
 
 
-**5.4 ⏸ Exec only from a file capability** (1.23). A spawn call that takes a file capability carrying
+**5.4 ⬜ Exec only from a file capability** (1.23). A spawn call that takes a file capability carrying
 `EXEC`, with `fs_server` supplying the bytes through it; `SYS_SPAWN_IMAGE` then needs a capability no
-session holds (D7). A compiler's output still runs, from a home the policy grants `EXEC`. Witness: a
+session holds. A compiler's output still runs, from a home the policy grants `EXEC`. Witness: a
 session holding a readable, non-`EXEC` file cannot run it by either route.
 
-**5.6 ⏸ Measured boot whenever a TPM is present** (2.9). A machine with a TPM fails closed when
+**5.6 ⬜ Measured boot whenever a TPM is present** (2.9). A machine with a TPM fails closed when
 measurement or sealing fails; one without boots, says so at install and at every login, and the
 installer records it. The `MEASURED_BOOT_REQUIRED=1` build stays, for deployments that refuse
 TPM-less machines.
 
-**5.7 ⏸ Rollback anchoring** (1.12). Refuse an unanchored volume on a machine with a TPM unless the
+**5.7 ⬜ Rollback anchoring** (1.12). Refuse an unanchored volume on a machine with a TPM unless the
 installer recorded it as deliberate; advance the counter at clean shutdown and at a bounded interval
 of writes, shrinking the window from one boot to that interval; later, opt-in, eMMC RPMB as a second
 anchor; and an export path for a volume moved between machines.
 
-**5.8 ⏸ Kernel updates without a lockout** (2.9a). Compute the PCR values a new boot image will
+**5.8 ⬜ Kernel updates without a lockout** (2.9a). Compute the PCR values a new boot image will
 produce, seal a second copy of the volume key to them before rebooting, and drop the old seal only
-after the new image has unlocked once. Needs D5; the reproducible ISO it relied on is done (#557).
+after the new image has unlocked once. Over signed kernels, which makes `PCR[4]` the same for every
+signed kernel; the reproducible ISO it relies on is done (#557).
 
 **5.9 ⬜ Reclaimable kernel memory** (2.5, then 2.3). The untyped reset: revoking an untyped
 capability destroys everything carved from it, and the watermark is reset and the pins cleared only

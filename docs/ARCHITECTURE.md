@@ -422,7 +422,9 @@ preemption would have left, with `rsp` biased by 8 to satisfy the System V ABI's
 function entry.
 
 **Spawn is suspended.** A spawned child is not schedulable until its supervisor has endowed it and
-called `SYS_TASK_RESUME`, so no child can observe a half-populated cspace. The supervisor's
+called `SYS_TASK_RESUME`, so no child can observe a half-populated cspace. The spawn path builds the
+child's first frame without publishing it (`sched_fabricate_user_frame`), so there is no moment at
+which another CPU could choose it (S150). The supervisor's
 `CAP_TCB` to the child carries READ, WRITE and MINT: MINT so it can hand on less than it holds, as
 `init` gives the shell's watcher a copy that can only wait (decision D1; S140).
 

@@ -2063,7 +2063,11 @@ typedef struct tcb {
     int8_t   rq_home;
     int16_t  rq_next;
     int16_t  rq_prev;
-    uint8_t  padding[1];
+    /* Set by do_spawn_inner while it is still building this task, from its
+     * frame being fabricated to its return. Read only by the selection check
+     * under SCHED_INVARIANTS and SPAWN_WINDOW_WIDEN (S150): no CPU may choose a
+     * task that is still being built. Was the last byte of padding. */
+    uint8_t  spawn_building;
 } tcb_t;
 
 /* The task table is carved from the kernel's untyped reserve, and the reserve is
@@ -2768,6 +2772,14 @@ uint32_t acpi_table_length(const struct acpi_sdt_header *h);
 uint64_t interrupt_handler64(struct interrupt_frame64 *frame);
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs);
 void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp);
+/* The same frame, without publishing it: runnable_ctx is left as it was. The
+ * spawn path uses this, so a spawned child is never selectable before its
+ * supervisor resumes it (S150). */
+void sched_fabricate_user_frame(int id, uint64_t entry, uint64_t user_rsp);
+/* The end of do_spawn_inner: the child stays unpublished and stops being "still
+ * being built", both under the scheduler lock so the S150 check at selection
+ * sees the two change together. */
+void sched_spawn_finish(int id);
 /* Called from interrupt_handler64 when the caller has pending_block set (or is
  * already in a BLOCKED_* state). Saves the trap frame first, then publishes the
  * waiter under the IPC lock so a cross-CPU wake always patches a valid frame.

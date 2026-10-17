@@ -223,7 +223,8 @@ DEFECT_FLAGS = \
 	SHOOTDOWN_DEAF_CPU SHOOTDOWN_FAIL_OPEN \
 	WAIT_WAKE_EARLY WAIT_WAKE_WIDEN PIT_SQUARE_WAVE \
 	RUNQ_UNHOMED RUNQ_NO_STEAL \
-	TICKLESS_PROBE TICKLESS_OFF TICKLESS_NO_KICK
+	TICKLESS_PROBE TICKLESS_OFF TICKLESS_NO_KICK \
+	SPAWN_PUBLISH_EARLY SPAWN_WINDOW_WIDEN
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2220,6 +2221,21 @@ endif
 TICKLESS_NO_KICK ?= 0
 ifeq ($(TICKLESS_NO_KICK),1)
 CFLAGS += -DTICKLESS_NO_KICK
+endif
+
+# A spawned child is never schedulable before its supervisor resumes it (S150).
+# SPAWN_PUBLISH_EARLY=1 (defect) restores the spawn path's publish-then-retract,
+# a window in which another CPU can run the child before it is endowed;
+# SPAWN_WINDOW_WIDEN=1 (instrument) holds the spawning CPU there for three AP
+# ticks and turns on the check that no CPU chooses a task still being built.
+# See smoke-spawn-window.
+SPAWN_PUBLISH_EARLY ?= 0
+ifeq ($(SPAWN_PUBLISH_EARLY),1)
+CFLAGS += -DSPAWN_PUBLISH_EARLY
+endif
+SPAWN_WINDOW_WIDEN ?= 0
+ifeq ($(SPAWN_WINDOW_WIDEN),1)
+CFLAGS += -DSPAWN_WINDOW_WIDEN
 endif
 
 # SHOOTDOWN_DEAF_CPU=1 (instrument) makes one CPU flush without acknowledging a
@@ -14961,6 +14977,28 @@ smoke-smp-nokick-control:
 	@$(MAKE) --no-print-directory SMP_SELFTEST=1 TICKLESS_NO_KICK=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMP_NOSTEAL_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) MARKER_CHANNEL=kcon \
 		REQUIRE_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# A spawned child is never schedulable before its supervisor resumes it (S150).
+# SPAWN_WINDOW_WIDEN=1 holds every spawning CPU for three AP ticks just after the
+# child's frame is built, and checks that no CPU ever chooses a task still being
+# built. Four CPUs boot to the login prompt; the three idle APs choose on every
+# tick, so a child published in that window would be taken.
+.PHONY: smoke-spawn-window
+smoke-spawn-window:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SPAWN_WINDOW_WIDEN=1
+	@$(MAKE) --no-print-directory SPAWN_WINDOW_WIDEN=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=4 FAIL_MARKER='PANIC:' tools/smoke_test.sh horus.iso
+
+# Control arm: publish-then-retract, as before 2026-10-16. An idle AP chooses the
+# child inside the window and the check names it.
+.PHONY: smoke-spawn-window-control
+smoke-spawn-window-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SPAWN_WINDOW_WIDEN=1 SPAWN_PUBLISH_EARLY=1
+	@$(MAKE) --no-print-directory SPAWN_WINDOW_WIDEN=1 SPAWN_PUBLISH_EARLY=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=4 MARKER_ONLY=1 \
+		EXPECT_FAULT='PANIC: a spawned child was chosen before its spawn finished' tools/smoke_test.sh horus.iso
 
 # Control arm for the run-list audit (docs/design/scheduler.md 3.5): with
 # RUNQ_UNHOMED=1 create_task puts a new task on no CPU's list, so nothing would

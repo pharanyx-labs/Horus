@@ -2273,6 +2273,12 @@ jobs:
         run: make smoke-tickless
       - name: Control arm, APs that keep ticking while idle exceed the bound
         run: make smoke-tickless-control
+      # A spawned child is never schedulable before its supervisor resumes it
+      # (S150): each spawn is held for three AP ticks once the frame is built.
+      - name: No CPU chooses a child still being spawned
+        run: make smoke-spawn-window
+      - name: Control arm, a child published during its spawn is chosen and named
+        run: make smoke-spawn-window-control
       # Eight CPUs on the topologies firmware produces, not only QEMU's default:
       # sparse LAPIC ids, SMT, and more threads than slots (docs/ARCHITECTURE.md
       # section 7). Every schedulable AP must run a task and none may be an SMT

@@ -307,8 +307,9 @@ that budget; raising `MAX_TASKS` spends pool memory instead.
 
 ### 3.3 SMP scheduling is simple
 
-One shared run pool scanned linearly: no affinity, no load balancing, no priorities and no
-real-time guarantees. Under TCG emulation more cores are slower than one; the benefit needs KVM or
+Each CPU has a run list, and a CPU with nothing of its own takes another's waiting task (#584),
+but there is no affinity, no priority and no real-time guarantee yet; an idle AP stops its timer
+until another CPU's tick wakes it (#585). Under TCG emulation more cores are slower than one; the benefit needs KVM or
 hardware. Each supported CPU costs about 104 KiB of `.bss` whether present or not, so beyond about
 16 the per-CPU blocks would have to be allocated at boot. The scheduler, capability, IPC, spawn,
 page and storage locks are each global, and a storage call holds the storage layer for the whole
@@ -320,7 +321,8 @@ replaces this is [`design/scheduler.md`](design/scheduler.md) (ROADMAP 1.8).
 
 `SYS_CLOCK_GETTIME` gives monotonic time since boot at 10 ms resolution, deliberately (S34). There
 is no wall clock, no per-task timer, no timeout on IPC, and no libc `clock_gettime`. A blocked task
-waits until it is woken or killed. The PIT runs at a fixed 100 Hz.
+waits until it is woken or killed. The PIT runs at a fixed 100 Hz on the BSP, and a busy AP's
+one-shot timer at the same 10 ms.
 
 ### 3.6 `fs_server` polls while the volume is sealed
 

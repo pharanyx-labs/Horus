@@ -1653,8 +1653,15 @@ static inline uint64_t task_kstack_top(int id) {
  * `id`'s kernel stack, so the timer switch can iretq into a freshly spawned
  * user task exactly as if it had just been preempted at its entry point. cs/ss
  * are the 64-bit user segments, IF is set so the task is itself preemptible,
- * and all GP registers start zeroed. */
-void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp) {
+ * and all GP registers start zeroed.
+ *
+ * This only BUILDS the frame. Whether the task may run is runnable_ctx, which
+ * this leaves alone; sched_prepare_user_context below builds and publishes.
+ * The two are separate because the spawn path must never publish (S150): it
+ * used to call the publishing version and clear runnable_ctx a few instructions
+ * later, and a CPU choosing in between ran the child before its supervisor had
+ * endowed it. */
+void sched_fabricate_user_frame(int id, uint64_t entry, uint64_t user_rsp) {
     if (id < 0 || id >= g_max_tasks) return;
     uint64_t top = task_kstack_top(id) & ~0xFULL;
     struct interrupt_frame64 *f =
@@ -1691,6 +1698,31 @@ void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp) {
     f->ss       = 0x33;
 
     tasks[id].saved_ksp     = (uint64_t)f;
+}
+
+/* See kernel.h. Under the scheduler lock, which every selection holds from its
+ * sched_selectable test to the S150 check, so a choice either finished before
+ * this ran or sees the task unpublished: the check cannot miss a task chosen
+ * while it was still being built. runnable_ctx is already 0 here unless the
+ * SPAWN_PUBLISH_EARLY defect published it. */
+void sched_spawn_finish(int id) {
+    if (id <= 0 || id >= g_max_tasks) return;
+#ifdef SMP
+    sched_raw_lock();
+#endif
+    tasks[id].runnable_ctx   = 0;
+    tasks[id].spawn_building = 0;
+#ifdef SMP
+    sched_raw_unlock();
+#endif
+}
+
+/* Build the frame and publish it: from here any CPU may choose the task. For
+ * exec, which rebuilds the running task's own context, and for launchers that
+ * start a task at once. */
+void sched_prepare_user_context(int id, uint64_t entry, uint64_t user_rsp) {
+    if (id < 0 || id >= g_max_tasks) return;
+    sched_fabricate_user_frame(id, entry, user_rsp);
     tasks[id].runnable_ctx  = 1;
 }
 
@@ -3055,7 +3087,31 @@ static int rq_steal(int cpu, int start, int stalled_only, uint64_t now)
  * Each candidate still passes sched_selectable, so placement can make a task
  * wait but never makes a task run that the rule would refuse. Caller holds
  * sched_raw_lock. */
+static int sched_pick_after_list(int start, int include_start);
+
+/* The selection seam. Under SCHED_INVARIANTS (and the SPAWN_WINDOW_WIDEN build
+ * of smoke-spawn-window) it also checks S150 on every choice: the task chosen is
+ * not one do_spawn_inner is still building. sched_selectable cannot pass such a
+ * task while the spawn path publishes nothing, so the check can fail only if
+ * something publishes a task early, which is the defect SPAWN_PUBLISH_EARLY
+ * puts back. */
 static int sched_pick_after(int start, int include_start)
+{
+    int t = sched_pick_after_list(start, include_start);
+#if defined(SCHED_INVARIANTS) || defined(SPAWN_WINDOW_WIDEN)
+    if (t > 0 && tasks[t].spawn_building) {
+        panic_begin();
+        panic_str("\nPANIC: a spawned child was chosen before its spawn finished: task ");
+        panic_dec(t);
+        panic_str(" cpu "); panic_dec(this_cpu());
+        panic_str("\n");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+#endif
+    return t;
+}
+
+static int sched_pick_after_list(int start, int include_start)
 {
     int cpu = this_cpu();
     if (cpu < 0 || cpu >= MAX_CPUS) cpu = 0;

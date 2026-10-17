@@ -635,7 +635,13 @@
 # every tick runs to wake stopped APs for waiting work, idt.c's two call sites,
 # and the TICKLESS_PROBE instrument, which compiles out of the ship build. The
 # timer and the wake are the scheduler's, so core.
-core_budget_loc: 12124
+# 2026-10-16: 12124 -> 12155, +31, LIMITATIONS 1.40 (S150): scheduler.c's
+# frame builder split from the publish (sched_fabricate_user_frame),
+# sched_spawn_finish, and the selection check that no CPU chooses a task still
+# being spawned, which compiles out of the ship build; kspawn.c building the
+# frame unpublished, with the SPAWN_PUBLISH_EARLY arm and the SPAWN_WINDOW_WIDEN
+# instrument. Spawn and selection are core.
+core_budget_loc: 12155
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

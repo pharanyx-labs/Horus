@@ -446,40 +446,54 @@ static int do_spawn_inner(int caller, uint32_t stdio_spec, uint32_t untyped_inde
     }
     spin_unlock(&cap_lock);
 
-    /* Wire pipe stdio (if this spawn requested it) BEFORE publishing a resumable
-     * frame below — until sched_prepare_user_context sets runnable_ctx, no CPU can
-     * schedule the child, so it cannot reach posix_init before its stdio is set. */
+    /* Wire pipe stdio (if this spawn requested it) while the child is still
+     * unpublished, so it cannot reach posix_init before its stdio is set. */
     wire_child_stdio(new_id, caller, stdio_spec);
 
-    /* Fabricate an initial resumable trap frame so sched_enter_user and the
-     * preemptive scheduler can iretq into this task (entry/esp/cr3 are final). */
+    /* SPAWN SUSPENDED, AND NEVER PUBLISHED (S150). Fabricate the child's initial
+     * resumable frame without making it schedulable: runnable_ctx stays at the 0
+     * create_task left, and only the supervisor's SYS_TASK_RESUME sets it.
+     *
+     * Suspension closes a whole BUG CLASS. A supervisor's only way to endow a
+     * child is `spawn -> sys_cap_grant... -> resume`, and a child that runs
+     * before the grants land fails in whatever way its missing capability
+     * implies. Three such failures were papered over with retry loops before the
+     * pattern was recognised (fs_server's registration, posix's fs_connect, the
+     * shell's console capability), and suspending the child replaced them all.
+     *
+     * But suspension was written as publish-then-retract: this path called
+     * sched_prepare_user_context, which sets runnable_ctx = 1, and cleared it on
+     * the next line. Any CPU choosing in between ran the child anyway. Few
+     * instructions, but a virtual CPU can be descheduled inside them, and then
+     * the window is as long as the host likes: on 2026-10-16 smoke-installer-sd-
+     * smp failed 3 boots in 50 on main because init's shell watcher ran, found
+     * nothing granted, and exited before init could endow it ("could not start
+     * the shell's watcher (step -4)"), and a detector caught a CPU choosing the
+     * watcher inside the window. A frame that is never published has no window.
+     *
+     * SPAWN_PUBLISH_EARLY=1 restores publish-then-retract, for the control arm;
+     * SPAWN_WINDOW_WIDEN=1 (an instrument) holds the spawning CPU at that point
+     * for a few of another CPU's ticks, so the arm loses the race every boot. */
+    tasks[new_id].spawn_building = 1;
+#ifndef SPAWN_PUBLISH_EARLY
+    sched_fabricate_user_frame(new_id, tasks[new_id].eip,
+                               tasks[new_id].esp ? tasks[new_id].esp : 0x007ff000ULL);
+#else
     sched_prepare_user_context(new_id, tasks[new_id].eip,
                                tasks[new_id].esp ? tasks[new_id].esp : 0x007ff000ULL);
-
-    /* SPAWN SUSPENDED. sched_prepare_user_context just set runnable_ctx = 1,
-     * which is what makes a task schedulable; clear it so the child cannot run
-     * until its supervisor explicitly resumes it (SYS_TASK_RESUME).
-     *
-     * This closes a whole BUG CLASS, not one bug. A supervisor's only way to
-     * endow a child is `spawn -> sys_cap_grant... -> child runs`, but spawn used
-     * to publish the child as runnable immediately, so under SMP it genuinely
-     * started executing on another core BEFORE the grants landed. The child then
-     * ran with a partially-populated cspace and failed in whatever way its
-     * missing capability implied. Three separate instances of this were found and
-     * individually papered over with retry loops before the pattern was
-     * recognised: fs_server's registration, posix's fs_connect, and finally the
-     * shell's console capability — which had no retry, so the shell simply never
-     * printed its banner and CI timed out.
-     *
-     * Retrying in each client is whack-a-mole: it needs every current AND future
-     * client to anticipate a race it cannot see. Suspending the child instead
-     * makes the safe ordering the ONLY expressible one.
-     *
-     * The failure mode also improves, which is the real point. Forgetting to
-     * resume is a DETERMINISTIC hang — the child never runs, every time, locally
-     * as well as in CI. Racing an endowment was intermittent, and intermittent
-     * failures get re-run rather than fixed. */
-    tasks[new_id].runnable_ctx = 0;
+#endif
+#ifdef SPAWN_WINDOW_WIDEN
+    {
+        /* Wait for three of the APs' ticks, in guest time, bounded so a machine
+         * with no AP ticking does not wedge here (the same clock and bound
+         * kdiag_ch uses under KDIAG_SPLIT_WIDEN). */
+        extern volatile unsigned long ap_timer_ticks;
+        unsigned long t0 = ap_timer_ticks;
+        for (unsigned long g = 0; ap_timer_ticks < t0 + 3 && g < 200000000ul; g++)
+            __asm__ volatile ("pause");
+    }
+#endif
+    sched_spawn_finish(new_id);         /* runnable_ctx stays 0; building ends */
 
     return new_id;
 }

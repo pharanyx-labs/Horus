@@ -13959,7 +13959,16 @@ smoke-exec-reenter-control:
 #   natural rate            : 9/200 -> 0/200   (Fisher p ~ 0.0036)
 DEFER_EXEMPTION_LIVE_RE = PROC_SELFTEST: suspend OK
 DEFER_EXEMPTION_MIN_LIVE ?= 3
-DEFER_EXEMPTION_BOOTS ?= 8
+# SIZED FROM CI'S MEASURED RATE (2026-10-17, the memory note "arm bounds from CI
+# rate"). Up to #583 the arm reproduced on boot 1 or 2 of every CI run: 6 hits in
+# 8 boots. From #584 (per-CPU run lists) it was 4 in 20, and #588's run went 8 of
+# 8 clean and red; locally 2 in 10. At about 0.15 a boot, 8 boots miss 27% of the
+# time, so the bound is 46 (0.85^46 < 0.1%). A clean boot's workload ends at
+# about 3 s ("stale-reply OK") and the latest hit seen came at 2.96 s, so a boot
+# is given DEFER_EXEMPTION_BOOT_TIMEOUT seconds rather than the 40 a shell banner
+# that PROC_SELFTEST never prints would take.
+DEFER_EXEMPTION_BOOTS ?= 46
+DEFER_EXEMPTION_BOOT_TIMEOUT ?= 15
 .PHONY: smoke-defer-exemption
 smoke-defer-exemption:
 	@$(MAKE) --no-print-directory clean
@@ -13971,7 +13980,8 @@ smoke-defer-exemption:
 		tools/smoke_test.sh horus.iso
 
 # Control arm. Same widening, exemption cleared early: the audit must accuse.
-# Reproduces in 8 boots of 10, so this tries up to DEFER_EXEMPTION_BOOTS and
+# Reproduced in 8 boots of 10 when written, about 0.15 a boot on CI since #584
+# (see DEFER_EXEMPTION_BOOTS), so this tries up to DEFER_EXEMPTION_BOOTS and
 # stops at the first reproduction -- never assert a probabilistic event from one
 # boot, which is the mistake `smoke-kstack-race-control` records costing two red
 # mains on 2026-08-19.
@@ -13988,7 +13998,7 @@ smoke-defer-exemption-control:
 	: "arms, found in the same sweep on 2026-08-30."; \
 	while [ $$n -lt $(DEFER_EXEMPTION_BOOTS) ]; do \
 	    n=$$((n+1)); \
-	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh horus.iso 2>&1); \
+	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(DEFER_EXEMPTION_BOOT_TIMEOUT) tools/smoke_test.sh horus.iso 2>&1); \
 	    if echo "$$out" | grep -q 'stale scheduler claim'; then \
 	        echo "  boot $$n/$(DEFER_EXEMPTION_BOOTS): HIT, a stale claim reached ring 3"; \
 	        hit=1; break; \

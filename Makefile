@@ -6330,9 +6330,17 @@ NEWLIB_GLUE_OBJS = userspace/newlib_glue.o userspace/newlib_glue64.o \
 # its flags stamp, written to force a rebuild when the flags change, was never
 # read: after #557 added the build-path map, every existing tree kept a libc
 # carrying its directory, and its ISO matched no one else's (found building
-# v0.4.1-alpha in an older worktree, 2026-10-12). Now a changed script runs, the
-# stamp decides, and a no-op touches libc.a so the next make does not ask again.
-$(NEWLIB_LIB)/libc.a: tools/build_newlib.sh
+# v0.4.1-alpha in an older worktree, 2026-10-12).
+#
+# AND THE STAMP IS READ ON EVERY BUILD. Running the script only when it was
+# newer than libc.a still missed the other way the stamp changes: the build's
+# own settings. smoke-repro-iso-path-control builds newlib with its paths
+# unmapped (NEWLIB_PATH_UNMAPPED=1, the defect) in the working tree, and every
+# later build there found a libc.a newer than the script and reused it, so a
+# smoke-repro-iso in the same tree went red on a libc the gate never asked for
+# (2026-10-17). So the script always runs, the stamp always decides, and a no-op
+# leaves libc.a's time alone, so nothing that links it is rebuilt for nothing.
+$(NEWLIB_LIB)/libc.a: tools/build_newlib.sh FORCE
 	@tools/build_newlib.sh
 
 # Everything compiled with NEWLIB_CFLAGS needs the headers that rule installs.

@@ -84,10 +84,9 @@ fi
 
 if [ -f "$PREFIX/x86_64-elf/lib/libc.a" ]; then
 	if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$NEWLIB_STAMP_KEY" ]; then
-		echo "newlib: $PREFIX/x86_64-elf/lib/libc.a already built, nothing to do"
-		# The Makefile runs this when the script is newer than libc.a; marking
-		# the library current stops it asking again on every build.
-		touch "$PREFIX/x86_64-elf/lib/libc.a"
+		# The Makefile runs this on every build, so that the stamp is read
+		# whenever the flags could have changed. Nothing changed: leave the
+		# library's time alone, or everything that links it would rebuild.
 		exit 0
 	fi
 	echo "newlib: target flags changed since the last build -- rebuilding"

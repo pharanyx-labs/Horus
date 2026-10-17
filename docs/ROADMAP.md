@@ -61,7 +61,7 @@ The recommendation is the one the route is written around; it is not the decisio
 | Boot | Measured boot by default, rollback anchoring | 5.6, 5.7 | 2.9, 1.12 | D3, D4 |
 | Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | D10, D5 |
 | SMP | Deadline timers, timers as notifications | 1.8 step 3b, 2.2 | | |
-| Memory | Reclaimable kernel memory | 5.9, 2.1 | 2.5, 2.3 | |
+| Memory | Reclaimable kernel memory | 5.9 | 2.5, 2.3 | |
 | Proofs | Concurrent protocols modelled | 5.11 | narrows 5.5 | D9 |
 | Swap | Secrets kept out of swap | 2.12 | | D13 |
 
@@ -115,10 +115,6 @@ affinity (6), more than eight CPUs (7) and targeted shootdown (8).
 
 ### Track 2: toward a complete operating system
 
-**2.1 ⬜ Reclaiming a frame's memory.** Part of 5.9. `MAX_DYN_FRAMES` (256) bounds how many frames
-the kernel can name at once, which a real workload meets before its untyped budget; it becomes a
-table sized from the budget.
-
 **2.2 ⬜ Timers and a wall clock.** Per-task timers delivered as notifications, and with them
 `SYS_IPC_CALL` with a timeout, following the one-shot timers of 1.8 step 3 (which also end the
 fixed 100 Hz tick). Then a libc `clock_gettime`, and a wall clock, which needs an RTC and a way to
@@ -154,7 +150,7 @@ controller is identified and the drive answers IDENTIFY), USB through xHCI (and 
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 12,155-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 12,196-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase

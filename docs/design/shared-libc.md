@@ -76,8 +76,9 @@ allocator stands**. An untyped region is a bump pointer that never gives a frame
 permanently spend 8 KiB of the 3.5 MiB region init and the shell share, and the shell would stop
 being able to start programs after at most about 440 commands a boot. A per-slot reserve of
 frames was considered next and fails on a different bound: those frames would be named kernel
-objects, and the kernel names at most `MAX_DYN_FRAMES` (256) at once, against 256 slots of two
-pages each.
+objects, and the kernel named at most 256 at once when this was decided (2026-09), against 256
+slots of two pages each. The table is sized from the arena now (roadmap 2.1), but 512 pages would
+still be most of the 3.5 MiB user half.
 
 So the data is **not an object at all** (D6). It is private memory, exactly like a program's own
 `.data`:

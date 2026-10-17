@@ -355,6 +355,7 @@ control_arms:
   smoke-smp-nokick-control: smoke-smp
   smoke-tickless-control: smoke-tickless
   smoke-spawn-window-control: smoke-spawn-window
+  smoke-frame-budget-control: smoke-frame-budget
   smoke-runq-unhomed-control: smoke-sched-invariants
   smoke-shootdown-unacked-control: smoke-shootdown-unacked
   smoke-switch-commit-control: smoke-switch-commit
@@ -595,6 +596,7 @@ gates:
   - smoke-smp-topology
   - smoke-tickless
   - smoke-spawn-window
+  - smoke-frame-budget
   - smoke-smp-ap-late
   - smoke-smp-ap-closed
   - smoke-smp-kvm

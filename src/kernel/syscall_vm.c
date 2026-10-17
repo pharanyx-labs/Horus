@@ -442,10 +442,9 @@ void h_unmap_frame(struct interrupt_frame64 *r) {
 
 /* The rollback has to remember one physical address per page it installed, and
  * that record lives on the kernel stack -- so the bound on the region is the
- * bound on the record. 64 pages is 256 KiB, and already a quarter of the 256
- * frames MAX_DYN_FRAMES lets the kernel NAME at once, so this is not the limit a
- * real workload meets first. A larger region is the region-OBJECT work (a length
- * carried in the capability, roadmap 2.1), not a bigger array here. */
+ * bound on the record. 64 pages is 256 KiB. A larger region is the region-OBJECT
+ * work (a length carried in the capability, roadmap 2.1), not a bigger array
+ * here. */
 #define FRAME_REGION_MAX  64
 
 void h_map_region(struct interrupt_frame64 *r) {

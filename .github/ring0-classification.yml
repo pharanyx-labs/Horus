@@ -641,7 +641,11 @@
 # being spawned, which compiles out of the ship build; kspawn.c building the
 # frame unpublished, with the SPAWN_PUBLISH_EARLY arm and the SPAWN_WINDOW_WIDEN
 # instrument. Spawn and selection are core.
-core_budget_loc: 12155
+# 2026-10-17: 12155 -> 12196, +41, roadmap 2.1: untyped.c's FRAME_BUDGET_SELFTEST
+# harness (frame_budget_selftest, fb_report), which compiles out of the ship
+# build, and smp.c's dispatch to it. The table's size is a constant, so the ship
+# code is unchanged in length. The untyped allocator is core.
+core_budget_loc: 12196
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

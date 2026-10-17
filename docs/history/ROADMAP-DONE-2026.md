@@ -26,13 +26,14 @@ open. The account of each is in its pull requests.
 | 1.55 A durable write-ahead journal [I-10], [I-11] | 2026-08-16, #158, #161 |
 | 1.6 Unbounded revocation closure [I-3] | 2026-08-16, #160 |
 | 1.7 Serialise the spawn and exec path [G-10], [G-9] | 2026-08-17 to 2026-08-21, #164, #168, #170, #188 |
-| 1.8 Per-CPU scheduling, steps 0, 1, 1b and 2a | LIMITATIONS 5.3e settled (#526), the shootdown wait fails closed (#523), SMT siblings refuse work (#525), one selection rule for every switch path (#524). 2026-10-09 |
+| 1.8 Per-CPU scheduling, steps 0, 1, 1b, 2a, 2 and 3a | LIMITATIONS 5.3e settled (#526), the shootdown wait fails closed (#523), SMT siblings refuse work (#525), one selection rule for every switch path (#524), 2026-10-09; per-CPU run lists and stealing (#584), one-shot AP timers and tickless idle (#585), 2026-10-16 |
 
 ## Track 2: toward a complete operating system
 
 | Item | Delivered |
 |---|---|
 | 2.1 Frames, shared memory and sized regions [F-2.1] | Frame capabilities, all-or-nothing region maps, sized frames, and copy-on-write refused over a frame (S26, S27, S35 to S38). 2026-08-22 to 2026-08-27 |
+| 2.1 Reclaiming a frame's memory, the naming bound | The frame table is sized from the arena (`MAX_DYN_FRAMES` = `UNTYPED_ARENA_PAGES`), so a frame is refused only when its region runs out, never by the table. 2026-10-17, #588. Reclaiming the memory itself is 5.9 |
 | 2.2 Time and timers [F-2.6], the monotonic clock | A monotonic clock at 10 ms, deliberately coarse (S34). 2026-08-24, #208 |
 | 2.3 Process and session model [F-2.4], `fork` | `fork` with copy-on-write (S39, S40), derived capabilities for the child (S41), and `fork` then `exec` keeping lineage (S42). 2026-08-28 |
 | 2.4 A VFS layer [F-2.2], the walker | A per-task mount table and one path walker in a library, not a server (S29); `init` provisions a server's endpoint from its own budget (S59). 2026-08-22 to 2026-08-30 |

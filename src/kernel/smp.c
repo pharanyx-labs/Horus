@@ -788,6 +788,11 @@ void smp_bringup(void) {
      * VOLUME is what is refused. */
     { extern void measured_persist_selftest(void); measured_persist_selftest();
       for (;;) __asm__ volatile ("hlt"); }
+#elif defined(FRAME_BUDGET_SELFTEST)
+    /* Gated: the frame table never refuses a frame the arena could hold
+     * (roadmap 2.1). Carves frames until each region runs out. */
+    { extern void frame_budget_selftest(void); frame_budget_selftest();
+      for (;;) __asm__ volatile ("hlt"); }
 #elif defined(NVCOUNTER_SELFTEST)
     /* Gated: the TPM NV counter provisions, reads, and only goes up (S70). */
     { extern void nvcounter_selftest(void); nvcounter_selftest();

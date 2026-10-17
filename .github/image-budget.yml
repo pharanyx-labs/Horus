@@ -77,4 +77,10 @@
 #   its padding, 48 bytes each; the section's page rounding makes it 12 KiB.
 #   Measured with nm against the build without the change. 48 bits of
 #   generation, as CAP_TCB has, rather than 32 that a busy slot could wrap.
-bss_bytes: 6946816
+# 2026-10-16: 6,971,392 bytes (+24,576), for roadmap 2.1: the frame table is
+#   sized from the arena, MAX_DYN_FRAMES = UNTYPED_ARENA_PAGES = 1664 instead of
+#   256, so no frame is refused while the arena could hold it. dyn_frames 4,096 ->
+#   26,624 (16 bytes a slot) and gc_fr_marks 256 -> 1,664, +23,936, which the
+#   section's page rounding makes 24 KiB. Measured with nm against the build
+#   without the change.
+bss_bytes: 6971392

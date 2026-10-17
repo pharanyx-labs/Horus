@@ -224,7 +224,8 @@ DEFECT_FLAGS = \
 	WAIT_WAKE_EARLY WAIT_WAKE_WIDEN PIT_SQUARE_WAVE \
 	RUNQ_UNHOMED RUNQ_NO_STEAL \
 	TICKLESS_PROBE TICKLESS_OFF TICKLESS_NO_KICK \
-	SPAWN_PUBLISH_EARLY SPAWN_WINDOW_WIDEN
+	SPAWN_PUBLISH_EARLY SPAWN_WINDOW_WIDEN \
+	FRAME_TABLE_FIXED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2236,6 +2237,18 @@ endif
 SPAWN_WINDOW_WIDEN ?= 0
 ifeq ($(SPAWN_WINDOW_WIDEN),1)
 CFLAGS += -DSPAWN_WINDOW_WIDEN
+endif
+
+# The frame table is sized from the arena (roadmap 2.1). FRAME_BUDGET_SELFTEST=1
+# carves frames until each region refuses and reports why (smoke-frame-budget);
+# FRAME_TABLE_FIXED=1 (defect) restores the fixed 256-entry table.
+FRAME_BUDGET_SELFTEST ?= 0
+ifeq ($(FRAME_BUDGET_SELFTEST),1)
+CFLAGS += -DFRAME_BUDGET_SELFTEST
+endif
+FRAME_TABLE_FIXED ?= 0
+ifeq ($(FRAME_TABLE_FIXED),1)
+CFLAGS += -DFRAME_TABLE_FIXED
 endif
 
 # SHOOTDOWN_DEAF_CPU=1 (instrument) makes one CPU flush without acknowledging a
@@ -14985,6 +14998,27 @@ smoke-smp-nokick-control:
 	@$(MAKE) --no-print-directory SMP_SELFTEST=1 TICKLESS_NO_KICK=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMP_NOSTEAL_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) MARKER_CHANNEL=kcon \
 		REQUIRE_MARKER='SMP_SELFTEST: FAIL' tools/smoke_test.sh horus.iso
+
+# Whatever refuses a frame is the region running out, never the frame table
+# (roadmap 2.1): the kernel carves single-page frames from each half of the
+# arena until it refuses, and the table must still have room.
+.PHONY: smoke-frame-budget
+smoke-frame-budget:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FRAME_BUDGET_SELFTEST=1
+	@$(MAKE) --no-print-directory FRAME_BUDGET_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='FRAMEBUDGET: PASS' FAIL_MARKER='FRAMEBUDGET: FAIL' tools/smoke_test.sh horus.iso
+
+# Control arm: the fixed 256-entry table, which fills with most of the user
+# half still unspent.
+.PHONY: smoke-frame-budget-control
+smoke-frame-budget-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory FRAME_BUDGET_SELFTEST=1 FRAME_TABLE_FIXED=1
+	@$(MAKE) --no-print-directory FRAME_BUDGET_SELFTEST=1 FRAME_TABLE_FIXED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='FRAMEBUDGET: FAIL the frame table filled first in the user half' tools/smoke_test.sh horus.iso
 
 # A spawned child is never schedulable before its supervisor resumes it (S150).
 # SPAWN_WINDOW_WIDEN=1 holds every spawning CPU for three AP ticks just after the

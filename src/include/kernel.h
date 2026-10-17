@@ -990,7 +990,7 @@ struct notification *notification_by_index(uint32_t idx);
  * kernel-memory disclosure would be an allowlist somebody remembered to write.
  *
  * An index instead makes the refusal a BOUND, checked against a table the
- * kernel populates: 0x400000 is four orders of magnitude past FRAME_INDEX_MAX,
+ * kernel populates: 0x400000 is three orders of magnitude past FRAME_INDEX_MAX,
  * so the legacy cap is refused by arithmetic rather than by an allowlist. The
  * base is 1 rather than 0 for the same reason a fresh endpoint does not claim
  * task 0 as its sender: a zeroed capability must not resolve to a real object.
@@ -998,7 +998,22 @@ struct notification *notification_by_index(uint32_t idx);
  * frametest checks that refusal on every boot, and FRAME_INDEX_UNCHECKED=1
  * removes the bound so the legacy cap resolves -- which is what makes the check
  * a test rather than an assertion. */
+/* HOW MANY FRAMES THE KERNEL CAN NAME AT ONCE IS WHAT THE ARENA CAN HOLD
+ * (roadmap 2.1). Every frame is page-aligned and at least one page, carved out
+ * of an untyped region inside the arena, so the arena can never hold more than
+ * UNTYPED_ARENA_PAGES of them: a table that size can never be what refuses a
+ * frame, and whatever refuses one is the region running out, which is the
+ * budget a capability actually grants. It was a fixed 256, a quarter of what the
+ * user half alone can hold (896 pages), so a workload carving small frames was
+ * refused with most of its untyped budget unspent, by a limit no capability
+ * expressed. The arena is sized at compile time, so the table is too; checked
+ * on boot by make smoke-frame-budget. FRAME_TABLE_FIXED=1 puts the 256 back, for
+ * its control arm. */
+#ifndef FRAME_TABLE_FIXED
+#define MAX_DYN_FRAMES         ((int)UNTYPED_ARENA_PAGES)
+#else
 #define MAX_DYN_FRAMES         256
+#endif
 #define DYN_FRAME_BASE         1
 #define FRAME_INDEX_MAX        (DYN_FRAME_BASE + MAX_DYN_FRAMES)
 

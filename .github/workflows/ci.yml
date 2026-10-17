@@ -3875,6 +3875,12 @@ jobs:
       # handing it to anyone who retyped a page gives out the layout for free.
       - name: Control arm — a bus address readable without a device capability
         run: make smoke-frame-dma-control
+      # Only the region refuses a frame (roadmap 2.1): the kernel carves frames
+      # until each half of the arena runs out, and the table still has room.
+      - name: The frame table never refuses a frame the arena could hold
+        run: make smoke-frame-budget
+      - name: Control arm, the fixed 256-entry table fills with the budget unspent
+        run: make smoke-frame-budget-control
 
   devcap:
     name: "A device capability names one device, and reaches only that device"

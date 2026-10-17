@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 580 `smoke-*` targets: 247 gates and 333 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 582 `smoke-*` targets: 248 gates and 334 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -132,6 +132,7 @@ There are 580 `smoke-*` targets: 247 gates and 333 control arms. Each row is a g
 | `smoke-enter-user-claim` | The first entry to ring 3 never claims a task another CPU already holds | S20 | `smoke-enter-user-claim-control`, `smoke-enter-user-collide-control` |
 | `smoke-smp` | Every CPU in the MADT comes online and runs a task, taking it from the BSP's run list after another CPU's tick wakes it (the selftest waits until every AP but the watcher has stopped before it creates work), no task runs on an SMT sibling, and TLB shootdown completes | S80 | `smoke-smp-nosteal-control`, `smoke-smp-nokick-control` |
 | `smoke-tickless` | Eight CPUs idle at the login prompt: over 500 of the BSP's ticks the APs take fewer LAPIC ticks than two APs ticking all the time would (the watcher is one) |  | `smoke-tickless-control` |
+| `smoke-frame-budget` | The kernel carves single-page frames from each half of the arena until it refuses, and the frame table still has room: only the region ever refuses a frame |  | `smoke-frame-budget-control` |
 | `smoke-spawn-window` | Four CPUs boot with every spawn held for three AP ticks once the child's frame is built, and no CPU ever chooses a child still being built | S150 | `smoke-spawn-window-control` |
 | `smoke-sibling-kick` | No task runs on an SMT sibling even when every sibling is interrupted while work is waiting | S101 | `smoke-sibling-kick-control` |
 | `smoke-shootdown-unacked` | A TLB shootdown that one CPU never acknowledges halts the kernel instead of returning | S124 | `smoke-shootdown-unacked-control` |

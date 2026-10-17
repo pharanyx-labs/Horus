@@ -360,6 +360,56 @@ uint64_t frame_phys_by_index(uint32_t idx) {
 #endif
 }
 
+#ifdef FRAME_BUDGET_SELFTEST
+/* make smoke-frame-budget (roadmap 2.1): whatever refuses a frame is the region
+ * running out, never the table. Carves single-page frames from the user half
+ * and then from the kernel half until each refuses, and asks why: if the table
+ * is full while a region still has a page to give, the table was the limit.
+ * Both halves, because both carve frames (shlib.c takes the shared libc's
+ * pages from the kernel half). It spends the whole arena, so the boot halts
+ * after reporting; this build is never anything but this test. One print()
+ * per verdict, so a marker cannot be split. */
+static void fb_report(const char *verdict, const char *what, uint32_t frames,
+                      uint64_t left) {
+    char line[200];
+    int n = 0;
+    for (const char *q = verdict; *q && n < 60; q++) line[n++] = *q;
+    for (const char *q = what; *q && n < 120; q++) line[n++] = *q;
+    const char *f = " frames="; for (const char *q = f; *q; q++) line[n++] = *q;
+    char d[24]; int k = 0; uint64_t v = frames;
+    do { d[k++] = (char)('0' + v % 10); v /= 10; } while (v && k < 20);
+    while (k) line[n++] = d[--k];
+    const char *l = " region_bytes_left="; for (const char *q = l; *q; q++) line[n++] = *q;
+    k = 0; v = left;
+    do { d[k++] = (char)('0' + v % 10); v /= 10; } while (v && k < 20);
+    while (k) line[n++] = d[--k];
+    line[n++] = '\n'; line[n] = 0;
+    print(line);
+}
+
+void frame_budget_selftest(void) {
+    static const uint32_t regions[2] = { UNTYPED_ROOT, UNTYPED_KERNEL };
+    static const char *names[2] = { " the user half", " the kernel half" };
+    int ok = 1;
+    for (int r = 0; r < 2; r++) {
+        uint32_t carved = 0, idx;
+        while (kobj_alloc(regions[r], KOBJ_FRAME, 1, &idx)) carved++;
+        struct untyped *u = &untypeds[regions[r]];
+        uint64_t left = (u->size > u->watermark) ? u->size - u->watermark : 0;
+        /* A page-aligned page still fits if `left` covers one past the
+         * watermark's alignment slop; anything under a page cannot hold one. */
+        int table_full = (kobj_live_count(KOBJ_FRAME) >= (uint32_t)MAX_DYN_FRAMES);
+        if (table_full && left >= PAGE_SIZE) {
+            fb_report("FRAMEBUDGET: FAIL the frame table filled first in", names[r], carved, left);
+            ok = 0;
+            break;
+        }
+        fb_report("FRAMEBUDGET: region ran out first in", names[r], carved, left);
+    }
+    if (ok) print("FRAMEBUDGET: PASS every frame the arena could hold was named\n");
+}
+#endif
+
 uint32_t kobj_live_count(uint32_t kobj_type) {
     uint32_t n = 0;
     if (kobj_type == KOBJ_ENDPOINT) {

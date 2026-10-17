@@ -125,8 +125,8 @@ retyped as a different kind of object while a stale capability still names it. T
 long-running workload that creates and destroys many frames exhausts its region;
 `SYS_UNTYPED_INFO` shows it coming.
 
-Three ceilings sit alongside it. `MAX_DYN_FRAMES` (256) bounds how many frames the kernel can name
-at once. A frame spans at most `MAX_FRAME_PAGES` (64) pages, 256 KiB, because the user half of
+Two ceilings sit alongside it; how many frames the kernel can name at once is not one, because
+`MAX_DYN_FRAMES` is the arena's page count and every frame takes at least a page. A frame spans at most `MAX_FRAME_PAGES` (64) pages, 256 KiB, because the user half of
 the untyped arena is only 3.5 MiB and a frame that could span it would starve every other object
 class. `SYS_MAP_REGION` maps at most 64 frames in one call.
 
@@ -282,7 +282,7 @@ copies the file and removes the original, and a directory cannot be moved at all
 | Static endpoints | 320: 64 well-known plus one reply endpoint per task | `MAX_ENDPOINTS` |
 | Retyped endpoints, notifications | 256 each | `MAX_DYN_ENDPOINTS`, `MAX_DYN_NOTIFICATIONS` |
 | Static notifications | 64 | `MAX_NOTIFICATIONS` |
-| Retyped frames | 256, each at most 64 pages | `MAX_DYN_FRAMES`, `MAX_FRAME_PAGES` |
+| Retyped frames | as many as the arena has pages (1,664), each at most 64 pages | `MAX_DYN_FRAMES`, `MAX_FRAME_PAGES` |
 | Untyped arena, user half | 3.5 MiB | `UNTYPED_USER_BYTES` |
 | Untyped arena, kernel reserve | 3 MiB: per task, a 10 KiB cspace and 2 KiB of TCB | `UNTYPED_KERNEL_BYTES` |
 | Untyped regions nameable at once | 64 | `MAX_UNTYPED` |
@@ -300,7 +300,7 @@ copies the file and removes the original, and a directory cannot be moved at all
 **The kernel image is itself a ceiling.** It must end below `USER_PHYS_BASE` (16 MiB), which the
 `linker64.ld` ASSERT enforces. That 16 MiB is the window in which the kernel maps itself with
 4 KiB pages, the only place a guard page can exist. GRUB stages boot modules in the same room.
-`.bss` is budgeted at **6,784 KiB** (`.github/image-budget.yml`), held exactly by
+`.bss` is budgeted at **6,808 KiB** (`.github/image-budget.yml`), held exactly by
 `tools/check_image_budget.py`, and `argon2_scratch` is 4,096 KiB of it: the Argon2 memory cost,
 which must not be cut to buy room. Raising `MAX_CPUS`, `BLOCKS_PER_DISK` or the Argon2 cost spends
 that budget; raising `MAX_TASKS` spends pool memory instead.

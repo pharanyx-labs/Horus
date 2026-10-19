@@ -226,7 +226,9 @@ DEFECT_FLAGS = \
 	TICKLESS_PROBE TICKLESS_OFF TICKLESS_NO_KICK \
 	SPAWN_PUBLISH_EARLY SPAWN_WINDOW_WIDEN \
 	FRAME_TABLE_FIXED \
-	RETYPE_RACE_SELFTEST KOBJ_UNPINNED GC_TEARDOWN_UNLOCKED
+	RETYPE_RACE_SELFTEST KOBJ_UNPINNED GC_TEARDOWN_UNLOCKED \
+	BUDGET_UNENFORCED BUDGET_CROSS_CPU SC_DESTROY_KEEPS_TASKS SC_UNBOUND_CREATOR_GETS_ROOT \
+	SCHED_BIND_UNLOCKED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2240,6 +2242,42 @@ ifeq ($(SPAWN_WINDOW_WIDEN),1)
 CFLAGS += -DSPAWN_WINDOW_WIDEN
 endif
 
+# Scheduling contexts (docs/design/scheduler.md 3.1, step 4a). BUDGET_UNENFORCED=1
+# (defect) gives every context budget always, so a task runs on time it was not
+# given (smoke-sched-budget-control); BUDGET_CROSS_CPU=1 (defect) charges a task's
+# time to its context on whichever CPU runs it, so a CPU charges a budget that is
+# not its own (smoke-sched-invariants-cross-cpu-control).
+BUDGET_UNENFORCED ?= 0
+ifeq ($(BUDGET_UNENFORCED),1)
+CFLAGS += -DBUDGET_UNENFORCED
+endif
+BUDGET_CROSS_CPU ?= 0
+ifeq ($(BUDGET_CROSS_CPU),1)
+CFLAGS += -DBUDGET_CROSS_CPU
+endif
+# SC_DESTROY_KEEPS_TASKS=1 (defect) leaves a destroyed context's tasks bound to
+# its index, so a context made later at that index runs them on its time
+# (smoke-sched-budget-revoke-control).
+SC_DESTROY_KEEPS_TASKS ?= 0
+ifeq ($(SC_DESTROY_KEEPS_TASKS),1)
+CFLAGS += -DSC_DESTROY_KEEPS_TASKS
+endif
+# SC_UNBOUND_CREATOR_GETS_ROOT=1 (defect) gives a child of an unbound task the
+# BSP's root, so a task whose context was revoked can fork its way back to a
+# whole CPU (smoke-sched-budget-fork-control).
+SC_UNBOUND_CREATOR_GETS_ROOT ?= 0
+ifeq ($(SC_UNBOUND_CREATOR_GETS_ROOT),1)
+CFLAGS += -DSC_UNBOUND_CREATOR_GETS_ROOT
+endif
+# SCHED_BIND_UNLOCKED=1 (defect) runs SYS_SCHED_BIND without the spawn lock, so
+# its CAP_TCB check and the bind are two steps a slot reuse can fall between.
+# task_tcb_held refuses a check made outside the lock, so every bind fails
+# (smoke-sched-budget-bind-unlocked-control).
+SCHED_BIND_UNLOCKED ?= 0
+ifeq ($(SCHED_BIND_UNLOCKED),1)
+CFLAGS += -DSCHED_BIND_UNLOCKED
+endif
+
 # The frame table is sized from the arena (roadmap 2.1). FRAME_BUDGET_SELFTEST=1
 # carves frames until each region refuses and reports why (smoke-frame-budget);
 # FRAME_TABLE_FIXED=1 (defect) restores the fixed 256-entry table.
@@ -3578,6 +3616,16 @@ endif
 GC_TEARDOWN_UNLOCKED ?= 0
 ifeq ($(GC_TEARDOWN_UNLOCKED),1)
 CFLAGS += -DGC_TEARDOWN_UNLOCKED
+endif
+# SCHED_BUDGET_SELFTEST=1 embeds the ring-3 witness for scheduling contexts
+# (docs/design/scheduler.md 3.1, step 4a): schedtest carves a fifth of a CPU,
+# checks every refusal a split and a bind owe, and binds schedspin to the fifth,
+# which reports the share of the CPU it saw. make smoke-sched-budget.
+SCHED_BUDGET_SELFTEST ?= 0
+ifeq ($(SCHED_BUDGET_SELFTEST),1)
+CFLAGS  += -DSCHED_BUDGET_SELFTEST
+ASFLAGS += -DSCHED_BUDGET_SELFTEST
+SCHED_BUDGET_SELFTEST_DEP = userspace/schedtest.bin userspace/schedspin.bin userspace/schedcount.bin
 endif
 
 FRAME_SELFTEST ?= 0
@@ -5282,7 +5330,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin userspace/shellwatch.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(ATAD_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(RETYPE_RACE_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(FORMATPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin userspace/shellwatch.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(ATAD_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(RETYPE_RACE_SELFTEST_DEP) $(SCHED_BUDGET_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(FORMATPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -6882,7 +6930,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/atad.bin userspace/blktest.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/retyperace.bin userspace/retyperevoker.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/formatprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/atad.bin userspace/blktest.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/retyperace.bin userspace/retyperevoker.bin userspace/schedtest.bin userspace/schedspin.bin userspace/schedcount.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/formatprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -15002,13 +15050,60 @@ smoke-retype-race-gc-control:
 		EXPECT_FAULT='PANIC: the object collector ran without cap_lock' \
 		tools/retype_race_boot.sh horus.iso
 
+# One boot of the checking kernel, scored only if it asked the budget check
+# (S152): a CPU must have closed a choice of another CPU's work, which the
+# kernel notes on COM3 the first time. On 8 CPUs about one boot in four never
+# does (19 of 75 locally, 2026-10-19, over both arms), and such a boot is
+# inconclusive and retried, never passed. SCHED_XSLACK_BOOTS is sized from the
+# worst sample, 10 of 30: at the 95% upper bound of that rate (53%), 15 boots
+# leave a false red under 1 in 10,000.
+# Every capture is kept until a conclusive boot passes.
+SCHED_XSLACK_BOOTS ?= 15
+SCHED_XSLACK_NOTE = SCHED_INVARIANTS: a CPU closed a choice of another CPU's work
+SCHED_XCPU_PANIC = PANIC: a budget was charged by a CPU it does not belong to
+
 .PHONY: smoke-sched-invariants
 smoke-sched-invariants:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 horus.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) FAIL_MARKER='PANIC:' \
-		tools/smoke_test.sh horus.iso
+	@att=0; while :; do att=$$((att+1)); log=.sched-inv.$$att.kdiag; \
+		SMOKE_KDIAG_LOG=$$log SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) \
+			MARKER_CHANNEL=kdiag FAIL_MARKER='PANIC:' tools/smoke_test.sh horus.iso || exit 1; \
+		if grep -qF "$(SCHED_XSLACK_NOTE)" $$log; then \
+			rm -f .sched-inv.*.kdiag; \
+			echo "SCHED INVARIANTS: PASS - boot $$att closed a choice of another CPU's work and nothing was charged across CPUs"; exit 0; \
+		fi; \
+		echo "SCHED INVARIANTS: Inconclusive - boot $$att closed no choice of another CPU's work, so the budget check was never asked"; \
+		[ $$att -ge $(SCHED_XSLACK_BOOTS) ] && { echo "SCHED INVARIANTS FAIL: $$att boots, none conclusive"; exit 1; }; \
+	done
+
+# Control arm for S152, a budget charged only by its own CPU. BUDGET_CROSS_CPU=1
+# charges a task's time to its context wherever it runs, and every task runs on
+# the BSP's root, so when an AP closes a choice of the BSP's work it charges the
+# BSP's root, and the check at the one place a charge is made must halt it. The
+# same boots as the base gate: the base gate must go red, and for that reason,
+# read whole from COM3 (on COM1 console_server's output can cut it). A boot that
+# closed no such choice is inconclusive here too.
+.PHONY: smoke-sched-invariants-cross-cpu-control
+smoke-sched-invariants-cross-cpu-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 BUDGET_CROSS_CPU=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 BUDGET_CROSS_CPU=1 horus.iso
+	@att=0; while :; do att=$$((att+1)); log=.sched-xcpu.$$att.kdiag; \
+		SMOKE_KDIAG_LOG=$$log SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) \
+			MARKER_CHANNEL=kdiag FAIL_MARKER='PANIC:' tools/smoke_test.sh horus.iso; rc=$$?; \
+		if [ $$rc -ne 0 ] && grep -qF "$(SCHED_XCPU_PANIC)" $$log; then \
+			rm -f .sched-xcpu.*.kdiag; \
+			echo "SCHED XCPU CONTROL: PASS - boot $$att: the base gate is red, a budget charged by another CPU named on COM3"; exit 0; \
+		fi; \
+		if [ $$rc -ne 0 ]; then echo "SCHED XCPU CONTROL: FAIL - the base gate went red for some other reason (capture $$log)"; exit 1; fi; \
+		if grep -qF "$(SCHED_XSLACK_NOTE)" $$log; then \
+			echo "SCHED XCPU CONTROL: FAIL - a choice of another CPU's work was closed and charged, and nothing named it"; exit 1; \
+		fi; \
+		echo "SCHED XCPU CONTROL: Inconclusive - boot $$att closed no choice of another CPU's work"; \
+		[ $$att -ge $(SCHED_XSLACK_BOOTS) ] && { echo "SCHED XCPU CONTROL FAIL: $$att boots, none conclusive"; exit 1; }; \
+	done
 
 # The gating form: N pinned boots of the claim-checking kernel, reported as a rate.
 #
@@ -15033,6 +15128,65 @@ smoke-sched-invariants-stress:
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 horus.iso
 	@STRESS_RUNS=$${STRESS_RUNS:-30} SMP_CPUS=$(SMP_CPUS) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
 		FAIL_MARKER='PANIC:' STRESS_GATE=marker tools/stress_boot.sh horus.iso
+
+# CPU time as a capability (docs/design/scheduler.md 3.1, step 4a; S152, S153).
+# schedtest carves a fifth of the last CPU, checks every refusal a split and a
+# bind owe, and binds schedspin to the fifth; the spinner spins for 3 s of wall
+# time and must see at most 45% of the ticks, and at least 5%. Two CPUs, so the
+# fifth is an AP's and nothing else competes with the spinner for it.
+.PHONY: smoke-sched-budget
+smoke-sched-budget:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: PASS' FAIL_MARKER='SCHEDTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: every context always has budget, so the spinner runs on the whole
+# AP and must report the overrun.
+.PHONY: smoke-sched-budget-control
+smoke-sched-budget-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 BUDGET_UNENFORCED=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 BUDGET_UNENFORCED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL budget-overrun' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: a destroyed context's tasks stay bound to its index, so the
+# counter runs again on the next context carved at that index.
+.PHONY: smoke-sched-budget-revoke-control
+smoke-sched-budget-revoke-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 SC_DESTROY_KEEPS_TASKS=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 SC_DESTROY_KEEPS_TASKS=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL a-revoked-context-task-stays-stopped-when-its-index-is-reused' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: a child of an unbound task gets the BSP's root, so the counter's
+# forks, made in the moment after it revoked its own context, run and count.
+.PHONY: smoke-sched-budget-fork-control
+smoke-sched-budget-fork-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 SC_UNBOUND_CREATOR_GETS_ROOT=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 SC_UNBOUND_CREATOR_GETS_ROOT=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL no-child-of-an-unbound-task-runs' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: SYS_SCHED_BIND without the spawn lock, as it was first written.
+# A CAP_TCB check outside the lock is refused (task_tcb_held), so the first bind
+# schedtest needs fails; without that refusal the bind would race slot reuse.
+.PHONY: smoke-sched-budget-bind-unlocked-control
+smoke-sched-budget-bind-unlocked-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 SCHED_BIND_UNLOCKED=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 SCHED_BIND_UNLOCKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL bind-the-spinner' \
+		tools/smoke_test.sh horus.iso
 
 # An idle AP takes no ticks (docs/design/scheduler.md 3.4, step 3). Eight CPUs
 # boot to the login prompt and sit there; from 5 s of uptime the kernel counts

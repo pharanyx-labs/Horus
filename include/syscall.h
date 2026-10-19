@@ -206,6 +206,9 @@ struct task_info {
 #define SYS_IPC_INVOKER       119   /* (ep_slot, struct ipc_invoker *) -> 0; the token and rights of the capability the last received message came through, and of a carried one. Needs READ (the receive right) on ep_slot. */
 #define SYS_IPC_REPLY_CAP     120   /* (req_slot, msg, len, rights, token) -> 0; SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with that capability's. Refused = nothing delivered, reply right kept. */
 #define SYS_FS_STORE_KIND     122   /* (void) -> FS_STORE_EPHEMERAL or FS_STORE_PERSISTENT; which kind of store the object store serves. CAP_ENCRYPTED_STORAGE + READ (fs_server only). SYS_ERR_INVAL when none is mounted. */
+#define SYS_SCHED_SPLIT       123   /* (parent_slot, untyped_slot, dest_slot, budget_us, period_us, flags) -> 0; carve a scheduling context from the parent's share (parent WRITE, untyped WRITE). */
+#define SYS_SCHED_BIND        124   /* (tid, ctx_slot) -> 0; run task tid on the context (CAP_TCB to tid with WRITE, context WRITE). */
+#define SYS_SCHED_INFO        125   /* (ctx_slot, struct sched_info *) -> 0; what the context holds and has left (context READ). */
 #define SYS_MEM_SEAL          121   /* (addr, len) -> 0; make pages of the caller's own image read-only for good (RELRO). Only drops rights; bounded to the caller's image window, page-aligned, all or nothing. */
 #define SYS_STORAGE_DEVICE   113  /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ). Refuses an index past the end rather than clamping. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
@@ -577,6 +580,9 @@ static inline int sys_console_owned(void) {
  * CAP_TCB) at or above this slot, never in one of the well-known slots above, so
  * nothing the kernel later installs there can land on top of them. 24 to 63 are
  * free for a program's own fixed slots. Mirrors src/include/kernel.h. */
+/* init alone: CPU c's root scheduling context, for each CPU that schedules; the
+ * top eight slots of the dynamic range, below the shared libc's. */
+#define CAPSLOT_SCHED_ROOT_FIRST 120
 #define CAPSLOT_DYNAMIC_FIRST 64
 /* FILESYSTEM CAPABILITIES (docs/design/filesystem.md §5, phase 1b step 2). A
  * spawner that walks by capability grants its child derived copies of its root
@@ -840,6 +846,42 @@ struct untyped_info {
     uint32_t objects;     /* live objects carved from it */
     uint32_t reserved;
 };
+
+/* ---- Scheduling contexts (docs/design/scheduler.md 3.1, step 4a) ----------
+ * CPU time as a capability. A context holds a share of one CPU and spends it as
+ * `budget_us` every `period_us`; a task bound to it runs only on that time. */
+#define SC_FLAG_SLACK   0x1u   /* the child keeps the slack right: its tasks may run, below all
+                                * budgeted work, on any CPU with nothing budgeted to do */
+
+/* MUST stay byte-identical to struct sched_info in src/include/kernel.h. */
+struct sched_info {
+    uint32_t cpu;           /* the CPU the context belongs to */
+    uint32_t flags;         /* SC_FLAG_SLACK, and 0x2 on a per-CPU root */
+    uint32_t share_ppm;     /* parts per million of that CPU it holds */
+    uint32_t period_us;
+    uint64_t budget_us;     /* what its tasks may run per period */
+    int64_t  remaining_us;  /* left in this period; negative after an overrun */
+    uint64_t consumed_us;   /* everything ever charged to it */
+};
+
+/* Carve a child of `budget_us` every `period_us` out of the context at
+ * `parent_slot` (WRITE), its memory from the CAP_UNTYPED at `untyped_slot`
+ * (WRITE), into `dest_slot`. The parent's share shrinks by what the child gets.
+ * SC_FLAG_SLACK only if the parent has it. Returns 0 or a negative SYS_ERR_*. */
+static inline int sys_sched_split(uint32_t parent_slot, uint32_t untyped_slot,
+                                  uint32_t dest_slot, uint32_t budget_us,
+                                  uint32_t period_us, uint32_t flags) {
+    return (int)syscall6(SYS_SCHED_SPLIT, parent_slot, untyped_slot, dest_slot,
+                         budget_us, period_us, flags);
+}
+/* Run task `tid` on the context at `ctx_slot`. Needs a CAP_TCB to `tid` with
+ * WRITE and the context with WRITE. */
+static inline int sys_sched_bind(int tid, uint32_t ctx_slot) {
+    return (int)syscall6(SYS_SCHED_BIND, (uint32_t)tid, ctx_slot, 0, 0, 0, 0);
+}
+static inline int sys_sched_info(uint32_t ctx_slot, struct sched_info *out) {
+    return (int)syscall6(SYS_SCHED_INFO, ctx_slot, (uint64_t)(uintptr_t)out, 0, 0, 0, 0);
+}
 
 /* Carve `count` objects of `kobj_type` out of the untyped region named by the
  * CAP_UNTYPED in `untyped_slot` (needs WRITE), installing a capability for each

@@ -53,7 +53,7 @@ The recommendation is the one the route is written around; it is not the decisio
 | Console | Job control: stopping and resuming the foreground program | 2.3 job control | | |
 | Boot | Measured boot by default, rollback anchoring | 5.6, 5.7 | 2.9, 1.12 | |
 | Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | |
-| SMP | Deadline timers, timers as notifications | 1.8 step 3b, 2.2 | | |
+| SMP | Priorities capped by authority, then deadline timers and timers as notifications | 1.8 step 4b, then 3b, 2.2 | | |
 | Memory | Reclaimable kernel memory | 5.9 | 2.5, 2.3 | |
 | Proofs | Concurrent protocols modelled | 5.11 | narrows 5.5 | D9 |
 | Swap | Secrets kept out of swap | 2.12 | | |
@@ -65,7 +65,7 @@ The recommendation is the one the route is written around; it is not the decisio
 | Filesystem | The kernel a sealed-block service, v12 in `fs_server` | 2.10 phase 2, the storage half of 2.7a | | Wave 2 filesystem |
 | Filesystem | A session's grants bounded by the kernel | 5.10 | 1.24 | phase 2, D8 |
 | Kernel | The loader and spawn path out of ring 0, and no disk I/O in ring 0: the IDE, SD and eMMC drivers replaced by ring-3 ones | 2.7a, 2.7 | | phase 2 |
-| SMP | Scheduling contexts, passive servers, affinity, more than eight CPUs, then the `%gs` block | 1.8 steps 4 to 8, 1.2 | | Wave 2 SMP |
+| SMP | Passive servers, affinity, more than eight CPUs, then the `%gs` block | 1.8 steps 5 to 8, 1.2 | | Wave 2 SMP |
 | Hardening | Indirect-branch tracking, then kernel ASLR | 3.8 | | 2.7a |
 | Observability | The audit stream, then deterministic replay | 3.6, 3.7 | | |
 
@@ -102,9 +102,11 @@ the most safety-critical assembly in the tree; nothing is blocked on it, so it c
 
 **1.8 🚧 Per-CPU scheduling, with CPU time as a capability.** Designed in
 [`design/scheduler.md`](design/scheduler.md); steps 0, 1, 1b, 2a, 2 (per-CPU run lists and
-stealing) and 3a (one-shot ticks, tickless idle) are done. Next, step 3b: the TSC-deadline timer
-and a TSC clock; then scheduling contexts and budgets (4), passive servers (5),
-affinity (6), more than eight CPUs (7) and targeted shootdown (8).
+stealing), 3a (one-shot ticks, tickless idle) and 4a (scheduling contexts and budgets, #592) are
+done. Next, step 4b: priorities and their maximum; then the TSC-deadline timer and a TSC clock
+(3b), passive servers (5), affinity (6), more than eight CPUs (7) and targeted shootdown (8). `init`
+holds every CPU's root context and binds nothing yet; giving programs budgets is a policy for
+`init` that comes once priorities exist.
 
 ### Track 2: toward a complete operating system
 
@@ -143,7 +145,7 @@ controller is identified and the drive answers IDENTIFY), USB through xHCI (and 
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 12,297-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 12,856-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase

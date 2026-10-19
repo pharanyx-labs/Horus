@@ -352,6 +352,18 @@ void cap_init(void) {
     root_cnode[23].badge  = 0;
     root_cnode[23].serial = 0xC0DE0017U;
 
+    /* CAP_SCHED_CONTEXT (root[24], docs/design/scheduler.md 3.1, step 4a): the
+     * template for each CPU's root scheduling context. Its object is restated
+     * per CPU when init is given a copy (spawn_initial_userspace_init), and init
+     * alone is given any: a root is a whole CPU, and a task holding one could
+     * carve that CPU out from under every task already running on it. */
+    root_cnode[24].type   = CAP_SCHED_CONTEXT;
+    root_cnode[24].rights = CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_GRANT |
+                            CAP_RIGHT_MINT | CAP_RIGHT_REVOKE;
+    root_cnode[24].object = 0;
+    root_cnode[24].badge  = 0;
+    root_cnode[24].serial = 0xC0DE0018U;
+
     for (int i = 0; i < MAX_REV_SETS; i++) rev_sets[i].valid = 0;
 }
 
@@ -427,6 +439,50 @@ bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
     cspace[dest_slot].token      = 0;
     if (was_null) tasks[cur].caps_in_use++;
     kobj_note_named(type, object);   /* collectable once named (S151) */
+    spin_unlock(&cap_lock);
+    return true;
+}
+
+/* As cap_install_object, for a new object made FROM the capability at
+ * `src_slot` (SYS_SCHED_SPLIT): the new capability is that one's child in the
+ * derivation tree (badge = its serial), so revoking the source revokes it, and
+ * its rights are the source's, never more.
+ *
+ * The source is checked again HERE, under the same cap_lock as the write, to
+ * still hold `src_serial` and `src_type`. The caller resolved it before making
+ * the object, and a revoke on another CPU in between would otherwise sweep the
+ * source's subtree first and then see this child installed under a serial that
+ * no slot holds any more: a child outside every revoke of its parent. Refused
+ * instead, and the caller destroys the object. Also refuses installing over the
+ * source itself, which would leave the child's parent edge naming nothing. */
+bool cap_install_derived_object(uint32_t dest_slot, uint32_t src_slot, uint64_t src_serial,
+                                uint32_t src_type, uint64_t object, uint32_t rights) {
+    uint64_t serial = cap_alloc_fresh_serial();
+    if (!serial) return false;
+    spin_lock(&cap_lock);
+    if (!caller_has_authority()) { spin_unlock(&cap_lock); return false; }
+    int cur = get_current_task();
+    struct capability *cspace = tasks[cur].cspace;
+    uint32_t cspace_sz = tasks[cur].cspace_size ? tasks[cur].cspace_size : CNODE_SIZE;
+    if (!cspace || dest_slot < KERNEL_RESERVED_CAPS || dest_slot >= cspace_sz ||
+        src_slot >= cspace_sz || dest_slot == src_slot || src_serial == 0 ||
+        cspace[src_slot].serial != src_serial || cspace[src_slot].type != src_type) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    bool was_null = (cspace[dest_slot].type == CAP_NULL);
+    if (was_null && tasks[cur].caps_in_use >= MAX_CAPS_PER_TASK) {
+        spin_unlock(&cap_lock);
+        return false;
+    }
+    cspace[dest_slot].type       = src_type;
+    cspace[dest_slot].rights     = rights & cspace[src_slot].rights;
+    cspace[dest_slot].object     = object;
+    cspace[dest_slot].badge      = src_serial;
+    cspace[dest_slot].serial     = serial;
+    cspace[dest_slot].token      = 0;
+    if (was_null) tasks[cur].caps_in_use++;
+    kobj_note_named(src_type, object);   /* collectable once named (S151) */
     spin_unlock(&cap_lock);
     return true;
 }

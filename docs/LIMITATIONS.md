@@ -300,16 +300,20 @@ copies the file and removes the original, and a directory cannot be moved at all
 **The kernel image is itself a ceiling.** It must end below `USER_PHYS_BASE` (16 MiB), which the
 `linker64.ld` ASSERT enforces. That 16 MiB is the window in which the kernel maps itself with
 4 KiB pages, the only place a guard page can exist. GRUB stages boot modules in the same room.
-`.bss` is budgeted at **6,808 KiB** (`.github/image-budget.yml`), held exactly by
+`.bss` is budgeted at **6,816 KiB** (`.github/image-budget.yml`), held exactly by
 `tools/check_image_budget.py`, and `argon2_scratch` is 4,096 KiB of it: the Argon2 memory cost,
 which must not be cut to buy room. Raising `MAX_CPUS`, `BLOCKS_PER_DISK` or the Argon2 cost spends
 that budget; raising `MAX_TASKS` spends pool memory instead.
 
 ### 3.3 SMP scheduling is simple
 
-Each CPU has a run list, and a CPU with nothing of its own takes another's waiting task (#584),
-but there is no affinity, no priority and no real-time guarantee yet; an idle AP stops its timer
-until another CPU's tick wakes it (#585). Under TCG emulation more cores are slower than one; the benefit needs KVM or
+Each CPU has a run list, and a CPU with nothing of its own takes another's waiting task (#584);
+an idle AP stops its timer until another CPU's tick wakes it (#585). CPU time is a capability
+(#592, S152, S153), but `init` binds no task to a budget yet, so every task still runs on the BSP's
+whole root and a task that never blocks takes its share of every CPU. A budget is enforced at the
+10 ms tick, so a burst can overrun it by up to a tick (repaid from the next period), and in the
+`SMP=0` build, which is not shipped, a task out of budget keeps its CPU when nothing else can run.
+There is no affinity, no priority and no real-time guarantee yet. Under TCG emulation more cores are slower than one; the benefit needs KVM or
 hardware. Each supported CPU costs about 104 KiB of `.bss` whether present or not, so beyond about
 16 the per-CPU blocks would have to be allocated at boot. The scheduler, capability, IPC, spawn,
 page and storage locks are each global, and a storage call holds the storage layer for the whole
@@ -460,7 +464,7 @@ the fix.
 Kani proves properties of capability derivation, lookup (the typed resolver every gate goes
 through, and IPC authority) and revocation, the ELF validator, the user-address validators,
 the random pool's seed gate, the login throttle and the page-pool refcount
-arithmetic: **41** harnesses, every one of them gating in the required `kani-bounded` job. That is
+arithmetic: **43** harnesses, every one of them gating in the required `kani-bounded` job. That is
 the whole of the formal methods here. The kernel as a whole is not verified, no refinement proof
 links a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).

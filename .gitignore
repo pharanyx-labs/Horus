@@ -196,6 +196,10 @@ soak-evidence/
 # here, and never a tracked artifact.
 .kdiag-split-control.out
 .fb-grid-control.out
+# smoke-sched-invariants and its cross-CPU arm keep each boot's COM3 capture
+# until a conclusive boot passes, so a red or inconclusive run keeps them all.
+.sched-inv.*.kdiag
+.sched-xcpu.*.kdiag
 # smoke-kstack-reuse-control keeps each boot's diagnostic channel beside its
 # serial log (*.log is ignored above) for the same reason.
 .kstack-reuse-control.*.kdiag

@@ -1090,6 +1090,29 @@ embedded_retyperevoker_bin_start:
 embedded_retyperevoker_bin_end:
 #endif
 
+#ifdef SCHED_BUDGET_SELFTEST
+/* Scheduling contexts (step 4a): schedtest carves and binds, schedspin spins on
+ * the fifth of a CPU it was bound to and reports the share it saw. */
+.align 16
+.global embedded_schedtest_bin_start
+embedded_schedtest_bin_start:
+.incbin "userspace/schedtest.bin"
+.global embedded_schedtest_bin_end
+embedded_schedtest_bin_end:
+.align 16
+.global embedded_schedspin_bin_start
+embedded_schedspin_bin_start:
+.incbin "userspace/schedspin.bin"
+.global embedded_schedspin_bin_end
+embedded_schedspin_bin_end:
+.align 16
+.global embedded_schedcount_bin_start
+embedded_schedcount_bin_start:
+.incbin "userspace/schedcount.bin"
+.global embedded_schedcount_bin_end
+embedded_schedcount_bin_end:
+#endif
+
 #ifdef FRAME_SELFTEST
 /* Frame-capability pair (roadmap 2.1): one task retypes a KOBJ_FRAME out of its
  * CAP_UNTYPED and delegates a READ-only copy; the other proves it sees the

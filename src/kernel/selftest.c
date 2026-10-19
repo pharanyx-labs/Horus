@@ -2765,6 +2765,52 @@ void retype_race_selftest(void) {
     sched_enter_user(ret);
 }
 #endif /* RETYPE_RACE_SELFTEST */
+#ifdef SCHED_BUDGET_SELFTEST
+/* ---- Scheduling contexts (SCHED_BUDGET_SELFTEST builds only) ----------------
+ *
+ * docs/design/scheduler.md 3.1, step 4a; make smoke-sched-budget. schedtest is
+ * given what init is given for CPU time: an untyped region and each schedulable
+ * CPU's root context. It also gets a CAP_TCB to a spinner, held suspended until
+ * schedtest has bound it to the context it carves. The spinner judges the share
+ * it saw (S153) and schedtest everything else; neither verdict is the kernel's
+ * own accounting. Entry into ring 3 does not return. */
+#define SCHEDTEST_SLOT_SPIN  29   /* must match userspace/schedtest.c */
+#define SCHEDTEST_SLOT_COUNT 30   /* likewise */
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+void sched_budget_selftest(void) {
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    extern uint8_t embedded_schedtest_bin_start[], embedded_schedtest_bin_end[];
+    extern uint8_t embedded_schedspin_bin_start[], embedded_schedspin_bin_end[];
+    extern uint8_t embedded_schedcount_bin_start[], embedded_schedcount_bin_end[];
+
+    print("SCHED_BUDGET_SELFTEST: begin\n");
+    int spin = fs_spawn_embedded(embedded_schedspin_bin_start, embedded_schedspin_bin_end,
+                                 "schedspin");
+    if (spin <= 0) { print("SCHEDTEST: FAIL spawn-spinner\n"); for (;;) asm volatile("hlt"); }
+    int cnt = fs_spawn_embedded(embedded_schedcount_bin_start, embedded_schedcount_bin_end,
+                                "schedcount");
+    if (cnt <= 0) { print("SCHEDTEST: FAIL spawn-counter\n"); for (;;) asm volatile("hlt"); }
+    int pid = fs_spawn_embedded(embedded_schedtest_bin_start, embedded_schedtest_bin_end,
+                                "schedtest");
+    if (pid <= 0) { print("SCHEDTEST: FAIL spawn-test\n"); for (;;) asm volatile("hlt"); }
+
+    tasks[pid].spawn_arg = (uint64_t)spin | ((uint64_t)cnt << 16);
+    int bad = cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT) != 0 ||
+              cap_install_from_root(pid, SCHEDTEST_SLOT_SPIN, 0, (uint32_t)spin) != 0 ||
+              cap_install_from_root(pid, SCHEDTEST_SLOT_COUNT, 0, (uint32_t)cnt) != 0;
+    for (int c = 0; c < MAX_CPUS && !bad; c++)
+        if (sched_cpu_schedules(c))
+            bad = cap_install_from_root(pid, CAPSLOT_SCHED_ROOT_FIRST + (uint32_t)c, 24,
+                                        sched_root_index(c)) != 0;
+    if (bad) { print("SCHEDTEST: FAIL endow\n"); for (;;) asm volatile("hlt"); }
+
+    selftest_resume_all();
+    tasks[spin].runnable_ctx = 0;   /* held until schedtest has bound it */
+    tasks[cnt].runnable_ctx  = 0;
+    sched_enable_preemption();
+    sched_enter_user(pid);
+}
+#endif /* SCHED_BUDGET_SELFTEST */
 
 #ifdef RECVBLOCK_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
@@ -2943,7 +2989,7 @@ void e820_selftest(void) {
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(TOKEN_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
     || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(PIPEREVOKE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(NVME_SELFTEST) || defined(SDHCID_SELFTEST) || defined(ATAD_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
-    || defined(FSCAP_SELFTEST) || defined(RETYPE_RACE_SELFTEST)
+    || defined(FSCAP_SELFTEST) || defined(RETYPE_RACE_SELFTEST) || defined(SCHED_BUDGET_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/TOKEN/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

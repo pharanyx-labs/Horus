@@ -563,6 +563,10 @@ void ap_entry64(void) {
      * parks having started nothing, so no tick ever asks it to schedule. */
     smp_checkin_instrument(cpu);
     if (!smp_check_in(&smp_cpus_online)) smp_park_refused(cpu);
+    /* This CPU schedules: init is given its root scheduling context (step 4a).
+     * After the check-in, so a CPU refused there never has a root handed out
+     * for it, and a parked sibling never reaches this line. */
+    { extern void sched_cpu_online(int cpu); sched_cpu_online(cpu); }
 
 #ifdef STORAGE_SMP_SELFTEST
     /* Before this CPU is idle or ticking, so nothing is scheduled onto it while
@@ -988,6 +992,9 @@ void smp_bringup(void) {
     /* Gated: a retyped object is never collected before it is named
      * (RETYPETEST: PASS, S151). */
     { extern void retype_race_selftest(void); retype_race_selftest(); }
+#elif defined(SCHED_BUDGET_SELFTEST)
+    /* Gated: scheduling contexts, step 4a (SCHEDTEST: PASS, S152 S153). */
+    { extern void sched_budget_selftest(void); sched_budget_selftest(); }
 #elif defined(FSCAP_SELFTEST)
     /* Gated: phase 1b step 1, the real fs_server answering requests through
      * tokened capabilities (FSCAPTEST: PASS). docs/design/filesystem.md §5. */

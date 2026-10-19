@@ -14,7 +14,9 @@ not_in_ci:
     not invoke this one -- it repeats the build and boots it under
     tools/stress_boot.sh many times instead -- so a single boot of the same image
     would add runtime without adding evidence. The scheduler-invariant assertions
-    are the same in both; only the boot count differs.
+    are the same in both. This one also scores only a boot that asked the
+    budget check (S152), which the stress gate does not require; the cross-CPU
+    arm that CI runs uses this target's boots, so CI exercises that rule.
 
   smoke-console-smp-stress: >-
     The many-boot form of smoke-console-smp, which CI does run. Kept for local

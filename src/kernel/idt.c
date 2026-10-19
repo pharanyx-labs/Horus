@@ -797,6 +797,15 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
                 frame->ss     = 0x10;
                 return (uint64_t)frame;
             }
+            /* Out of budget in ring 0 (scheduling contexts, step 4a): a tick that
+             * lands while a task is in a system call cannot switch it away, so it
+             * only charges the time and, if the task's context then gives it no
+             * time here, marks this CPU. The task is switched away from here, on
+             * its way back to ring 3, as if it had yielded. Without this a task
+             * making a system call in every loop would almost never be found in
+             * ring 3 by a tick and would run on its budget for nothing. */
+            if (sched_budget_resched_take(ipc_caller))
+                return sched_yield_switch(ipc_caller, (uint64_t)frame);
         }
     } else if (vector < 32) {
 

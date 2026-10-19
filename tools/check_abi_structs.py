@@ -79,6 +79,8 @@ SHARED = [
     "horus_timespec",
     "boot_module_info",
     "task_exit_info",
+    # SYS_SCHED_INFO's record (2026-10-17, scheduling contexts step 4a).
+    "sched_info",
     # Found by the discovery rule below on 2026-09-01, not by anyone noticing.
     # All four agree and always have; they were simply never enrolled, which is
     # the failure mode `audit_event` turned into a defect.

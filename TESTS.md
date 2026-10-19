@@ -125,7 +125,7 @@ There are 591 `smoke-*` targets: 250 gates and 341 control arms. Each row is a g
 | `smoke-resume-guard` | A bogus resume stack pointer is caught and reported after the console handover |  | `smoke-resume-guard-legacy`, `smoke-resume-guard-nofloor`, `smoke-resume-guard-preclaim` |
 | `smoke-resume-guard-ist` | The resume guard never fires on a legitimate return to an IST stack |  | `smoke-resume-guard-ist-control` |
 | `smoke-resume-guard-negative` | The resume guard rejects a negative bogus value |  | `smoke-resume-guard-negative-control` |
-| `smoke-sched-invariants` | A kernel built with the scheduler's claim checks, run-list checks and budget-charge check boots clean (local only) | S20, S152 | `smoke-runq-unhomed-control`, `smoke-sched-invariants-cross-cpu-control` |
+| `smoke-sched-invariants` | A kernel built with the scheduler's claim checks, run-list checks and budget-charge check boots clean, scored only on a boot that asked the budget check (a CPU closed a choice of another CPU's work, noted on COM3; up to 15 boots) (local only) | S20, S152 | `smoke-runq-unhomed-control`, `smoke-sched-invariants-cross-cpu-control` |
 | `smoke-sched-invariants-stress` | The same, as a rate over thirty boots pinned to two host cores: no stale claim, and every live task on exactly one CPU's run list |  |  |
 | `smoke-kstack-imp` | The stack-collision detector identifies CPUs by what they run, not by the task they are impersonating | S20 | `smoke-kstack-imp-control` |
 | `smoke-claim-reread` | The claim auditor re-reads a suspect state before accusing it |  | `smoke-claim-reread-control` |

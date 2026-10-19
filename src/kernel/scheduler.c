@@ -739,6 +739,15 @@ extern uint64_t sched_clock_us(void);   /* terminal.c: TSC microseconds, kernel-
 static void panic_begin(void);           /* defined below, with the claim auditor */
 static void panic_str(const char *s);
 static void panic_dec(int v);
+static void kdiag_note(const char *s);
+/* The budget check's precondition (S152). Set by CPU c when the choice it just
+ * made is another CPU's work, run here as slack; when c next chooses, that
+ * choice is closed, and that close is the one charge BUDGET_CROSS_CPU makes and
+ * the check exists to refuse. A boot in which no CPU ever closed one tested
+ * nothing (on 8 CPUs about one boot in four locally), so the first close is
+ * announced on COM3 and smoke-sched-invariants scores only boots that carry it. */
+static uint8_t sc_xslack[MAX_CPUS];
+static volatile int sc_xslack_noted;
 #endif
 extern struct sched_context *sc_dyn_by_index(uint32_t idx);   /* untyped.c */
 
@@ -883,6 +892,13 @@ static int sc_runnable_somewhere(int t, uint64_t now) {
 static void sc_account(int cpu, int chosen, uint64_t now) {
     if (cpu < 0 || cpu >= MAX_CPUS) return;
     struct sched_context *sc = sc_by_index(sc_stamp_idx[cpu]);
+#ifdef SCHED_INVARIANTS
+    if (sc_xslack[cpu]) {
+        sc_xslack[cpu] = 0;
+        if (!sc_xslack_noted && !__sync_lock_test_and_set(&sc_xslack_noted, 1))
+            kdiag_note("SCHED_INVARIANTS: a CPU closed a choice of another CPU's work\n");
+    }
+#endif
     if (sc && sc->live && now > sc_stamp_us[cpu]) {
         uint64_t ran = now - sc_stamp_us[cpu];
 #ifdef SCHED_INVARIANTS
@@ -914,6 +930,9 @@ static void sc_account(int cpu, int chosen, uint64_t now) {
     }
     sc = task_sc(chosen);
     if (!sc) return;
+#ifdef SCHED_INVARIANTS
+    sc_xslack[cpu] = (sc->cpu != cpu);   /* before the arm's return: both arms count it */
+#endif
 #ifdef BUDGET_CROSS_CPU
     /* CONTROL ARM, never ship: the time a task runs is charged to its context
      * wherever it runs, so a CPU running another CPU's slack work charges a
@@ -1576,9 +1595,25 @@ static void panic_ch(char ch) {
  * Observed during the falsification runs for the impersonation bracket. */
 static volatile int panic_claimed = 0;
 static void panic_begin(void) {
-    if (__sync_lock_test_and_set(&panic_claimed, 1))
-        for (;;) __asm__ volatile ("cli; hlt");   /* someone else is reporting */
+    for (;;) {
+        int was = __sync_val_compare_and_swap(&panic_claimed, 0, 1);
+        if (was == 0) return;
+        if (was != 2)
+            for (;;) __asm__ volatile ("cli; hlt");   /* someone else is reporting */
+        __asm__ volatile ("pause");   /* a note is being written: wait it out */
+    }
 }
+#ifdef SCHED_INVARIANTS
+/* One line on COM3 that is not a report: a gate's precondition. It holds the
+ * reporter (2, not a panic's 1) while it writes, so a panic on another CPU waits
+ * for it rather than interleaving and halts nobody silently; if a panic already
+ * holds the reporter the note is dropped, as the panic says more. */
+static void kdiag_note(const char *s) {
+    if (__sync_val_compare_and_swap(&panic_claimed, 0, 2) != 0) return;
+    while (*s) kdiag_ch(*s++);
+    __sync_lock_release(&panic_claimed);
+}
+#endif
 static void panic_str(const char *s) { while (*s) panic_ch(*s++); }
 static void panic_dec(int v) {
     char buf[12];

@@ -260,7 +260,7 @@ Each gets a `SECURITY.md` row with its S-number when its step merges.
 | A revoked context's tasks stop, and do not run on a later context that takes its index (S152) | `smoke-sched-budget`: a counter bound to a context stops when it is revoked and stays stopped when a new context is carved | `SC_DESTROY_KEEPS_TASKS=1` |
 | A task whose context is revoked while it runs cannot fork its way to time: its children are unbound too (S152) | `smoke-sched-budget`: the counter revokes its own context and forks at once, and no child runs | `SC_UNBOUND_CREATOR_GETS_ROOT=1` |
 | A bind lands on the task whose `CAP_TCB` was checked, never on a successor in its slot (S100) | `smoke-sched-budget`: `task_tcb_held` refuses a check made outside the spawn lock, and the binds `schedtest` needs succeed | `SCHED_BIND_UNLOCKED=1` |
-| A budget is charged only by its own CPU (S152) | `SCHED_INVARIANTS` halts at the one place a charge is made if the charging CPU is not the owner (`smoke-sched-invariants`) | `BUDGET_CROSS_CPU=1` |
+| A budget is charged only by its own CPU (S152) | `SCHED_INVARIANTS` halts at the one place a charge is made if the charging CPU is not the owner (`smoke-sched-invariants`, which scores only a boot in which a CPU closed a choice of another CPU's work, noted on COM3; about one boot in four on 8 CPUs never does) | `BUDGET_CROSS_CPU=1` |
 | A shootdown that is not acknowledged halts | the selftest with one CPU made deaf | `SHOOTDOWN_FAIL_OPEN=1` |
 | S20 holds over per-CPU run lists | the existing S20 gates | the existing S20 arms |
 

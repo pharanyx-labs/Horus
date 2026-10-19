@@ -15050,13 +15050,60 @@ smoke-retype-race-gc-control:
 		EXPECT_FAULT='PANIC: the object collector ran without cap_lock' \
 		tools/retype_race_boot.sh horus.iso
 
+# One boot of the checking kernel, scored only if it asked the budget check
+# (S152): a CPU must have closed a choice of another CPU's work, which the
+# kernel notes on COM3 the first time. On 8 CPUs about one boot in four never
+# does (19 of 75 locally, 2026-10-19, over both arms), and such a boot is
+# inconclusive and retried, never passed. SCHED_XSLACK_BOOTS is sized from the
+# worst sample, 10 of 30: at the 95% upper bound of that rate (53%), 15 boots
+# leave a false red under 1 in 10,000.
+# Every capture is kept until a conclusive boot passes.
+SCHED_XSLACK_BOOTS ?= 15
+SCHED_XSLACK_NOTE = SCHED_INVARIANTS: a CPU closed a choice of another CPU's work
+SCHED_XCPU_PANIC = PANIC: a budget was charged by a CPU it does not belong to
+
 .PHONY: smoke-sched-invariants
 smoke-sched-invariants:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 horus.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) FAIL_MARKER='PANIC:' \
-		tools/smoke_test.sh horus.iso
+	@att=0; while :; do att=$$((att+1)); log=.sched-inv.$$att.kdiag; \
+		SMOKE_KDIAG_LOG=$$log SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) \
+			MARKER_CHANNEL=kdiag FAIL_MARKER='PANIC:' tools/smoke_test.sh horus.iso || exit 1; \
+		if grep -qF "$(SCHED_XSLACK_NOTE)" $$log; then \
+			rm -f .sched-inv.*.kdiag; \
+			echo "SCHED INVARIANTS: PASS - boot $$att closed a choice of another CPU's work and nothing was charged across CPUs"; exit 0; \
+		fi; \
+		echo "SCHED INVARIANTS: Inconclusive - boot $$att closed no choice of another CPU's work, so the budget check was never asked"; \
+		[ $$att -ge $(SCHED_XSLACK_BOOTS) ] && { echo "SCHED INVARIANTS FAIL: $$att boots, none conclusive"; exit 1; }; \
+	done
+
+# Control arm for S152, a budget charged only by its own CPU. BUDGET_CROSS_CPU=1
+# charges a task's time to its context wherever it runs, and every task runs on
+# the BSP's root, so when an AP closes a choice of the BSP's work it charges the
+# BSP's root, and the check at the one place a charge is made must halt it. The
+# same boots as the base gate: the base gate must go red, and for that reason,
+# read whole from COM3 (on COM1 console_server's output can cut it). A boot that
+# closed no such choice is inconclusive here too.
+.PHONY: smoke-sched-invariants-cross-cpu-control
+smoke-sched-invariants-cross-cpu-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 BUDGET_CROSS_CPU=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 BUDGET_CROSS_CPU=1 horus.iso
+	@att=0; while :; do att=$$((att+1)); log=.sched-xcpu.$$att.kdiag; \
+		SMOKE_KDIAG_LOG=$$log SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) \
+			MARKER_CHANNEL=kdiag FAIL_MARKER='PANIC:' tools/smoke_test.sh horus.iso; rc=$$?; \
+		if [ $$rc -ne 0 ] && grep -qF "$(SCHED_XCPU_PANIC)" $$log; then \
+			rm -f .sched-xcpu.*.kdiag; \
+			echo "SCHED XCPU CONTROL: PASS - boot $$att: the base gate is red, a budget charged by another CPU named on COM3"; exit 0; \
+		fi; \
+		if [ $$rc -ne 0 ]; then echo "SCHED XCPU CONTROL: FAIL - the base gate went red for some other reason (capture $$log)"; exit 1; fi; \
+		if grep -qF "$(SCHED_XSLACK_NOTE)" $$log; then \
+			echo "SCHED XCPU CONTROL: FAIL - a choice of another CPU's work was closed and charged, and nothing named it"; exit 1; \
+		fi; \
+		echo "SCHED XCPU CONTROL: Inconclusive - boot $$att closed no choice of another CPU's work"; \
+		[ $$att -ge $(SCHED_XSLACK_BOOTS) ] && { echo "SCHED XCPU CONTROL FAIL: $$att boots, none conclusive"; exit 1; }; \
+	done
 
 # The gating form: N pinned boots of the claim-checking kernel, reported as a rate.
 #
@@ -15074,20 +15121,6 @@ smoke-sched-invariants:
 # version of this comment claimed 10 boots put a miss "below one in a thousand",
 # which was arithmetic done against the 50% local rate and wrong for the runner
 # this actually gates.
-# Control arm for S152, a budget charged only by its own CPU. BUDGET_CROSS_CPU=1
-# charges a task's time to its context wherever it runs, and every task runs on
-# the BSP's root, so the first task an AP runs as slack is charged to the BSP's
-# root by the AP, and SCHED_INVARIANTS' check at the one place a charge is made
-# must halt the boot.
-.PHONY: smoke-sched-invariants-cross-cpu-control
-smoke-sched-invariants-cross-cpu-control:
-	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 BUDGET_CROSS_CPU=1
-	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 BUDGET_CROSS_CPU=1 horus.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
-		EXPECT_FAULT='PANIC: a budget was charged by a CPU it does not belong to' \
-		tools/smoke_test.sh horus.iso
-
 .PHONY: smoke-sched-invariants-stress
 smoke-sched-invariants-stress:
 	@$(MAKE) --no-print-directory clean

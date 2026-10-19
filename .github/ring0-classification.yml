@@ -673,7 +673,11 @@
 # 2026-10-19: 12823 -> 12831, +8, syscall.c: SYS_SCHED_BIND under the spawn
 # lock (its SCHED_BIND_UNLOCKED arm) and task_tcb_held refusing a check made
 # outside it (S100). Authority over a task is checked in the kernel, so core.
-core_budget_loc: 12831
+# 2026-10-19: 12831 -> 12856, +25, scheduler.c: the S152 gate's precondition
+# note (a CPU closed a choice of another CPU's work) and panic_begin waiting out
+# a note rather than interleaving with it. All but panic_begin's loop is
+# compiled only into SCHED_INVARIANTS builds, but this budget counts source.
+core_budget_loc: 12856
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

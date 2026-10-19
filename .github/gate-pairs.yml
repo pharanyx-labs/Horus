@@ -356,6 +356,8 @@ control_arms:
   smoke-tickless-control: smoke-tickless
   smoke-spawn-window-control: smoke-spawn-window
   smoke-frame-budget-control: smoke-frame-budget
+  smoke-retype-race-control: smoke-retype-race
+  smoke-retype-race-gc-control: smoke-retype-race
   smoke-runq-unhomed-control: smoke-sched-invariants
   smoke-shootdown-unacked-control: smoke-shootdown-unacked
   smoke-switch-commit-control: smoke-switch-commit
@@ -597,6 +599,7 @@ gates:
   - smoke-tickless
   - smoke-spawn-window
   - smoke-frame-budget
+  - smoke-retype-race
   - smoke-smp-ap-late
   - smoke-smp-ap-closed
   - smoke-smp-kvm

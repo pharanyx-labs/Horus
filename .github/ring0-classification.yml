@@ -645,7 +645,17 @@
 # harness (frame_budget_selftest, fb_report), which compiles out of the ship
 # build, and smp.c's dispatch to it. The table's size is a constant, so the ship
 # code is unchanged in length. The untyped allocator is core.
-core_budget_loc: 12196
+# 2026-10-17: 12196 -> 12297, +101, LIMITATIONS 1.41 (S151): untyped.c's pin on
+# every indexed object from birth until a capability names it, cleared by the
+# install functions in capability.c under cap_lock (kobj_note_named), kobj_unpin
+# for the shared library's frames, the collector split into kobj_gc_locked
+# (which halts unless cap_lock is held by the CPU that declared it) and its two
+# entry points, teardown's release and sweep folded into one cap_lock section,
+# the KOBJ_UNPINNED and GC_TEARDOWN_UNLOCKED arms and the RETYPE_WINDOW_WIDEN
+# instrument with its inconclusive-run report, which compile out of the ship
+# build; selftest.c's launcher and smp.c's dispatch to it. The object collector
+# and the capability installs are core.
+core_budget_loc: 12297
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

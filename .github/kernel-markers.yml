@@ -38,6 +38,7 @@ scripts:
   tools/backspace_session.py: "ring 3: drives the shell and reads the screen"
   tools/blkproto_gate.sh: "ring 3: blktest's verdict"
   tools/boot_media_test.sh: "early: kernel boot lines before init, and the ring-3 login prompt"
+  tools/retype_race_boot.sh: "kcon: the kernel's INCONCLUSIVE line is read from COM4; the verdicts are ring 3's (retyperace)"
   tools/console_cursor_test.py: "ring 3: console_server's own behaviour"
   tools/console_escape_test.py: "ring 3: console_server's own behaviour"
   tools/console_resume_test.py: "ring 3: console_server's own behaviour"

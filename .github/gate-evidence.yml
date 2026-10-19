@@ -72,6 +72,23 @@ liveness:
 # Targets that establish liveness another way. A reason here must say WHICH
 # mechanism, specifically enough that a reader can check it against the recipe.
 exempt:
+  smoke-retype-race: >
+    Boots again only when the kernel names a boot INCONCLUSIVE (a retype window
+    no sweep crossed, read from COM4), at most three times, and fails as
+    inconclusive if every boot is. A boot is otherwise scored on a PRESENCE
+    requirement: retyperace's `RETYPETEST: PASS`, which it prints only after
+    using every retyped object and after the revoker's teardown sweep, so a boot
+    that died before the end has no PASS and the gate is red.
+  smoke-retype-race-control: >
+    Boots again only when the kernel names a boot INCONCLUSIVE (a retype window
+    no sweep crossed, read from COM4), at most three times, and a run that is
+    inconclusive on every boot fails as such (tools/retype_race_boot.sh). Every
+    other boot is scored on a PRESENCE requirement, the FAIL marker the defect
+    produces, so a boot that died is a red arm, never a green one.
+  smoke-retype-race-gc-control: >
+    As smoke-retype-race-control, scored on a PRESENCE requirement: the named
+    PANIC the collector raises when it is entered without cap_lock. A boot that
+    died before the revoker's teardown has no such line, and the arm is red.
   smoke-kstack-reuse: >
     Every one of KSTACK_REUSE_BOOTS boots has a PRESENCE requirement: the
     PROC_SELFTEST workload must reach `PROC_SELFTEST: tcb-reuse OK`, and the

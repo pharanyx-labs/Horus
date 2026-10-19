@@ -4395,11 +4395,12 @@ static void task_teardown_body(int id, const struct task_exit_cause *cause,
      * Taking the lock here is safe and cannot deadlock: every caller reaches this
      * through an interrupt gate (0x8E), so IF is clear and no timer tick can land
      * on this CPU while it is held. Cross-CPU it is an ordinary brief spinlock.
-     * The comment below already relies on that same property for kobj_gc().
+     * The capability step below relies on that same property.
      *
-     * kobj_gc() stays OUTSIDE the lock: it is a capability-graph sweep that takes
-     * its own locks, and nesting the scheduler lock underneath it would invert an
-     * ordering nothing else observes. */
+     * The capability step (cap_release_cspace_and_collect) stays OUTSIDE this
+     * lock: it takes cap_lock and then untyped_lock for its sweep, and nesting
+     * the scheduler lock underneath them would invert an ordering nothing else
+     * observes. */
 #ifdef SMP
     sched_raw_lock();
 #endif
@@ -4498,15 +4499,22 @@ static void task_teardown_body(int id, const struct task_exit_cause *cause,
      * lock. Until 2026-08-18 it was instead a property of a pushfq/popfq bracket
      * inside untyped.c, which is why that bracket is gone -- see the locking note
      * at the top of that file. */
-#ifndef CSPACE_KEEP_ON_TEARDOWN
-    cap_release_cspace(id);
-#else
+#if defined(CSPACE_KEEP_ON_TEARDOWN)
     /* CONTROL ARM -- never ship. The pre-2026-08-30 behaviour: a dead task's
      * capabilities stay in its cspace until the slot is next used. See
-     * make smoke-cspace-release-control. */
-    (void)0;
-#endif
+     * make smoke-cspace-release-control. The sweep still runs, under cap_lock. */
     kobj_gc();
+#elif defined(GC_TEARDOWN_UNLOCKED)
+    /* CONTROL ARM -- never ship. The sweep as teardown ran it until 2026-10-17,
+     * with no cap_lock, so it could read a capability mid-write and destroy an
+     * object that capability names. kobj_gc_locked must halt. See make
+     * smoke-retype-race-gc-control. */
+    cap_release_cspace(id);
+    kobj_gc_locked();
+#else
+    /* Empty the cspace and sweep, in one cap_lock section (S56, S151). */
+    cap_release_cspace_and_collect(id);
+#endif
 }
 
 /* Switch away from a task that has just terminated (SYS_EXIT / SYS_KILL-self),
@@ -5256,6 +5264,23 @@ void irq_policy_report(const char *when) {
 }
 #endif
 
+/* WHO HOLDS IT (2026-10-17, S151). A held spinlock's word is the holding CPU's
+ * index plus one, written by the same compare-and-swap that takes it, and 0 when
+ * free. Every reader that asks only "is it held?" still reads non-zero, so the
+ * change is invisible to them; what it adds is that "THIS CPU holds it" is an
+ * exact fact rather than a convention, which is what lets the object collector
+ * refuse to run for a caller that did not take cap_lock, whatever any other CPU
+ * holds (kobj_gc_locked). */
+static inline uint32_t spin_owner_tag(void) {
+    int c = this_cpu();
+    if (c < 0 || c >= MAX_CPUS) c = 0;
+    return (uint32_t)c + 1u;
+}
+
+int spin_held_here(const spinlock_t *lock) {
+    return lock->locked == spin_owner_tag();
+}
+
 #ifndef IRQ_LEGACY_GLOBAL_LOCK
 /* ---- The IF-preserving, per-CPU lock (roadmap 1.1 step 3, [C-3]/[C-3.1]) ----
  *
@@ -5308,7 +5333,8 @@ void spin_lock(spinlock_t *lock) {
     if (c < 0 || c >= MAX_CPUS) c = 0;
     if (irq_depth_pc[c]++ == 0)
         irq_saved_if_pc[c] = (fl & 0x200ULL) ? 1 : 0;
-    while (__sync_lock_test_and_set(&lock->locked, 1)) {
+    uint32_t me = (uint32_t)c + 1u;
+    while (!__sync_bool_compare_and_swap(&lock->locked, 0u, me)) {
         while (lock->locked) { __asm__ volatile ("pause" ::: "memory"); }
     }
 }
@@ -5363,7 +5389,8 @@ void spin_lock(spinlock_t *lock) {
     if (irq_lock_depth == 0) irq_outer_if = (fl & 0x200ULL) ? 1 : 0;
 #endif
     irq_lock_depth++;
-    while (__sync_lock_test_and_set(&lock->locked, 1)) {
+    uint32_t me = spin_owner_tag();   /* see WHO HOLDS IT, above */
+    while (!__sync_bool_compare_and_swap(&lock->locked, 0u, me)) {
         while (lock->locked) { __asm__ volatile ("pause" ::: "memory"); }
     }
 }

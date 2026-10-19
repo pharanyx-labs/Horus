@@ -436,6 +436,15 @@ fi
 BOOT_ARG=""
 [ -n "${SMOKE_BOOT_ORDER:-}" ] && BOOT_ARG="-boot order=$SMOKE_BOOT_ORDER"
 
+# Empty the three logs BEFORE QEMU starts. QEMU truncates a file chardev when it
+# opens it, but it starts in the background and the loop below polls at once, so
+# a log a caller kept at a fixed path (SMOKE_LOG and friends) could be read with
+# the PREVIOUS boot's lines still in it, and a marker or a PANIC from that boot
+# scored as this one's. Found 2026-10-17, when smoke-retype-race reported its own
+# control arm's PANIC within a second of starting. A stale line can only ever
+# produce a false verdict, so the logs start empty, whoever supplied them.
+: > "$LOG"; : > "$KDIAG"; : > "$KCON"
+
 qemu-system-x86_64 \
     -m "${SMOKE_MEM:-512M}" -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel "$QEMU_ACCEL" \
     -display none -no-reboot -no-shutdown \

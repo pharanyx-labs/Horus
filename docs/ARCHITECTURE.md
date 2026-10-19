@@ -190,9 +190,14 @@ class while a stale capability still names the old address. The cost is in `docs
 2.5.
 
 **Object lifetime is capability-governed**: an object exists as long as some capability names it,
-computed by a mark-and-sweep over the capability graph (`kobj_gc`, run from revocation and
+computed by a mark-and-sweep over the capability graph (`kobj_gc_locked`, run from revocation and
 teardown) rather than by reference counts spread across every mint, grant and revoke site. A frame
-is also kept while any page table maps it. The well-known service endpoints and the per-task reply
+is also kept while any page table maps it. An object is born pinned and becomes collectable only
+when a capability names it: the install that writes that capability clears the pin under the same
+`cap_lock`, so a sweep on another CPU can never take an object between its creation and its
+naming, and no creator has to remember to. The sweep always holds `cap_lock`, so it never reads a
+capability halfway through being written, and it halts by name if it is entered any other way
+(S151). The well-known service endpoints and the per-task reply
 endpoints below `DYN_EP_BASE` are named by the boot protocol, not by a capability, and live for the
 whole boot (gap G-5). `endpoint_by_index` and `notification_by_index` are the single resolvers,
 and both return `NULL` for a destroyed object.

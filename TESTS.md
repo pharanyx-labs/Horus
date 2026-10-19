@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 582 `smoke-*` targets: 248 gates and 334 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 585 `smoke-*` targets: 249 gates and 336 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -133,6 +133,7 @@ There are 582 `smoke-*` targets: 248 gates and 334 control arms. Each row is a g
 | `smoke-smp` | Every CPU in the MADT comes online and runs a task, taking it from the BSP's run list after another CPU's tick wakes it (the selftest waits until every AP but the watcher has stopped before it creates work), no task runs on an SMT sibling, and TLB shootdown completes | S80 | `smoke-smp-nosteal-control`, `smoke-smp-nokick-control` |
 | `smoke-tickless` | Eight CPUs idle at the login prompt: over 500 of the BSP's ticks the APs take fewer LAPIC ticks than two APs ticking all the time would (the watcher is one) |  | `smoke-tickless-control` |
 | `smoke-frame-budget` | The kernel carves single-page frames from each half of the arena until it refuses, and the frame table still has room: only the region ever refuses a frame |  | `smoke-frame-budget-control` |
+| `smoke-retype-race` | `retyperace` retypes and uses a frame, an endpoint and a notification twelve times each, every retype held open between the object's creation and its capability's install until a sweep on the other CPU has crossed it, while `retyperevoker` mints and revokes in a loop; then it kills the revoker, so a teardown sweep runs before the verdict. No object is collected before it is named; a boot in which a window saw no sweep is inconclusive and retried, up to three | S151 | `smoke-retype-race-control`, `smoke-retype-race-gc-control` |
 | `smoke-spawn-window` | Four CPUs boot with every spawn held for three AP ticks once the child's frame is built, and no CPU ever chooses a child still being built | S150 | `smoke-spawn-window-control` |
 | `smoke-sibling-kick` | No task runs on an SMT sibling even when every sibling is interrupted while work is waiting | S101 | `smoke-sibling-kick-control` |
 | `smoke-shootdown-unacked` | A TLB shootdown that one CPU never acknowledges halts the kernel instead of returning | S124 | `smoke-shootdown-unacked-control` |
@@ -432,7 +433,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 152 properties name a witness that resolves.
+currently **empty**: all 153 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

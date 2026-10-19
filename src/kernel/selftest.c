@@ -2731,6 +2731,41 @@ void frame_selftest(void) {
 }
 #endif /* FRAME_SELFTEST */
 
+#ifdef RETYPE_RACE_SELFTEST
+/* ---- A retyped object is never collected before it is named -------------------
+ *
+ * make smoke-retype-race (untyped.c, NAMED BEFORE COLLECTABLE). `retyperace`
+ * retypes with the gap between making an object and naming it held open
+ * (RETYPE_WINDOW_WIDEN), and `retyperevoker`, on the other CPU, revokes as fast
+ * as it can. Each holds a capability to the user-facing untyped region (the same
+ * region, as two tasks init trusts with kernel memory could). Entry into ring 3
+ * does not return. */
+static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
+void retype_race_selftest(void) {
+    extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    extern uint8_t embedded_retyperace_bin_start[], embedded_retyperace_bin_end[];
+    extern uint8_t embedded_retyperevoker_bin_start[], embedded_retyperevoker_bin_end[];
+
+    print("RETYPE_RACE_SELFTEST: begin\n");
+    int rev = fs_spawn_embedded(embedded_retyperevoker_bin_start,
+                                embedded_retyperevoker_bin_end, "retyperevoker");
+    int ret = fs_spawn_embedded(embedded_retyperace_bin_start,
+                                embedded_retyperace_bin_end, "retyperace");
+    if (rev <= 0 || ret <= 0) { print("RETYPETEST: FAIL spawn\n"); for (;;) asm volatile("hlt"); }
+    tasks[ret].spawn_arg = (uint64_t)rev;
+    /* Root slot 0 is the CAP_TCB template: retyperace kills and waits for the
+     * revoker before its verdict, so a teardown sweep always precedes it. */
+    if (cap_install_from_root(rev, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT) != 0 ||
+        cap_install_from_root(ret, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT) != 0 ||
+        cap_install_from_root(ret, 29, 0, (uint32_t)rev) != 0) {
+        print("RETYPETEST: FAIL endow\n"); for (;;) asm volatile("hlt");
+    }
+    selftest_resume_all();
+    sched_enable_preemption();
+    sched_enter_user(ret);
+}
+#endif /* RETYPE_RACE_SELFTEST */
+
 #ifdef RECVBLOCK_SELFTEST
 static int fs_spawn_embedded(const uint8_t *start, const uint8_t *end, const char *nm);
 /* ---- Blocking IPC receive self-test (RECVBLOCK_SELFTEST builds only) --------
@@ -2908,7 +2943,7 @@ void e820_selftest(void) {
 
 #if defined(FS_SELFTEST) || defined(NEWLIB_SELFTEST) || defined(NOTIFY_SELFTEST) || defined(COW_SELFTEST) || defined(CAPTEST_SELFTEST) || defined(MAPPHYS_SELFTEST) || defined(IOPORT_SELFTEST) || defined(IRQ_SELFTEST) || defined(CONSOLE_SELFTEST) || defined(CONSOLE_ISOLATION_TEST) || defined(RECVBLOCK_SELFTEST) || defined(TOKEN_SELFTEST) || defined(KLOG_FORGE_SELFTEST) \
     || defined(LIBHORUS_SELFTEST) || defined(FRAME_SELFTEST) || defined(PASSWD_PROBE) || defined(VFS_SELFTEST) || defined(FORK_SELFTEST) || defined(FPU_SELFTEST) || defined(FORKEXEC_SELFTEST) || defined(PIPEREVOKE_SELFTEST) || defined(DEVCAP_SELFTEST) || defined(NET_SELFTEST) || defined(NVME_SELFTEST) || defined(SDHCID_SELFTEST) || defined(ATAD_SELFTEST) || defined(SHLIB_SELFTEST) || defined(SHLIBC_SELFTEST) || defined(TUI_SELFTEST) \
-    || defined(FSCAP_SELFTEST)
+    || defined(FSCAP_SELFTEST) || defined(RETYPE_RACE_SELFTEST)
 /* ---- Selftest spawn helper (FS/NEWLIB/NOTIFY/COW/CAPTEST/MAPPHYS/IOPORT/IRQ/CONSOLE/RECVBLOCK/TOKEN/KLOG_FORGE/FORK only) ----
  * Stage an embedded, headered PIE binary and spawn it; returns the new pid. */
 

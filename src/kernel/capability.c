@@ -383,6 +383,7 @@ int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t o
     tasks[pid].cspace[slot].badge  = 0;
     tasks[pid].cspace[slot].serial = serial;
     tasks[pid].cspace[slot].token  = 0;
+    kobj_note_named(root_cnode[root_slot].type, obj);   /* collectable once named (S151) */
     spin_unlock(&cap_lock);
     return 0;
 }
@@ -425,6 +426,7 @@ bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
     cspace[dest_slot].serial     = serial;
     cspace[dest_slot].token      = 0;
     if (was_null) tasks[cur].caps_in_use++;
+    kobj_note_named(type, object);   /* collectable once named (S151) */
     spin_unlock(&cap_lock);
     return true;
 }
@@ -450,7 +452,7 @@ bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
  *   2. THE STORE ITSELF WAS UNSYNCHRONISED, which is the security half. A
  *      capability is six fields; a raw store writes them one at a time with
  *      `type` FIRST. rust_cap_revoke_global's sweep reads every live cspace and
- *      is documented -- in cap_revoke below, at the kobj_gc call -- to depend on
+ *      is documented -- in cap_revoke below, at the kobj_gc_locked call -- to depend on
  *      cap_lock making them QUIESCENT: "cap-writes are field-by-field, so running
  *      it unlocked would let it observe a slot mid-install -- type already
  *      written, `object` still stale -- and conclude a live object is
@@ -524,6 +526,7 @@ bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t ob
     cspace[slot].serial     = serial;
     cspace[slot].token      = 0;
     tasks[cur].caps_in_use++;
+    kobj_note_named(type, object);   /* collectable once named (S151) */
     spin_unlock(&cap_lock);
     if (out_slot) *out_slot = slot;
     return true;
@@ -821,7 +824,8 @@ bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
  *
  * ---- ORDERING ------------------------------------------------------------
  *
- * task_teardown calls this BEFORE kobj_gc(). The sweep then sees an empty
+ * task_teardown empties the cspace and then sweeps, both inside one cap_lock
+ * section (cap_release_cspace_and_collect). The sweep then sees an empty
  * cspace rather than relying on `state == 0` to skip a full one, so the two
  * agree by construction instead of by coincidence. Objects this task was the
  * last namer of are collected on that same pass, as they already were.
@@ -834,16 +838,17 @@ bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
  * assumed: h_exit, h_kill and h_signal hold no lock when they call
  * task_teardown, and on the fault paths (idt.c) task_teardown is, as the note
  * there says, "the first thing on that path to take a lock at all". It nests
- * inside nothing -- sched_raw_lock is released before this runs and kobj_gc's
- * ut_lock is taken after it.
+ * inside nothing -- sched_raw_lock is released before this runs -- and the
+ * sweep's untyped lock nests inside it, cap_lock -> untyped_lock (S151).
  *
  * `SECURITY.md` **S56**. */
-void cap_release_cspace(int id)
+/* Empty task `id`'s cspace and, with `collect`, sweep for objects nothing names
+ * any more, all in ONE cap_lock section. */
+static void release_cspace(int id, int collect)
 {
-    if (id <= 0 || id >= g_max_tasks) return;
-
+    int valid = (id > 0 && id < g_max_tasks);
     spin_lock(&cap_lock);
-    struct capability *cs = tasks[id].cspace;
+    struct capability *cs = valid ? tasks[id].cspace : 0;
     if (cs) {
         uint32_t sz = tasks[id].cspace_size ? tasks[id].cspace_size : CNODE_SIZE;
         if (sz > CNODE_SIZE) sz = CNODE_SIZE;
@@ -861,9 +866,20 @@ void cap_release_cspace(int id)
     }
     /* The count follows the contents. Left alone it would describe a cspace that
      * no longer holds anything, and `ps` reports it. */
-    tasks[id].caps_in_use = 0;
+    if (valid) tasks[id].caps_in_use = 0;
+    /* The sweep runs whatever the id: teardown always swept, and an id this
+     * refuses to empty must not also cost the objects it was the last to name. */
+    if (collect) kobj_gc_locked();
     spin_unlock(&cap_lock);
 }
+
+void cap_release_cspace(int id) { release_cspace(id, 0); }
+
+/* Teardown's whole capability step in ONE cap_lock section: empty the dying
+ * task's cspace, then sweep for objects nothing names any more (S56, S151). One
+ * acquisition rather than two, and no moment between the emptying and the sweep
+ * in which the lock is free. */
+void cap_release_cspace_and_collect(int id) { release_cspace(id, 1); }
 
 /* Descriptor buffer for the revocation sweep (see rust_cap_revoke_global's use).
  * Allocated by cap_tables_init() from the kernel reserve, g_max_tasks + 1 long.
@@ -1829,7 +1845,7 @@ bool cap_revoke(uint32_t slot) {
      * cap_lock makes every cspace it reads quiescent. Lock order is cap_lock ->
      * untyped_lock and is the same everywhere (untyped_retype releases the
      * untyped lock before taking cap_lock), so this cannot deadlock. */
-    kobj_gc();
+    kobj_gc_locked();
 
     spin_unlock(&cap_lock);
     /* The invariant says a pipe's count is never below its ends, so a revoke can

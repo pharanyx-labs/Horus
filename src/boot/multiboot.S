@@ -1073,6 +1073,23 @@ embedded_formatprobe_bin_start:
 embedded_formatprobe_bin_end:
 #endif
 
+#ifdef RETYPE_RACE_SELFTEST
+/* A retyped object is never collected before it is named: the retyper holds its
+ * window open, the revoker sweeps across it. */
+.align 16
+.global embedded_retyperace_bin_start
+embedded_retyperace_bin_start:
+.incbin "userspace/retyperace.bin"
+.global embedded_retyperace_bin_end
+embedded_retyperace_bin_end:
+.align 16
+.global embedded_retyperevoker_bin_start
+embedded_retyperevoker_bin_start:
+.incbin "userspace/retyperevoker.bin"
+.global embedded_retyperevoker_bin_end
+embedded_retyperevoker_bin_end:
+#endif
+
 #ifdef FRAME_SELFTEST
 /* Frame-capability pair (roadmap 2.1): one task retypes a KOBJ_FRAME out of its
  * CAP_UNTYPED and delegates a READ-only copy; the other proves it sees the

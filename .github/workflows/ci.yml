@@ -612,7 +612,7 @@ jobs:
       - name: Build bootable ISO
         run: make horus.iso
       - name: Upload kernel artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: horus-kernel-x86_64
           path: |
@@ -3583,7 +3583,7 @@ jobs:
       # the one time anyone needs it, and the red run of 2026-09-25 had none.
       - name: Upload the installer boots' serial logs (evidence of a red run)
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: installer-provision-serial
           path: |
@@ -3623,7 +3623,7 @@ jobs:
         run: make smoke-installer-policy-nogrant-control
       - name: Upload the installer boots' serial logs (evidence of a red run)
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: installer-policy-serial
           path: installer-pol-serial.log
@@ -3655,7 +3655,7 @@ jobs:
         run: make smoke-session-handover-stale-control
       - name: Upload the boots' serial (evidence of a red run)
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: session-handover-serial
           path: handover-serial.log
@@ -3686,7 +3686,7 @@ jobs:
         run: make smoke-session-admin-caps-launch-control
       - name: Upload the boots' serial (evidence of a red run)
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: session-admin-caps-serial
           path: admincaps-serial.log
@@ -4793,7 +4793,7 @@ jobs:
       # clean run a no-op.
       - name: Upload the failing boots' serial logs (evidence, not a rate)
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: smp-soak-evidence
           path: soak-evidence/
@@ -4803,7 +4803,7 @@ jobs:
       # fault twice (TESTS.md). Ship the exact binary that produced the addresses.
       - name: Upload the kernel.elf that produced those addresses
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: smp-soak-kernel-elf
           path: kernel.elf
@@ -5405,7 +5405,7 @@ jobs:
         run: make smoke-repro-iso
       - name: Keep both copies of anything that differed
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: repro-iso-evidence
           path: .repro-iso/
@@ -5436,7 +5436,7 @@ jobs:
         run: make smoke-repro-iso-serial-control
       - name: Keep the arms' log
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: repro-iso-arms-log
           path: .repro-iso-control.log
@@ -5622,7 +5622,7 @@ jobs:
           echo "SBOM generated: sbom.cyclonedx.json"
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
           name: horus-sbom-cyclonedx
           path: sbom.cyclonedx.json

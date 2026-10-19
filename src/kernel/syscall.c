@@ -576,8 +576,17 @@ static void h_exit(struct interrupt_frame64 *r) {
  *
  * Every caller holds the spawn lock (see the tcb_locked wrappers below), which
  * every task-creating path also holds, so the slot cannot be reused between
- * this check and the operation it authorises. */
+ * this check and the operation it authorises.
+ *
+ * AND A CALLER THAT DOES NOT IS REFUSED, here, rather than trusted to have
+ * remembered. SYS_SCHED_BIND was first written without the wrapper, so between
+ * this check and the bind the target could die and its slot be taken, and the
+ * bind landed on the successor: a context holder could then starve, or by
+ * revoking stop, a task it was never given (found 2026-10-19 before merge).
+ * The generation check closes S100 only if check and act are one step, so the
+ * check now proves the step is held instead of saying so in a comment. */
 static int task_tcb_held(int target, uint32_t need) {
+    if (!spawn_stage_held_here()) return 0;
     int cur = get_current_task();
     if (cur <= 0 || cur >= g_max_tasks) return 0;
     if (target < 0 || target >= g_max_tasks) return 0;
@@ -1480,8 +1489,9 @@ static void h_sched_split(struct interrupt_frame64 *r) {
  * the task carrying WRITE, the right that already governs changing a task
  * (SYS_KILL, SYS_TASK_RESUME), and the context with WRITE. Checked in that order
  * and both before the target's state, so a refusal says nothing about whether
- * the task exists. */
-static void h_sched_bind(struct interrupt_frame64 *r) {
+ * the task exists. Runs under the spawn lock like every CAP_TCB-authorised
+ * syscall (see h_sched_bind below), so the task checked is the task bound. */
+static void h_sched_bind_locked(struct interrupt_frame64 *r) {
     int target = (int)r->rbx;
     if (target <= 0 || target >= g_max_tasks || !task_tcb_held(target, CAP_RIGHT_WRITE)) {
         r->rax = (uint32_t)SYS_ERR_PERM; return;
@@ -1491,6 +1501,18 @@ static void h_sched_bind(struct interrupt_frame64 *r) {
     uint64_t idx = c->object;
     if (idx == 0 || idx >= SC_INDEX_MAX) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
     r->rax = (uint64_t)(uint32_t)sched_bind(target, (uint32_t)idx);
+}
+
+/* SCHED_BIND_UNLOCKED=1 is the CONTROL ARM: the bind as first written, with no
+ * spawn lock, so the CAP_TCB check and the bind are two steps a slot reuse can
+ * fall between. task_tcb_held refuses it, so every bind fails and
+ * make smoke-sched-budget goes red. */
+static void h_sched_bind(struct interrupt_frame64 *r) {
+#ifndef SCHED_BIND_UNLOCKED
+    spawn_stage_acquire(); h_sched_bind_locked(r); spawn_stage_release();
+#else
+    h_sched_bind_locked(r);
+#endif
 }
 
 /* SYS_SCHED_INFO (125): rbx = context slot (READ), rcx = user struct sched_info *.

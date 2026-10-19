@@ -227,7 +227,8 @@ DEFECT_FLAGS = \
 	SPAWN_PUBLISH_EARLY SPAWN_WINDOW_WIDEN \
 	FRAME_TABLE_FIXED \
 	RETYPE_RACE_SELFTEST KOBJ_UNPINNED GC_TEARDOWN_UNLOCKED \
-	BUDGET_UNENFORCED BUDGET_CROSS_CPU SC_DESTROY_KEEPS_TASKS SC_UNBOUND_CREATOR_GETS_ROOT
+	BUDGET_UNENFORCED BUDGET_CROSS_CPU SC_DESTROY_KEEPS_TASKS SC_UNBOUND_CREATOR_GETS_ROOT \
+	SCHED_BIND_UNLOCKED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2267,6 +2268,14 @@ endif
 SC_UNBOUND_CREATOR_GETS_ROOT ?= 0
 ifeq ($(SC_UNBOUND_CREATOR_GETS_ROOT),1)
 CFLAGS += -DSC_UNBOUND_CREATOR_GETS_ROOT
+endif
+# SCHED_BIND_UNLOCKED=1 (defect) runs SYS_SCHED_BIND without the spawn lock, so
+# its CAP_TCB check and the bind are two steps a slot reuse can fall between.
+# task_tcb_held refuses a check made outside the lock, so every bind fails
+# (smoke-sched-budget-bind-unlocked-control).
+SCHED_BIND_UNLOCKED ?= 0
+ifeq ($(SCHED_BIND_UNLOCKED),1)
+CFLAGS += -DSCHED_BIND_UNLOCKED
 endif
 
 # The frame table is sized from the arena (roadmap 2.1). FRAME_BUDGET_SELFTEST=1
@@ -15132,6 +15141,18 @@ smoke-sched-budget-fork-control:
 	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 SC_UNBOUND_CREATOR_GETS_ROOT=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
 		REQUIRE_MARKER='SCHEDTEST: FAIL no-child-of-an-unbound-task-runs' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: SYS_SCHED_BIND without the spawn lock, as it was first written.
+# A CAP_TCB check outside the lock is refused (task_tcb_held), so the first bind
+# schedtest needs fails; without that refusal the bind would race slot reuse.
+.PHONY: smoke-sched-budget-bind-unlocked-control
+smoke-sched-budget-bind-unlocked-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 SCHED_BIND_UNLOCKED=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 SCHED_BIND_UNLOCKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL bind-the-spinner' \
 		tools/smoke_test.sh horus.iso
 
 # An idle AP takes no ticks (docs/design/scheduler.md 3.4, step 3). Eight CPUs

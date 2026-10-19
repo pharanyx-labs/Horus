@@ -2290,6 +2290,8 @@ jobs:
         run: make smoke-sched-budget-revoke-control
       - name: Control arm, a child of a task whose context was revoked gets a whole CPU
         run: make smoke-sched-budget-fork-control
+      - name: Control arm, a bind made outside the spawn lock is refused
+        run: make smoke-sched-budget-bind-unlocked-control
       # Eight CPUs on the topologies firmware produces, not only QEMU's default:
       # sparse LAPIC ids, SMT, and more threads than slots (docs/ARCHITECTURE.md
       # section 7). Every schedulable AP must run a task and none may be an SMT

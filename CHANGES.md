@@ -59,6 +59,8 @@ here.
 
 ### Fixed
 
+- Two control arms went red on changes they do not measure. `smoke-defer-exemption-control` held its race window open with a spin count, which on a newer CI runner image no longer spanned two claim audits, and went 0 of 46; it now holds the window until audits have run, and hit on 20 boots of 20. `smoke-console-handover-lines` and its arm gave up after 3 inconclusive boots, about one CI run in 80 at CI's measured rate; they now allow 8. (#593)
+
 - The boot harness could score a previous boot's lines as the current one's: QEMU truncates its log only when it opens it, after the harness has begun polling, so a log kept at a fixed path still held the last boot's output for that moment, and a planted `PANIC:` line made a clean boot fail. `tools/smoke_test.sh` now empties its three logs before QEMU starts (#591).
 - A tree that had run `smoke-repro-iso-path-control` built every later image with that arm's libc, which carries its build directory, so `smoke-repro-iso` went red there on a library it never asked for. The newlib build is now asked on every `make` whether its stamp still matches the settings, and rebuilds when it does not; when it does, it leaves `libc.a` untouched, so nothing relinks (#587).
 - `smoke-installer-provision-control`, the S74 arm, reproduced its defect in 1 run of 6 and turned main red on a run where the defect had fired: boot 1's copy of the base system often finishes before the power-off, leaving boot 2 nothing to break. The arm now requires the defect's own mark, the startup copy against the locked store writing 0 inodes, and only reports the `/bin` listing. Measured: 8 runs in 8. (#570)

@@ -677,7 +677,10 @@
 # note (a CPU closed a choice of another CPU's work) and panic_begin waiting out
 # a note rather than interleaving with it. All but panic_begin's loop is
 # compiled only into SCHED_INVARIANTS builds, but this budget counts source.
-core_budget_loc: 12856
+# 2026-10-19: 12856 -> 12872, +16, scheduler.c: DEFER_WINDOW_WIDEN holds its
+# window for claim audits instead of a spin count (defer_widen). Compiled only
+# into that instrument's builds; counted because this budget counts source.
+core_budget_loc: 12872
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

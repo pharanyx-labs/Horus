@@ -12965,7 +12965,12 @@ smoke-kcon-grant-control:
 # another CPU when console_server's display map takes the console; it must arrive
 # whole on COM1, and so must console_server's first lines. A boot in which the
 # line never got in flight is inconclusive and retried, never scored.
-HANDOVER_BOOTS ?= 3
+# SIZED FROM CI'S RATE (2026-10-19): 3 inconclusive boots in 35 over 16 `main`
+# runs, every conclusive boot correct in both arms. At the 95% upper bound of
+# that rate (23%) the first bound, 3, made each target red about one CI run in
+# 80 on a change it does not measure; 8 makes it under 1 in 100,000. Locally,
+# with five QEMUs at once, 3 in 10 were inconclusive (8 boots: 1 in 15,000).
+HANDOVER_BOOTS ?= 8
 
 .PHONY: smoke-console-handover-lines
 smoke-console-handover-lines:
@@ -14033,7 +14038,11 @@ DEFER_EXEMPTION_MIN_LIVE ?= 3
 # rate"). Up to #583 the arm reproduced on boot 1 or 2 of every CI run: 6 hits in
 # 8 boots. From #584 (per-CPU run lists) it was 4 in 20, and #588's run went 8 of
 # 8 clean and red; locally 2 in 10. At about 0.15 a boot, 8 boots miss 27% of the
-# time, so the bound is 46 (0.85^46 < 0.1%). A clean boot's workload ends at
+# time, so the bound is 46 (0.85^46 < 0.1%). Then #592's run on the runner image
+# of 2026-10-18 went 0 of 46: the widener was a spin count, which measures the
+# host. It now holds the window for audits (defer_widen in scheduler.c), and the
+# arm hit on 20 boots of 20 locally; the bound stays as a margin, since a hit
+# ends the loop. A clean boot's workload ends at
 # about 3 s ("stale-reply OK") and the latest hit seen came at 2.96 s, so a boot
 # is given DEFER_EXEMPTION_BOOT_TIMEOUT seconds rather than the 40 a shell banner
 # that PROC_SELFTEST never prints would take.

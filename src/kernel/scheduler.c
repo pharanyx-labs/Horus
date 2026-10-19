@@ -596,7 +596,8 @@ void scheduler_init(void) {
         tasks[i].eip = 0;
         tasks[i].cap_tcb = 0;
         tasks[i].cr3 = 0;
-        tasks[i].priority = 1;
+        tasks[i].priority = SCHED_PRIO_MAX;   /* step 4b: the kernel's tasks start at the top */
+        tasks[i].max_priority = SCHED_PRIO_MAX;
         tasks[i].cspace = 0;
         tasks[i].cspace_size = 0;
         tasks[i].heap_start = 0;
@@ -1066,6 +1067,45 @@ int sched_bind(int target, uint32_t idx) {
     return 0;
 }
 
+/* SYS_SCHED_SET_PRIORITY's locked half (step 4b). The caller has checked the
+ * CAP_TCB and the range; this checks the bound that can move underneath it, the
+ * caller's own maximum, under the lock every write of a maximum takes. Neither
+ * value may exceed it, so no task makes itself or another more urgent, or able
+ * to make anything more urgent, than the authority it holds (S155). A task's
+ * own priority may stand above its own maximum, as in seL4: a supervisor can
+ * keep a server urgent and still cap what the server can hand on.
+ * PRIO_UNCAPPED=1 drops the check, for the control arm. */
+int sched_set_priority(int caller, int target, uint32_t prio, uint32_t max) {
+    if (caller <= 0 || caller >= g_max_tasks || target <= 0 || target >= g_max_tasks)
+        return SYS_ERR_INVAL;
+    uint64_t fl = sc_lock();
+#ifndef PRIO_UNCAPPED
+    if (prio > tasks[caller].max_priority || max > tasks[caller].max_priority) {
+        sc_unlock(fl);
+        return SYS_ERR_PERM;
+    }
+#endif
+    if (tasks[target].state == 0) {
+        sc_unlock(fl);
+        return SYS_ERR_INVAL;
+    }
+    tasks[target].priority     = prio;
+    tasks[target].max_priority = max;
+    sc_unlock(fl);
+    return 0;
+}
+
+/* SYS_SCHED_GET_PRIORITY's half: (max << 8) | priority, or SYS_ERR_INVAL for an
+ * empty slot. Both are 0..255, so the result is never negative. */
+int sched_get_priority(int target) {
+    if (target <= 0 || target >= g_max_tasks) return SYS_ERR_INVAL;
+    uint64_t fl = sc_lock();
+    int v = tasks[target].state == 0 ? SYS_ERR_INVAL
+          : (int)(((tasks[target].max_priority & 0xFFu) << 8) | (tasks[target].priority & 0xFFu));
+    sc_unlock(fl);
+    return v;
+}
+
 /* SYS_SCHED_INFO's locked half. Time is reported to the tick, never finer:
  * ring 3 sees no clock below 10 ms (S34), and a remaining budget read in a
  * loop would otherwise be one. */
@@ -1229,6 +1269,18 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
 #endif
         struct sched_context *sc = sc_by_index(idx);
         tasks[id].sc_index = idx;
+        /* Its priority and maximum too (design 3.2, step 4b): a child is no more
+         * urgent than its creator and can be made no more urgent than its
+         * creator could, and a task the kernel creates starts at the top. Set
+         * here, for spawn and fork alike, so there is one place a task gets
+         * them. */
+        if (creator > 0 && creator < g_max_tasks) {
+            tasks[id].priority     = tasks[creator].priority;
+            tasks[id].max_priority = tasks[creator].max_priority;
+        } else {
+            tasks[id].priority     = SCHED_PRIO_MAX;
+            tasks[id].max_priority = SCHED_PRIO_MAX;
+        }
 #if defined(SMP) && !defined(RUNQ_UNHOMED)
         /* Home the task before it goes live, so there is no moment at which it is
          * live and on no list (see PER-CPU RUN LISTS): on its context's CPU when
@@ -3508,6 +3560,56 @@ static inline int sched_selectable(int t)
            ;
 }
 
+/* ---- PRIORITY (docs/design/scheduler.md 3.2, step 4b) -----------------------
+ *
+ * Among budgeted work a CPU runs the highest priority, round robin within a
+ * level; slack work stays below every priority and ignores it (decision 8).
+ * Each selection path below keeps the order it had, and a candidate replaces the
+ * one found so far only when its priority is STRICTLY higher. So at equal
+ * priorities the choice is exactly the one made before priorities existed,
+ * which is every choice in the shipped system: every task starts at
+ * SCHED_PRIO_MAX, and a search stops at the first candidate at that level.
+ * PRIO_IGNORED=1 takes the first candidate whatever its priority, for the
+ * control arm. */
+static inline int prio_better(int cand, int best)
+{
+#ifdef PRIO_IGNORED
+    return cand > 0 && best <= 0;
+#else
+    return cand > 0 && (best <= 0 || tasks[cand].priority > tasks[best].priority);
+#endif
+}
+
+/* Nothing can beat `t`: stop searching. */
+static inline int prio_top(int t)
+{
+#ifdef PRIO_IGNORED
+    return t > 0;
+#else
+    return t > 0 && tasks[t].priority >= SCHED_PRIO_MAX;
+#endif
+}
+
+/* Does the task CPU `cpu` is running keep it? The selection never returns that
+ * task (it is claimed, and sched_selectable passes over a claimed task), and a
+ * choice of none means "go on running it" (sc_account stamps it so). So a task
+ * still budgeted here keeps its CPU over every candidate it outranks, `best`
+ * being the best budgeted one found, or <= 0 for none: over a lower priority,
+ * which must not run while it can, and over slack work, which is below every
+ * priority. Before step 4b a tick or a yield gave the CPU to slack work whenever
+ * no other budgeted task waited, so budgeted work could lose every other tick
+ * to slack work waiting on its CPU. */
+static int start_keeps_cpu(int start, int best, int cpu, uint64_t now_us)
+{
+    if (start <= 0 || start >= g_max_tasks || cpu < 0 || cpu >= MAX_CPUS) return 0;
+    if (percpu_current_task[cpu] != start) return 0;
+    if (tasks[start].state != TASK_RUNNABLE || tasks[start].pending_block ||
+        tasks[start].pager_hold)
+        return 0;
+    if (sc_eligible(start, cpu, now_us) != SC_RUN_BUDGET) return 0;
+    return best <= 0 || prio_better(start, best);
+}
+
 #ifndef SMP
 /* The first selectable task after `start`, round robin over the table, or -1.
  * `start` itself is a candidate only when `include_start` is set, and then last:
@@ -3517,14 +3619,18 @@ static inline int sched_selectable(int t)
 static int sched_pick_scan(int start, int include_start, int want, uint64_t now)
 {
     int last = include_start ? g_max_tasks : g_max_tasks - 1;
+    int best = -1;
     for (int i = 1; i <= last; i++) {
         int cand = (start + i) % g_max_tasks;
         if (cand == 0) continue;
         if (!sched_selectable(cand)) continue;
         int e = sc_eligible(cand, 0, now);
-        if (e != SC_RUN_NONE && (want == SC_RUN_SLACK || e == want)) return cand;
+        if (e == SC_RUN_NONE || (want != SC_RUN_SLACK && e != want)) continue;
+        if (want == SC_RUN_SLACK) return cand;          /* slack: round robin only */
+        if (prio_better(cand, best)) best = cand;       /* budgeted: by priority */
+        if (prio_top(best)) break;
     }
-    return -1;
+    return best;
 }
 
 /* Budgeted work first, then slack (scheduling contexts, step 4a). The one CPU
@@ -3535,7 +3641,8 @@ static int sched_pick_after(int start, int include_start)
 {
     uint64_t now = sched_clock_us();
     int t = sched_pick_scan(start, include_start, SC_RUN_BUDGET, now);
-    if (t < 0) t = sched_pick_scan(start, include_start, SC_RUN_SLACK, now);
+    if (start_keeps_cpu(start, t, 0, now)) t = -1;      /* it outranks them all */
+    else if (t < 0) t = sched_pick_scan(start, include_start, SC_RUN_SLACK, now);
     sc_account(0, t, now);
     return t;
 }
@@ -3560,20 +3667,26 @@ static int rq_first_selectable(int c, int start, int cpu, int want, uint64_t now
     int on_c = (start > 0 && start < g_max_tasks && tasks[start].rq_home == c);
     int origin = on_c ? tasks[start].rq_next : h;
     int t = origin;
+    int best = -1;
     for (int n = 0; n < g_max_tasks; n++) {
         if (t != start && sched_selectable(t)) {
             /* Scheduling contexts (step 4a): `want` is SC_RUN_BUDGET for
              * budgeted work on `cpu` only, SC_RUN_SLACK for anything `cpu` may
              * run at all. A task whose context gives it nothing here is passed
              * over, so a placement can never run a task on time it was not
-             * given. */
+             * given. Slack is taken in list order; budgeted work by priority,
+             * the first at the highest level winning (see PRIORITY). */
             int e = sc_eligible(t, cpu, now);
-            if (e != SC_RUN_NONE && (want == SC_RUN_SLACK || e == want)) return t;
+            if (e != SC_RUN_NONE && (want == SC_RUN_SLACK || e == want)) {
+                if (want == SC_RUN_SLACK) return t;
+                if (prio_better(t, best)) best = t;
+                if (prio_top(best)) break;
+            }
         }
         t = tasks[t].rq_next;
         if (t == origin) break;
     }
-    return -1;
+    return best;
 }
 
 /* Take a selectable task from another CPU's list for `cpu`, re-homing it here;
@@ -3583,22 +3696,38 @@ static int rq_first_selectable(int c, int start, int cpu, int want, uint64_t now
  * disturb the claim protocol: S20 rests on task_running_cpu, which a list never
  * touches. RUNQ_NO_STEAL=1 takes nothing, for the control arm: a CPU then runs
  * only what was created on it, and the APs of smoke-smp never run a worker. */
-static int rq_steal(int cpu, int start, int stalled_only, uint64_t now,
-                    int want, uint64_t now_us)
+static int rq_steal_find(int cpu, int start, int stalled_only, uint64_t now,
+                         int want, uint64_t now_us)
 {
 #ifdef RUNQ_NO_STEAL
     (void)cpu; (void)start; (void)stalled_only; (void)now; (void)want; (void)now_us;
     return -1;
 #else
+    /* The first list's candidate for slack; for budgeted work the best over
+     * every list, the first at the highest level winning, so at one priority it
+     * is the task the first list gives, as before step 4b. Not re-homed: the
+     * caller may yet choose another. */
+    int best = -1;
     for (int k = 1; k < MAX_CPUS; k++) {
         int c = (cpu + k) % MAX_CPUS;
         if (rq_head[c] < 0) continue;
         if (stalled_only && now - percpu_pick_tick[c] <= RQ_STALL_TICKS) continue;
         int t = rq_first_selectable(c, start, cpu, want, now_us);
-        if (t > 0) { rq_home_on(t, cpu); return t; }
+        if (t <= 0) continue;
+        if (want == SC_RUN_SLACK) return t;
+        if (prio_better(t, best)) best = t;
+        if (prio_top(best)) break;
     }
-    return -1;
+    return best;
 #endif
+}
+
+static int rq_steal(int cpu, int start, int stalled_only, uint64_t now,
+                    int want, uint64_t now_us)
+{
+    int t = rq_steal_find(cpu, start, stalled_only, now, want, now_us);
+    if (t > 0) rq_home_on(t, cpu);
+    return t;
 }
 
 /* The task this CPU runs next, or -1 (docs/design/scheduler.md 3.5). Same
@@ -3658,15 +3787,30 @@ static int sched_pick_after_list(int start, int include_start, uint64_t now_us)
      * every task runs on a root with the slack right this is exactly step 2's
      * order: the BSP's root makes every task budgeted on the BSP and slack on
      * every AP. */
-    int t = rq_steal(cpu, start, 1, now, SC_RUN_BUDGET, now_us);
-    if (t > 0) return t;
-    t = rq_first_selectable(cpu, start, cpu, SC_RUN_BUDGET, now_us);
-    if (t > 0) return t;
-    t = rq_steal(cpu, start, 0, now, SC_RUN_BUDGET, now_us);
-    if (t > 0) return t;
+    /* Budgeted work, by priority (step 4b): the same sources in the same order,
+     * a later one replacing the candidate only when strictly more urgent, and
+     * the search stopping at the top level, which is where every shipped task
+     * is. The winner is re-homed here only once it is chosen. */
+    int best = rq_steal_find(cpu, start, 1, now, SC_RUN_BUDGET, now_us);
+    int t;
+    if (!prio_top(best)) {
+        t = rq_first_selectable(cpu, start, cpu, SC_RUN_BUDGET, now_us);
+        if (prio_better(t, best)) best = t;
+    }
+    if (!prio_top(best)) {
+        t = rq_steal_find(cpu, start, 0, now, SC_RUN_BUDGET, now_us);
+        if (prio_better(t, best)) best = t;
+    }
     if (include_start && start > 0 && start < g_max_tasks && sched_selectable(start) &&
-        sc_eligible(start, cpu, now_us) == SC_RUN_BUDGET)
-        return start;
+        sc_eligible(start, cpu, now_us) == SC_RUN_BUDGET && prio_better(start, best))
+        best = start;
+    /* The task this CPU runs, still budgeted here and outranking them all, goes
+     * on running. */
+    if (start_keeps_cpu(start, best, cpu, now_us)) return -1;
+    if (best > 0) {
+        if (best != start && tasks[best].rq_home != cpu) rq_home_on(best, cpu);
+        return best;
+    }
     t = rq_steal(cpu, start, 1, now, SC_RUN_SLACK, now_us);
     if (t > 0) return t;
     t = rq_first_selectable(cpu, start, cpu, SC_RUN_SLACK, now_us);

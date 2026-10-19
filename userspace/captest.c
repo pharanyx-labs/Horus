@@ -1611,6 +1611,112 @@ void _start(void) {
               "pipe-close-after-copy-probe");
     }
 
+    /* ---- 16b. PRIORITY IS CAPPED BY AUTHORITY (step 4b, S155) ---------
+     *
+     * Setting a priority needs a CAP_TCB to the task carrying PRIORITY, and
+     * neither the priority nor the maximum may exceed the CALLER's own maximum
+     * (docs/design/scheduler.md 3.2). Here, before section 17 leaves this task
+     * at its capability ceiling, because it needs a fork, two pipes and a mint.
+     *
+     * Nothing here lowers a task's PRIORITY and then needs it to run: this boot
+     * has one CPU, and a lower priority runs only when nothing above it can, so
+     * any task at 255 that polls would starve it and the test would hang
+     * instead of failing. Maxima are what is lowered, and a task may run above
+     * its own maximum.
+     *
+     * The right: a child is handed a CAP_TCB to this task minted WITHOUT
+     * PRIORITY, and tries to cut this task's maximum to 254. This task then
+     * reads its own; PRIO_RIGHT_UNCHECKED=1 checks WRITE instead, and fails it.
+     *
+     * The cap: this task sets the child to priority 255 with maximum 250, and
+     * the child asks to raise its own maximum to 251, and to set its priority to
+     * 255, where it already runs. Each exceeds its maximum and is refused;
+     * PRIO_UNCAPPED=1 drops the check, and fails the first. Neither request
+     * moves its priority, so even accepted it still runs to report, over a
+     * pipe, one bit per refusal. */
+    out("CAPTEST: priority\n");
+    {
+        enum { SLOT_TCB_NOPRIO = 233, SLOT_KID_TCB = 234, GO_ROUNDS = 200000 };
+        int self = sys_getpid();
+        const int top = (int)((SCHED_PRIO_MAX << 8) | SCHED_PRIO_MAX);
+        check(sys_sched_get_priority(self) == top, "priority-not-at-the-top-at-birth");
+        check(sys_sched_set_priority(1 << 20, 1, 1) == SYS_ERR_PERM,
+              "priority-set-on-an-unnameable-task");
+        check(sys_sched_get_priority(1 << 20) == SYS_ERR_PERM,
+              "priority-read-on-an-unnameable-task");
+        check(sys_sched_set_priority(self, 256, 255) == SYS_ERR_INVAL,
+              "priority-above-the-range-accepted");
+        check(sys_sched_set_priority(self, 255, 256) == SYS_ERR_INVAL,
+              "maximum-above-the-range-accepted");
+        check(sys_sched_get_priority(self) == top, "a-refused-priority-set-changed-something");
+
+        int go_rw = sys_pipe(), res_rw = sys_pipe();
+        check(go_rw >= 0 && res_rw >= 0, "pipes-for-priority-probe-refused");
+        uint32_t go_r  = ((uint32_t)go_rw >> 16) & 0xFFFFu,  go_w  = (uint32_t)go_rw & 0xFFFFu;
+        uint32_t res_r = ((uint32_t)res_rw >> 16) & 0xFFFFu, res_w = (uint32_t)res_rw & 0xFFFFu;
+        int kid = sys_fork();
+        check(kid >= 0, "fork-for-priority-probe-refused");
+        if (kid == 0) {
+            for (int round = 0; round < 2; round++) {
+                char go = 0;
+                int got = SYS_ERR_AGAIN;
+                for (int i = 0; i < GO_ROUNDS && got == SYS_ERR_AGAIN; i++) {
+                    got = sys_pipe_read(go_r, &go, 1);
+                    if (got == SYS_ERR_AGAIN) sys_yield();
+                }
+                char bits = 0;
+                if (round == 0) {
+                    /* Holding only the narrowed CAP_TCB to the parent. */
+                    if (sys_sched_set_priority(self, SCHED_PRIO_MAX, 254) == SYS_ERR_PERM)
+                        bits |= 1;
+                } else {
+                    int me = sys_getpid();
+                    if (sys_sched_set_priority(me, SCHED_PRIO_MAX, 251) == SYS_ERR_PERM)
+                        bits |= 1;
+                    if (sys_sched_set_priority(me, SCHED_PRIO_MAX, 250) == SYS_ERR_PERM)
+                        bits |= 2;
+                }
+                (void)sys_pipe_write(res_w, &bits, 1);
+            }
+            sys_exit();
+            for (;;) { }
+        }
+        check(sys_sched_get_priority(kid) == top, "a-child-did-not-inherit-its-parents-priority");
+        check(sys_cap_mint(SLOT_TCB_NOPRIO, CAPSLOT_TCB, CAP_RIGHT_READ | CAP_RIGHT_WRITE) == 0,
+              "mint-a-tcb-without-priority-refused");
+        check(sys_cap_grant(kid, SLOT_TCB_NOPRIO, SLOT_KID_TCB) == 0,
+              "grant-a-tcb-without-priority-refused");
+
+        char bits = 0, go = 'g';
+        for (int round = 0; round < 2; round++) {
+            if (round == 1) {
+                check(sys_sched_set_priority(kid, SCHED_PRIO_MAX, 250) == 0,
+                      "capping-a-childs-maximum-refused");
+                check(sys_sched_get_priority(kid) == (int)((250u << 8) | SCHED_PRIO_MAX),
+                      "a-childs-maximum-not-capped");
+            }
+            check(sys_pipe_write(go_w, &go, 1) == 1, "pipe-write-for-priority-probe");
+            int got = SYS_ERR_AGAIN;
+            for (int i = 0; i < GO_ROUNDS && got == SYS_ERR_AGAIN; i++) {
+                got = sys_pipe_read(res_r, &bits, 1);
+                if (got == SYS_ERR_AGAIN) sys_yield();
+            }
+            check(got == 1, "no-answer-from-the-priority-probe-child");
+            if (round == 0) {
+                check(sys_sched_get_priority(self) == top,
+                      "a-tcb-without-the-priority-right-set-a-priority");
+                check(bits & 1, "a-tcb-without-the-priority-right-was-not-refused");
+            } else {
+                check(bits & 1, "raised-own-maximum-above-itself");
+                check(bits & 2, "set-a-priority-above-own-maximum");
+            }
+        }
+        check(sys_wait(kid) == 0, "wait-for-priority-probe-child");
+        check(sys_pipe_close(go_r) == 0 && sys_pipe_close(go_w) == 0 &&
+              sys_pipe_close(res_r) == 0 && sys_pipe_close(res_w) == 0,
+              "pipe-close-after-priority-probe");
+    }
+
     /* ---- 17. A CAPABILITY A TASK HOLDS COSTS IT BUDGET ----------------
      *
      * MAX_CAPS_PER_TASK is a stated bound: docs/SYSCALLS.md gives it as the

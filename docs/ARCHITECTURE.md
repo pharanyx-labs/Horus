@@ -432,6 +432,12 @@ to be switched away on its way back to ring 3. `init` holds the per-CPU roots, `
 divides a context and `SYS_SCHED_BIND` binds a task to one (S152, S153). Until something binds a
 task elsewhere every task runs on the BSP's root, budgeted on the BSP and slack on every AP.
 
+**Priority is capped by authority** (§3.2 of the design). Among the budgeted work a CPU may run it
+chooses the highest priority, round robin within a level, and the task it is running keeps it over
+anything it outranks and over slack work. A task's maximum bounds every priority and maximum it can
+set, through a `CAP_TCB` with `CAP_RIGHT_PRIORITY` (S154, S155). Every shipped task is at 255, so
+the choice is the round robin it was before.
+
 **One switch mechanism, four entry points.** Timer preemption, blocking IPC, voluntary yield and
 first entry (`sched_enter_user`) all resume a saved trap frame; first entry fabricates the frame a
 preemption would have left, with `rsp` biased by 8 to satisfy the System V ABI's alignment at

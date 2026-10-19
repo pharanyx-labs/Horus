@@ -313,7 +313,11 @@ an idle AP stops its timer until another CPU's tick wakes it (#585). CPU time is
 whole root and a task that never blocks takes its share of every CPU. A budget is enforced at the
 10 ms tick, so a burst can overrun it by up to a tick (repaid from the next period), and in the
 `SMP=0` build, which is not shipped, a task out of budget keeps its CPU when nothing else can run.
-There is no affinity, no priority and no real-time guarantee yet. Under TCG emulation more cores are slower than one; the benefit needs KVM or
+Priorities exist (#594, S154, S155), but every shipped task is at 255, so none outranks another. A
+lower priority runs only when nothing above it can, so a task that polls with `SYS_YIELD` keeps
+everything below it from its CPU unless a budget bounds it, and a task that becomes runnable at a
+higher priority waits for its CPU's next tick, since a wake does not preempt. There is no affinity
+and no real-time guarantee yet. Under TCG emulation more cores are slower than one; the benefit needs KVM or
 hardware. Each supported CPU costs about 104 KiB of `.bss` whether present or not, so beyond about
 16 the per-CPU blocks would have to be allocated at boot. The scheduler, capability, IPC, spawn,
 page and storage locks are each global, and a storage call holds the storage layer for the whole

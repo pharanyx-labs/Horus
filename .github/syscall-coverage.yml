@@ -166,6 +166,8 @@ covered:
   - SYS_SCHED_SPLIT          # captest: no context held, and an endpoint whose object is a root's index
   - SYS_SCHED_BIND           # captest: likewise
   - SYS_SCHED_INFO           # captest: an empty slot, and the same endpoint
+  - SYS_SCHED_SET_PRIORITY   # captest: refusals, a child capped, a CAP_TCB without the right
+  - SYS_SCHED_GET_PRIORITY   # captest: this task, its child, and an unnameable task
   - SYS_SUDO                 # captest: withdrawn 2026-10-15, answers SYS_ERR_NOSYS to everyone
   - SYS_REGISTER_FS_SERVER   # captest: withdrawn 2026-10-16 (phase 1b step 6), SYS_ERR_NOSYS to everyone
   - SYS_CONNECT_FS_SERVER    # captest: likewise

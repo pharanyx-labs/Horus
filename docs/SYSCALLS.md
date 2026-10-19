@@ -92,6 +92,12 @@ holder binds it elsewhere; a new task runs on its creator's context. `init` alon
 per-CPU roots, at `CAPSLOT_SCHED_ROOT_FIRST + cpu`, and a split only ever divides what its
 parent holds (S152, S153).
 
+**Priority is capped by authority.** Among budgeted work the higher priority runs, 0 to 255
+([`design/scheduler.md`](design/scheduler.md) §3.2, S154). Setting a task's priority or maximum
+needs a `CAP_TCB` to it with `CAP_RIGHT_PRIORITY`, and neither may exceed the caller's own maximum
+(S155). A spawner's `CAP_TCB` to its child carries the right; a new task starts at its creator's
+priority and maximum, and the kernel's tasks at 255.
+
 **Frames.** A `CAP_FRAME` names a frame object, never a physical address (S26). `SYS_MAP_FRAME`
 builds the mapping from the capability's rights (S27), `SYS_MAP_REGION` maps several frames all or
 nothing (S35), and `SYS_FRAME_PAGES` reports a frame's size to a holder of its capability (S37).
@@ -240,6 +246,8 @@ shipped kernel.
 | 123 | `SYS_SCHED_SPLIT` | `(parent_slot, untyped_slot, dest_slot, budget_us, period_us, flags)` | Carve a scheduling context of `budget_us` every `period_us` (10 ms to 10 s) out of the parent context's share, its memory from the untyped region, into `dest_slot`; `SC_FLAG_SLACK` keeps the slack right if the parent has it. The child's capability is derived from the parent's, with its rights (S152) | `CAP_SCHED_CONTEXT` + WRITE at `parent_slot`, `CAP_UNTYPED` + WRITE at `untyped_slot` |
 | 124 | `SYS_SCHED_BIND` | `(tid, ctx_slot)` | Run task `tid` on the context: it is chosen only on the time the context grants (S153) | a `CAP_TCB` naming `tid` with WRITE, and `CAP_SCHED_CONTEXT` + WRITE at `ctx_slot` |
 | 125 | `SYS_SCHED_INFO` | `(ctx_slot, struct sched_info *)` | What the context holds: its CPU, share, budget and period, and what it has left and has spent, rounded to the 10 ms tick | `CAP_SCHED_CONTEXT` + READ at `ctx_slot` |
+| 126 | `SYS_SCHED_SET_PRIORITY` | `(tid, priority, max)` | Set task `tid`'s priority and maximum, each 0 to 255 and each at most the caller's own maximum (S155). A task may run above its own maximum: the maximum bounds what it can set | a `CAP_TCB` naming `tid` with `CAP_RIGHT_PRIORITY` |
+| 127 | `SYS_SCHED_GET_PRIORITY` | `(tid)` | Task `tid`'s priority (bits 0 to 7) and maximum (bits 8 to 15) | a `CAP_TCB` naming `tid` with READ |
 
 Numbers 38 to 45 (`SYS_FS_MINT_FILE` to `SYS_FS_WRITE`) are the removed in-memory capfs, reserved
 and never to be reused; 1 (`SYS_PRINT`) was never dispatched.

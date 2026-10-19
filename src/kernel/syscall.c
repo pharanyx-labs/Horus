@@ -1515,6 +1515,53 @@ static void h_sched_bind(struct interrupt_frame64 *r) {
 #endif
 }
 
+/* ---- Priorities (docs/design/scheduler.md 3.2, step 4b) --------------------
+ *
+ * The authority is a CAP_TCB to the task, so these run under the spawn lock
+ * like SYS_SCHED_BIND, and task_tcb_held refuses them otherwise. No CAP_USER
+ * fallback: an administrator's capability is not authority over urgency. */
+
+/* SYS_SCHED_SET_PRIORITY (126): rbx = task id, rcx = priority, rdx = maximum.
+ * Needs a CAP_TCB to the task carrying PRIORITY. The range is checked here, and
+ * the caller's own maximum in sched_set_priority, under the scheduler lock,
+ * since a holder of a CAP_TCB to the caller could be lowering that maximum at
+ * the same moment. Authority first, so a refusal says nothing about the task. */
+static void h_sched_set_priority_locked(struct interrupt_frame64 *r) {
+    int target = (int)r->rbx;
+#ifndef PRIO_RIGHT_UNCHECKED
+    uint32_t need = CAP_RIGHT_PRIORITY;
+#else
+    /* CONTROL ARM, never ship: WRITE is taken for PRIORITY, so a CAP_TCB minted
+     * without the right still sets a priority. make smoke-captest-prio-right-control. */
+    uint32_t need = CAP_RIGHT_WRITE;
+#endif
+    if (target <= 0 || target >= g_max_tasks || !task_tcb_held(target, need)) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    uint64_t prio = r->rcx, max = r->rdx;
+    if (prio > SCHED_PRIO_MAX || max > SCHED_PRIO_MAX) {
+        r->rax = (uint32_t)SYS_ERR_INVAL; return;
+    }
+    r->rax = (uint64_t)(uint32_t)sched_set_priority(get_current_task(), target,
+                                                    (uint32_t)prio, (uint32_t)max);
+}
+static void h_sched_set_priority(struct interrupt_frame64 *r) {
+    spawn_stage_acquire(); h_sched_set_priority_locked(r); spawn_stage_release();
+}
+
+/* SYS_SCHED_GET_PRIORITY (127): rbx = task id. Needs a CAP_TCB to the task
+ * carrying READ, the right SYS_WAIT needs to learn how a task ended. */
+static void h_sched_get_priority_locked(struct interrupt_frame64 *r) {
+    int target = (int)r->rbx;
+    if (target <= 0 || target >= g_max_tasks || !task_tcb_held(target, CAP_RIGHT_READ)) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    r->rax = (uint64_t)(uint32_t)sched_get_priority(target);
+}
+static void h_sched_get_priority(struct interrupt_frame64 *r) {
+    spawn_stage_acquire(); h_sched_get_priority_locked(r); spawn_stage_release();
+}
+
 /* SYS_SCHED_INFO (125): rbx = context slot (READ), rcx = user struct sched_info *.
  * Times are reported to the tick (sched_info_index), so this is no finer a clock
  * than SYS_CLOCK_GETTIME (S34). */
@@ -1585,7 +1632,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 126
+#define SYSCALL_TABLE_SIZE 128
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1912,6 +1959,8 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_SCHED_SPLIT]             = { h_sched_split,             SC_NONE, 0, SC_ANYTYPE }, /* parent context + untyped, both WRITE, resolved inside */
     [SYS_SCHED_BIND]              = { h_sched_bind,              SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB to the target + context, both WRITE */
     [SYS_SCHED_INFO]              = { h_sched_info,              SC_NONE, 0, SC_ANYTYPE }, /* context READ */
+    [SYS_SCHED_SET_PRIORITY]      = { h_sched_set_priority,      SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB to the target with PRIORITY, under the spawn lock */
+    [SYS_SCHED_GET_PRIORITY]      = { h_sched_get_priority,      SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB to the target with READ, under the spawn lock */
     [SYS_UNTYPED_INFO]            = { h_untyped_info,            SC_NONE, 0, SC_ANYTYPE },
 #ifdef IRQ_POLICY_AUDIT
     /* Roadmap 1.1 audit readout; absent (fails closed) in the ship kernel. */
@@ -1986,7 +2035,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Carries S6: an unknown or reserved syscall number cannot reach a handler.
  * The bound check in syscall_handler fails closed at runtime; this assertion is
  * what stops a new number being added without its table entry. */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_SCHED_INFO + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_SCHED_GET_PRIORITY + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

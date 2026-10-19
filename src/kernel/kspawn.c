@@ -529,9 +529,16 @@ static void grant_child_tcb_cap(int spawner, int pid) {
      * grant it whole, WRITE included, and with it the power to kill the shell or
      * grant into it. A mint only narrows (S2) and its copy is derived from this
      * one, so revoking this capability sweeps every copy (S3). MINT is not GRANT:
-     * the spawner still cannot pass this capability on undiminished. */
+     * the spawner still cannot pass this capability on undiminished.
+     *
+     * PRIORITY, SO A SUPERVISOR SETS ITS CHILD'S URGENCY (step 4b,
+     * docs/design/scheduler.md 3.2). The child starts at its creator's priority
+     * and maximum, and the right lets the spawner lower them, or raise them
+     * back, never above its own maximum (S155). A mint can leave it out, as
+     * init's READ copy for the shell's watcher does. */
     (void)cap_install_object_first_free(CAP_DYNAMIC_FLOOR, CAP_TCB, tcb_object(pid),
-                                        CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_MINT, 0, NULL);
+                                        CAP_RIGHT_READ | CAP_RIGHT_WRITE | CAP_RIGHT_MINT |
+                                        CAP_RIGHT_PRIORITY, 0, NULL);
 }
 
 /* do_spawn must run in the kernel address space: create_user_pagedir and the
@@ -799,7 +806,9 @@ void h_fork(struct interrupt_frame64 *r) {
         return;
     }
 
-    /* Everything that describes the running program rather than an authority. */
+    /* Everything that describes the running program rather than an authority.
+     * Priority and its maximum are authority now (step 4b) and come from
+     * create_task above, as the scheduling context does. */
     tasks[child].uid                = tasks[parent].uid;
     tasks[child].gid                = tasks[parent].gid;
     tasks[child].heap_start         = tasks[parent].heap_start;
@@ -808,7 +817,6 @@ void h_fork(struct interrupt_frame64 *r) {
     tasks[child].image_base         = tasks[parent].image_base;
     tasks[child].image_end          = tasks[parent].image_end;
     tasks[child].image_premap_pages = tasks[parent].image_premap_pages;
-    tasks[child].priority           = tasks[parent].priority;
     tasks[child].sig_handler        = tasks[parent].sig_handler;
     tasks[child].sig_mask           = tasks[parent].sig_mask;
     tasks[child].sig_altstack_sp    = tasks[parent].sig_altstack_sp;

@@ -228,7 +228,7 @@ DEFECT_FLAGS = \
 	FRAME_TABLE_FIXED \
 	RETYPE_RACE_SELFTEST KOBJ_UNPINNED GC_TEARDOWN_UNLOCKED \
 	BUDGET_UNENFORCED BUDGET_CROSS_CPU SC_DESTROY_KEEPS_TASKS SC_UNBOUND_CREATOR_GETS_ROOT \
-	SCHED_BIND_UNLOCKED
+	SCHED_BIND_UNLOCKED PRIO_UNCAPPED PRIO_RIGHT_UNCHECKED PRIO_IGNORED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2276,6 +2276,24 @@ endif
 SCHED_BIND_UNLOCKED ?= 0
 ifeq ($(SCHED_BIND_UNLOCKED),1)
 CFLAGS += -DSCHED_BIND_UNLOCKED
+endif
+# Priorities (docs/design/scheduler.md 3.2, step 4b), three defects:
+# PRIO_UNCAPPED=1 lets a task set a maximum above its own, so it can raise itself
+# (smoke-captest-prio-uncapped-control); PRIO_RIGHT_UNCHECKED=1 takes a CAP_TCB's
+# WRITE for PRIORITY (smoke-captest-prio-right-control); PRIO_IGNORED=1 chooses
+# budgeted work in list order whatever its priority
+# (smoke-sched-budget-prio-control).
+PRIO_UNCAPPED ?= 0
+ifeq ($(PRIO_UNCAPPED),1)
+CFLAGS += -DPRIO_UNCAPPED
+endif
+PRIO_RIGHT_UNCHECKED ?= 0
+ifeq ($(PRIO_RIGHT_UNCHECKED),1)
+CFLAGS += -DPRIO_RIGHT_UNCHECKED
+endif
+PRIO_IGNORED ?= 0
+ifeq ($(PRIO_IGNORED),1)
+CFLAGS += -DPRIO_IGNORED
 endif
 
 # The frame table is sized from the arena (roadmap 2.1). FRAME_BUDGET_SELFTEST=1
@@ -8029,6 +8047,25 @@ smoke-captest-capenum-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_ENUMERATE_UNGATED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL cap-enumerate-without-cap-debug' \
+		tools/smoke_test.sh horus.iso
+
+# Control arms for priorities (step 4b, S155). PRIO_UNCAPPED=1: captest, having
+# lowered its own maximum to 250, raises it to 251 and is let. PRIO_RIGHT_UNCHECKED=1:
+# a child holding a CAP_TCB to captest minted without PRIORITY sets its priority.
+.PHONY: smoke-captest-prio-uncapped-control smoke-captest-prio-right-control
+smoke-captest-prio-uncapped-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 PRIO_UNCAPPED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 PRIO_UNCAPPED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL raised-own-maximum-above-itself' \
+		tools/smoke_test.sh horus.iso
+smoke-captest-prio-right-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 PRIO_RIGHT_UNCHECKED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 PRIO_RIGHT_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL a-tcb-without-the-priority-right-set-a-priority' \
 		tools/smoke_test.sh horus.iso
 
 # ---- the audit probe: two handler bodies, and #176's runtime witness --------
@@ -15195,6 +15232,17 @@ smoke-sched-budget-bind-unlocked-control:
 	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 SCHED_BIND_UNLOCKED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
 		REQUIRE_MARKER='SCHEDTEST: FAIL bind-the-spinner' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: budgeted work chosen in list order whatever its priority, so the
+# counter, lowered to 100, runs whenever schedtest at 255 yields beside it.
+.PHONY: smoke-sched-budget-prio-control
+smoke-sched-budget-prio-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 PRIO_IGNORED=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 PRIO_IGNORED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL a-lower-priority-task-ran-while-a-higher-one-could' \
 		tools/smoke_test.sh horus.iso
 
 # An idle AP takes no ticks (docs/design/scheduler.md 3.4, step 3). Eight CPUs

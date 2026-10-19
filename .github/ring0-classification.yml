@@ -680,7 +680,15 @@
 # 2026-10-19: 12856 -> 12872, +16, scheduler.c: DEFER_WINDOW_WIDEN holds its
 # window for claim audits instead of a spin count (defer_widen). Compiled only
 # into that instrument's builds; counted because this budget counts source.
-core_budget_loc: 12872
+# 2026-10-19: 12872 -> 12995, +123, ROADMAP 1.8 step 4b, priorities capped by
+# authority (S154, S155), measured per file against 4a: scheduler.c +91 (the
+# priority comparison in every budgeted source, the running task keeping its
+# CPU over what it outranks and over slack, steal split into find and re-home,
+# the inherited priority and maximum, the set and get halves under the
+# scheduler lock, and the PRIO_IGNORED and PRIO_UNCAPPED arms), syscall.c +32
+# (two handlers under the spawn lock, the PRIO_RIGHT_UNCHECKED arm). Choosing
+# what a CPU runs is the scheduler's alone, so core.
+core_budget_loc: 12995
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

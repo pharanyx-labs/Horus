@@ -2234,7 +2234,32 @@ volatile int smp_sched_enabled = 0;
  *
  * Set in BOTH arms; that is what makes the pair a measurement rather than an
  * observation, exactly as KSTACK_RACE_WIDEN is used for [G-8]. */
+#if defined(SMP) && defined(SCHED_INVARIANTS)
+/* HELD IN AUDITS, NOT IN SPINS. The first widener was 200,000 iterations of an
+ * empty loop, which measures the host: on CI's runner image of 2026-10-18 the
+ * window it bought no longer spanned two audits, and the control arm went 0 of
+ * 46 where every run on the older images had hit within 5 boots (locally 10 of
+ * 20). The event needs two audits by other CPUs to land in the window (the
+ * auditor's two strikes), so the window is held until three audits have begun
+ * since it opened, which leaves at least two whole ones inside it, on any host.
+ * Bounded by 30 ms of TSC time, so a CPU whose peers have stopped auditing
+ * cannot be held for ever. Only one release in eight is held: a hold costs a
+ * few milliseconds of guest time, every release held put PROC_SELFTEST's
+ * suspend step past the arm's 15 s boot on 5 boots of 20, and any one held
+ * release is enough for the pre-fix order to be seen. */
+static volatile unsigned sched_audit_seq;   /* bumped as every claim audit begins */
+static volatile unsigned defer_widen_seq;
+static void defer_widen(void) {
+    if (__sync_fetch_and_add(&defer_widen_seq, 1u) % 8u) return;
+    unsigned s0 = sched_audit_seq;
+    uint64_t t0 = sched_clock_us();
+    while (sched_audit_seq - s0 < 3u && sched_clock_us() - t0 < 30000u)
+        __asm__ volatile ("pause");
+}
+#define DEFER_WIDEN() defer_widen()
+#else
 #define DEFER_WIDEN() do { for (volatile unsigned _i = 0; _i < 200000u; _i++) { } } while (0)
+#endif
 #else
 #define DEFER_WIDEN() ((void)0)
 #endif
@@ -3187,6 +3212,9 @@ static int sched_running_on(int c) {
 }
 
 static void sched_assert_claims(const char *where) {
+#ifdef DEFER_WINDOW_WIDEN
+    __sync_fetch_and_add(&sched_audit_seq, 1u);   /* defer_widen counts these */
+#endif
     /* ---- Why this takes TWO strikes -------------------------------------
      *
      * A momentarily inconsistent pair is not a bug. Not every writer of

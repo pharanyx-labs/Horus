@@ -26,6 +26,7 @@ mod gpt;
 mod memory;
 mod ps;
 mod rng;
+mod sched;
 mod sha256;
 
 // Present only when this crate is the final artifact (the kernel staticlib).

@@ -86,6 +86,12 @@ same way, and `SYS_UNTYPED_SPLIT` gives a delegate part of a budget rather than 
 it (S58). A spawned child is suspended until `SYS_TASK_RESUME`, so its supervisor can endow it
 first.
 
+**CPU time is a capability.** A task runs only on the time its scheduling context grants
+([`design/scheduler.md`](design/scheduler.md) §3.1). Every task runs on the BSP's root until a
+holder binds it elsewhere; a new task runs on its creator's context. `init` alone holds the
+per-CPU roots, at `CAPSLOT_SCHED_ROOT_FIRST + cpu`, and a split only ever divides what its
+parent holds (S152, S153).
+
 **Frames.** A `CAP_FRAME` names a frame object, never a physical address (S26). `SYS_MAP_FRAME`
 builds the mapping from the capability's rights (S27), `SYS_MAP_REGION` maps several frames all or
 nothing (S35), and `SYS_FRAME_PAGES` reports a frame's size to a holder of its capability (S37).
@@ -231,6 +237,9 @@ shipped kernel.
 | 120 | `SYS_IPC_REPLY_CAP` | `(req_slot, msg, len, rights, token)` | SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with ... | as `SYS_IPC_REPLY_TO`, and the caller must have named an empty `recv_slot` |
 | 121 | `SYS_MEM_SEAL` | `(addr, len)` | Make pages of the caller's own image read-only for good (RELRO) | none: the caller's own image, and it only removes rights |
 | 122 | `SYS_FS_STORE_KIND` | `()` | Which kind of store the object store serves, `FS_STORE_EPHEMERAL` (a live or diskless boot's RAM store) or `FS_STORE_PERSISTENT`, from the mounted volume's device; `SYS_ERR_INVAL` when none is mounted. `fs_server` chooses each session's policy by it (design [`filesystem.md`](design/filesystem.md) §6.4) | slot `CAPSLOT_AUDIT` `CAP_ENCRYPTED_STORAGE`, READ |
+| 123 | `SYS_SCHED_SPLIT` | `(parent_slot, untyped_slot, dest_slot, budget_us, period_us, flags)` | Carve a scheduling context of `budget_us` every `period_us` (10 ms to 10 s) out of the parent context's share, its memory from the untyped region, into `dest_slot`; `SC_FLAG_SLACK` keeps the slack right if the parent has it. The child's capability is derived from the parent's, with its rights (S152) | `CAP_SCHED_CONTEXT` + WRITE at `parent_slot`, `CAP_UNTYPED` + WRITE at `untyped_slot` |
+| 124 | `SYS_SCHED_BIND` | `(tid, ctx_slot)` | Run task `tid` on the context: it is chosen only on the time the context grants (S153) | a `CAP_TCB` naming `tid` with WRITE, and `CAP_SCHED_CONTEXT` + WRITE at `ctx_slot` |
+| 125 | `SYS_SCHED_INFO` | `(ctx_slot, struct sched_info *)` | What the context holds: its CPU, share, budget and period, and what it has left and has spent, rounded to the 10 ms tick | `CAP_SCHED_CONTEXT` + READ at `ctx_slot` |
 
 Numbers 38 to 45 (`SYS_FS_MINT_FILE` to `SYS_FS_WRITE`) are the removed in-memory capfs, reserved
 and never to be reused; 1 (`SYS_PRINT`) was never dispatched.

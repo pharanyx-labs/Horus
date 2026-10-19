@@ -1461,6 +1461,55 @@ static void h_untyped_split(struct interrupt_frame64 *r) {
     r->rax = (uint32_t)untyped_split((uint32_t)r->rbx, (uint32_t)r->rcx, r->rdx);
 }
 
+/* ---- Scheduling contexts (docs/design/scheduler.md 3.1, step 4a) ----------
+ *
+ * SC_NONE in the dispatch table, like SYS_RETYPE: the authority is the
+ * capability the caller names, resolved inside. No CAP_USER fallback anywhere
+ * here: holding an administrator's capability is not holding CPU time. */
+
+/* SYS_SCHED_SPLIT (123): rbx = parent context slot (WRITE), rcx = untyped slot
+ * (WRITE), rdx = destination slot, rsi = budget_us, rdi = period_us, r8 = flags.
+ * See sched_split (untyped.c). */
+static void h_sched_split(struct interrupt_frame64 *r) {
+    r->rax = (uint64_t)(uint32_t)sched_split((uint32_t)r->rbx, (uint32_t)r->rcx,
+                                             (uint32_t)r->rdx, (uint32_t)r->rsi,
+                                             (uint32_t)r->rdi, (uint32_t)r->r8);
+}
+
+/* SYS_SCHED_BIND (124): rbx = task id, rcx = context slot. Needs a CAP_TCB to
+ * the task carrying WRITE, the right that already governs changing a task
+ * (SYS_KILL, SYS_TASK_RESUME), and the context with WRITE. Checked in that order
+ * and both before the target's state, so a refusal says nothing about whether
+ * the task exists. */
+static void h_sched_bind(struct interrupt_frame64 *r) {
+    int target = (int)r->rbx;
+    if (target <= 0 || target >= g_max_tasks || !task_tcb_held(target, CAP_RIGHT_WRITE)) {
+        r->rax = (uint32_t)SYS_ERR_PERM; return;
+    }
+    struct capability *c = cap_lookup((uint32_t)r->rcx, CAP_SCHED_CONTEXT, CAP_RIGHT_WRITE);
+    if (!c) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t idx = c->object;
+    if (idx == 0 || idx >= SC_INDEX_MAX) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    r->rax = (uint64_t)(uint32_t)sched_bind(target, (uint32_t)idx);
+}
+
+/* SYS_SCHED_INFO (125): rbx = context slot (READ), rcx = user struct sched_info *.
+ * Times are reported to the tick (sched_info_index), so this is no finer a clock
+ * than SYS_CLOCK_GETTIME (S34). */
+static void h_sched_info(struct interrupt_frame64 *r) {
+    struct capability *c = cap_lookup((uint32_t)r->rbx, CAP_SCHED_CONTEXT, CAP_RIGHT_READ);
+    if (!c) { r->rax = (uint32_t)SYS_ERR_PERM; return; }
+    uint64_t idx = c->object;
+    if (idx == 0 || idx >= SC_INDEX_MAX) { r->rax = (uint32_t)SYS_ERR_INVAL; return; }
+    struct sched_info info;
+    int rc = sched_info_index((uint32_t)idx, &info);
+    if (rc != 0) { r->rax = (uint64_t)(uint32_t)rc; return; }
+    if (copy_to_user((void *)(addr_t)r->rcx, &info, sizeof(info)) != 0) {
+        r->rax = (uint32_t)SYS_ERR_FAULT; return;
+    }
+    r->rax = 0;
+}
+
 static void h_untyped_info(struct interrupt_frame64 *r) {
     struct untyped_info info;
     int rc = untyped_info((uint32_t)r->rbx, &info);
@@ -1514,7 +1563,7 @@ typedef struct {
     int      ctype;    /* required capability type, or SC_ANYTYPE */
 } syscall_desc_t;
 
-#define SYSCALL_TABLE_SIZE 123
+#define SYSCALL_TABLE_SIZE 126
 
 /* ------------------------------------------------------------------------- *
  *  Capability-checked dispatch table.
@@ -1838,6 +1887,9 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
      * capability every task happens to hold while never consulting the one that
      * actually names the resource. untyped_retype / untyped_info do the lookup. */
     [SYS_RETYPE]                  = { h_retype,                  SC_NONE, 0, SC_ANYTYPE },
+    [SYS_SCHED_SPLIT]             = { h_sched_split,             SC_NONE, 0, SC_ANYTYPE }, /* parent context + untyped, both WRITE, resolved inside */
+    [SYS_SCHED_BIND]              = { h_sched_bind,              SC_NONE, 0, SC_ANYTYPE }, /* CAP_TCB to the target + context, both WRITE */
+    [SYS_SCHED_INFO]              = { h_sched_info,              SC_NONE, 0, SC_ANYTYPE }, /* context READ */
     [SYS_UNTYPED_INFO]            = { h_untyped_info,            SC_NONE, 0, SC_ANYTYPE },
 #ifdef IRQ_POLICY_AUDIT
     /* Roadmap 1.1 audit readout; absent (fails closed) in the ship kernel. */
@@ -1912,7 +1964,7 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 /* Carries S6: an unknown or reserved syscall number cannot reach a handler.
  * The bound check in syscall_handler fails closed at runtime; this assertion is
  * what stops a new number being added without its table entry. */
-_Static_assert(SYSCALL_TABLE_SIZE == SYS_FS_STORE_KIND + 1,
+_Static_assert(SYSCALL_TABLE_SIZE == SYS_SCHED_INFO + 1,
                "syscall_table size must equal (highest syscall number + 1): "
                "grow SYSCALL_TABLE_SIZE and add the new entry when adding a syscall");
 

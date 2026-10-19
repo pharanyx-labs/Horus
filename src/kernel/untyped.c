@@ -95,6 +95,12 @@ static struct kobj_slot dyn_notifs[MAX_DYN_NOTIFICATIONS];
  * two above; `mem` points at a PAGE_SIZE-aligned page in the arena. */
 static struct kobj_slot dyn_frames[MAX_DYN_FRAMES];
 _Static_assert(MAX_UNTYPED <= 0xFFFF, "kobj_slot.untyped is 16 bits");
+/* Scheduling contexts (docs/design/scheduler.md 3.1, step 4a), indexed by
+ * (object - DYN_SC_BASE). Born pinned like every other class (NAMED BEFORE
+ * COLLECTABLE, at kobj_gc_locked): SYS_SCHED_SPLIT makes the context, gives it a
+ * share, and only then installs the capability that names it, and that install
+ * clears the pin. */
+static struct kobj_slot dyn_scs[MAX_DYN_SCHED_CONTEXTS];
 
 /* ------------------------------------------------------------------------- *
  *  Locking.
@@ -174,6 +180,7 @@ static uint64_t kobj_size(uint32_t kobj_type, uint32_t pages) {
         case KOBJ_CNODE:        return (uint64_t)CNODE_SIZE * sizeof(capability_t);
         case KOBJ_ENDPOINT:     return sizeof(struct endpoint);
         case KOBJ_NOTIFICATION: return sizeof(struct notification);
+        case KOBJ_SCHED_CONTEXT: return sizeof(struct sched_context);
         /* The only class with a caller-chosen size. Bounded by the caller
          * (untyped_retype) before it gets here, and bounded AGAIN here, because
          * this function is also reachable from kobj_alloc's other caller and a
@@ -272,6 +279,18 @@ static int dyn_frame_alloc_index(void) {
     for (int i = 0; i < MAX_DYN_FRAMES; i++)
         if (!dyn_frames[i].mem) return i;
     return -1;
+}
+
+static int dyn_sc_alloc_index(void) {
+    for (int i = 0; i < MAX_DYN_SCHED_CONTEXTS; i++)
+        if (!dyn_scs[i].mem) return i;
+    return -1;
+}
+
+/* A carved context by index, or 0. The roots are the scheduler's (sc_by_index). */
+struct sched_context *sc_dyn_by_index(uint32_t idx) {
+    if (idx < DYN_SC_BASE || idx >= SC_INDEX_MAX) return 0;
+    return (struct sched_context *)dyn_scs[idx - DYN_SC_BASE].mem;
 }
 
 struct endpoint *endpoint_by_index(uint32_t idx) {
@@ -433,6 +452,8 @@ uint32_t kobj_live_count(uint32_t kobj_type) {
         for (int i = 0; i < MAX_DYN_NOTIFICATIONS; i++) if (dyn_notifs[i].mem) n++;
     } else if (kobj_type == KOBJ_FRAME) {
         for (int i = 0; i < MAX_DYN_FRAMES; i++) if (dyn_frames[i].mem) n++;
+    } else if (kobj_type == KOBJ_SCHED_CONTEXT) {
+        for (int i = 0; i < MAX_DYN_SCHED_CONTEXTS; i++) if (dyn_scs[i].mem) n++;
     }
     return n;
 }
@@ -469,6 +490,9 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t pages,
         if (idx < 0) { ut_unlock(); return 0; }
     } else if (kobj_type == KOBJ_FRAME) {
         idx = dyn_frame_alloc_index();
+        if (idx < 0) { ut_unlock(); return 0; }
+    } else if (kobj_type == KOBJ_SCHED_CONTEXT) {
+        idx = dyn_sc_alloc_index();
         if (idx < 0) { ut_unlock(); return 0; }
     }
 
@@ -544,6 +568,13 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t pages,
         dyn_frames[idx].pinned  = KOBJ_PIN_AT_ALLOC;
         dyn_frames[idx].pages   = pages;
         if (out_index) *out_index = DYN_FRAME_BASE + (uint32_t)idx;
+    } else if (kobj_type == KOBJ_SCHED_CONTEXT) {
+        /* Not live (zeroed) and pinned: sched_carve gives it a share and makes it
+         * live, and the install that names it unpins it (kobj_note_named). */
+        dyn_scs[idx].mem     = mem;
+        dyn_scs[idx].untyped = (uint16_t)untyped_index;
+        dyn_scs[idx].pinned  = KOBJ_PIN_AT_ALLOC;
+        if (out_index) *out_index = DYN_SC_BASE + (uint32_t)idx;
     } else {
         /* KOBJ_CNODE: no object index -- a cspace is reached through the owning
          * task's tcb, not by index. */
@@ -590,6 +621,8 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t pages,
  * the slot actually nulled), never destroy an object something can still name.
  * The opposite bias — treating a slot as empty when a holder could still
  * resolve it — would be a use-after-free reachable from ring 3. */
+static uint8_t gc_sc_marks[MAX_DYN_SCHED_CONTEXTS];
+
 static void mark_cap(const capability_t *c, uint8_t *ep_marks, uint8_t *nt_marks,
                      uint8_t *fr_marks) {
     if (c->serial == 0) return;   /* empty slot */
@@ -606,6 +639,12 @@ static void mark_cap(const capability_t *c, uint8_t *ep_marks, uint8_t *nt_marks
          * keeping a frame alive. */
         if (c->object >= DYN_FRAME_BASE && c->object < FRAME_INDEX_MAX)
             fr_marks[c->object - DYN_FRAME_BASE] = 1;
+    } else if (c->type == CAP_SCHED_CONTEXT) {
+        /* The roots (below DYN_SC_BASE) are never collected; a carved context
+         * lives while a capability names it. Static rather than a fourth
+         * parameter: every caller holds the untyped lock across the sweep. */
+        if (c->object >= DYN_SC_BASE && c->object < SC_INDEX_MAX)
+            gc_sc_marks[c->object - DYN_SC_BASE] = 1;
     }
 }
 
@@ -617,6 +656,7 @@ static void mark_reachable(uint8_t *ep_marks, uint8_t *nt_marks, uint8_t *fr_mar
     for (int i = 0; i < MAX_DYN_ENDPOINTS; i++)     ep_marks[i] = 0;
     for (int i = 0; i < MAX_DYN_NOTIFICATIONS; i++) nt_marks[i] = 0;
     for (int i = 0; i < MAX_DYN_FRAMES; i++)        fr_marks[i] = 0;
+    for (int i = 0; i < MAX_DYN_SCHED_CONTEXTS; i++) gc_sc_marks[i] = 0;
 
     for (int t = 0; t < g_max_tasks; t++) {
         if (tasks[t].state == 0 || !tasks[t].cspace) continue;
@@ -761,6 +801,24 @@ static void destroy_dyn_frame(int i) {
     dyn_frames[i].pinned = 0;
 }
 
+/* Destroy a context no capability names: its share goes back up its tree and
+ * every task bound to it stops (sched_context_destroyed), then it is scrubbed
+ * and its index released, as for the other classes. Caller holds the untyped
+ * lock; the scheduler lock is taken inside, after it, and nothing takes the two
+ * in the other order. */
+static void destroy_dyn_sc(int i) {
+    struct sched_context *sc = (struct sched_context *)dyn_scs[i].mem;
+    if (!sc) return;
+    sched_context_destroyed(DYN_SC_BASE + (uint32_t)i, sc);
+    zero_bytes((uint8_t *)sc, sizeof(*sc));
+    if (dyn_scs[i].untyped < MAX_UNTYPED && untypeds[dyn_scs[i].untyped].objects > 0)
+        untypeds[dyn_scs[i].untyped].objects--;
+    dyn_scs[i].mem    = 0;
+    dyn_scs[i].pinned = 0;
+}
+
+static int untyped_from_slot(uint32_t slot, uint32_t need_rights, uint32_t *out);
+
 /* Mark bitmaps. Static rather than on the stack: kobj_gc runs from
  * task_teardown, which is reached from the page-fault handler on a kernel stack
  * that has no room for half a KiB of scratch. Safe as statics because every
@@ -783,11 +841,12 @@ static uint8_t gc_fr_marks[MAX_DYN_FRAMES];
  *
  * So every indexed object is born pinned (kobj_alloc), the collector passes a
  * pinned object over, and the pin is cleared BY THE INSTALL that names it:
- * cap_install_object, cap_install_object_first_free and cap_install_from_root
- * call kobj_note_named under the same cap_lock as the write, so no creator has
- * to remember to, and the moment an object becomes collectable is the moment a
- * capability names it. A creator whose install fails destroys the object
- * itself. Objects nothing ever names (a self-test's leaked frame) stay pinned;
+ * cap_install_object, cap_install_object_first_free, cap_install_from_root and
+ * cap_install_derived_object call kobj_note_named under the same cap_lock as the
+ * write, so no creator has to remember to, and the moment an object becomes
+ * collectable is the moment a capability names it. A creator whose install fails
+ * destroys the object itself (SYS_SCHED_SPLIT does, for a context). Objects
+ * nothing ever names (a self-test's leaked frame) stay pinned;
  * the shared library's frames are unpinned by shlib_init, because they are kept
  * by being roots of the sweep and that is what SHLIB_TEMPLATE_UNPINNED tests.
  * KOBJ_UNPINNED=1 is the control arm: objects are born unpinned, as before, and
@@ -804,6 +863,7 @@ void kobj_unpin(uint32_t kobj_type, uint32_t idx) {
     if (kobj_type == KOBJ_ENDPOINT)          { tbl = dyn_eps;    n = MAX_DYN_ENDPOINTS;     base = DYN_EP_BASE; }
     else if (kobj_type == KOBJ_NOTIFICATION) { tbl = dyn_notifs; n = MAX_DYN_NOTIFICATIONS; base = DYN_NOTIF_BASE; }
     else if (kobj_type == KOBJ_FRAME)        { tbl = dyn_frames; n = MAX_DYN_FRAMES;        base = DYN_FRAME_BASE; }
+    else if (kobj_type == KOBJ_SCHED_CONTEXT) { tbl = dyn_scs;   n = MAX_DYN_SCHED_CONTEXTS; base = DYN_SC_BASE; }
     else return;
     if (idx < base || idx >= base + n) return;
     ut_lock();
@@ -817,7 +877,8 @@ void kobj_note_named(uint32_t cap_type, uint64_t object) {
     if (object > 0xFFFFFFFFull) return;
     uint32_t kt = cap_type == CAP_ENDPOINT     ? KOBJ_ENDPOINT :
                   cap_type == CAP_NOTIFICATION ? KOBJ_NOTIFICATION :
-                  cap_type == CAP_FRAME        ? KOBJ_FRAME : 0;
+                  cap_type == CAP_FRAME        ? KOBJ_FRAME :
+                  cap_type == CAP_SCHED_CONTEXT ? KOBJ_SCHED_CONTEXT : 0;
     if (kt) kobj_unpin(kt, (uint32_t)object);
 }
 
@@ -858,6 +919,8 @@ void kobj_gc_locked(void) {
             destroy_dyn_notification(i);
     for (int i = 0; i < MAX_DYN_FRAMES; i++)
         if (dyn_frames[i].mem && !dyn_frames[i].pinned && !gc_fr_marks[i]) destroy_dyn_frame(i);
+    for (int i = 0; i < MAX_DYN_SCHED_CONTEXTS; i++)
+        if (dyn_scs[i].mem && !dyn_scs[i].pinned && !gc_sc_marks[i]) destroy_dyn_sc(i);
     ut_unlock();
 }
 
@@ -867,6 +930,50 @@ void kobj_gc(void) {
     spin_lock(&cap_lock);
     kobj_gc_locked();
     spin_unlock(&cap_lock);
+}
+
+/* SYS_SCHED_SPLIT (docs/design/scheduler.md 3.1, step 4a): carve a child of
+ * `budget_us` every `period_us` out of the context named at `parent_slot`
+ * (WRITE), its memory from the CAP_UNTYPED at `untyped_slot` (WRITE), and name
+ * it at `dest_slot` with a capability derived from the parent's.
+ *
+ * Four steps, and a failure at any of them leaves nothing behind: the memory is
+ * carved (pinned, so no sweep collects it unnamed), the share is moved under the
+ * scheduler lock (sched_carve, whose arithmetic Kani proves), and the capability
+ * is installed only if the parent's is still in its slot; that install drops the
+ * pin (kobj_note_named).
+ * A failed install destroys the child, which gives the share straight back. */
+int sched_split(uint32_t parent_slot, uint32_t untyped_slot, uint32_t dest_slot,
+                uint32_t budget_us, uint32_t period_us, uint32_t flags) {
+    struct capability *pc = cap_lookup(parent_slot, CAP_SCHED_CONTEXT, CAP_RIGHT_WRITE);
+    if (!pc) return SYS_ERR_PERM;
+    uint64_t parent_obj    = pc->object;
+    uint64_t parent_serial = pc->serial;
+    uint32_t parent_rights = pc->rights;
+    if (parent_obj == 0 || parent_obj >= SC_INDEX_MAX) return SYS_ERR_INVAL;
+
+    uint32_t u = 0;
+    if (untyped_from_slot(untyped_slot, CAP_RIGHT_WRITE, &u) != 0) return SYS_ERR_PERM;
+
+    uint32_t idx = 0;
+    struct sched_context *child =
+        (struct sched_context *)kobj_alloc(u, KOBJ_SCHED_CONTEXT, 0, &idx);
+    if (!child) return SYS_ERR_NOMEM;
+
+    int rc = sched_carve((uint32_t)parent_obj, child, budget_us, period_us, flags);
+    if (rc == 0 &&
+        !cap_install_derived_object(dest_slot, parent_slot, parent_serial,
+                                    CAP_SCHED_CONTEXT, idx, parent_rights))
+        rc = SYS_ERR_PERM;
+
+    if (rc != 0) {
+        /* Nothing names it, so nothing will ever unpin it: destroy it here, which
+         * gives its share straight back. On success the install unpinned it. */
+        ut_lock();
+        destroy_dyn_sc((int)(idx - DYN_SC_BASE));
+        ut_unlock();
+    }
+    return rc;
 }
 
 /* ------------------------------------------------------------------------- *

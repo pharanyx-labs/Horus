@@ -380,6 +380,24 @@ arms:
   defect: the single-cspace revoke empties the target and never sweeps what was derived from it
   find: '    revoke_subtree(&desc as *const CSpaceDesc, 1, ts, to, tally);'
   replace: '    let _ = (&desc, to, &tally);'
+- id: split-keeps-the-parent-share
+  harness: a_split_never_creates_time
+  file: rust/src/sched.rs
+  defect: the child's share is not taken from the parent, so every split creates time
+  find: '    Ok((parent_share - share, share))'
+  replace: '    Ok((parent_share, share))'
+- id: split-believes-the-share
+  harness: a_split_never_creates_time
+  file: rust/src/sched.rs
+  defect: the share is believed rather than checked, so a share too small for the budget is split off
+  find: '    if (share as u64) * (period_us as u64) < (budget_us as u64) * (PPM_WHOLE as u64) {'
+  replace: '    if false {'
+- id: reclaim-past-a-whole-cpu
+  harness: reclaim_never_exceeds_a_whole_cpu
+  file: rust/src/sched.rs
+  defect: reclaiming adds without the bound, so a parent can come to hold more than a whole CPU
+  find: '        Some(s) if s <= PPM_WHOLE => s,'
+  replace: '        Some(s) => s,'
 
 # Proofs with no arm yet, each with the reason. This list only shrinks: the
 # checker refuses an entry whose proof has gained an arm.

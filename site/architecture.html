@@ -124,8 +124,8 @@
     exists as far as the caller is concerned.
   </p>
   <p>
-    The ABI defines <strong>123 syscall numbers</strong>. The dispatch table is sized to
-    the highest of them plus one, and a default build installs <strong>103
+    The ABI defines <strong>126 syscall numbers</strong>. The dispatch table is sized to
+    the highest of them plus one, and a default build installs <strong>106
     handlers</strong>, the remainder are reserved, or are test-only calls compiled out
     entirely. Every one of those gaps answers <code>SYS_ERR_NOSYS</code>. That difference
     is the fail-closed property, not an oversight: a shipping kernel denies the debug
@@ -344,8 +344,11 @@
       SMP is on by default: ACPI enumeration, AP bringup, per-CPU run lists with stealing,
       acknowledged TLB-shootdown IPIs, and a microarchitectural flush when switching
       between tasks that do not trust each other. SMT siblings are parked in software.
+      CPU time is a capability: each task is bound to a scheduling context, a share of one
+      CPU spent as a budget every period, and runs only on the time it grants. A split
+      only divides what its parent holds, and each CPU charges only its own contexts.
     </p>
-    <span class="witness">smoke-smp · smoke-flush</span>
+    <span class="witness">smoke-smp · smoke-flush · smoke-sched-budget</span>
   </article>
   <article>
     <h3 id="storage-the-kernel-keeps-sealed">Storage the kernel keeps sealed</h3>

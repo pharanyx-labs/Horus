@@ -147,3 +147,5 @@ gating:
   - transfer_keeps_rights_and_records_the_parent             # 1s
   - grant_from_user_refuses_exactly_pipe_ends                # 1s
   - revoke_empties_the_target_and_its_children_only          # 6s
+  - a_split_never_creates_time                               # scheduling contexts, S152
+  - reclaim_never_exceeds_a_whole_cpu                        # scheduling contexts, S152

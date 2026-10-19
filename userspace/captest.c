@@ -468,6 +468,26 @@ void _start(void) {
     check(sys_untyped_info(SLOT_EMPTY_HI, &uinfo) == SYS_ERR_PERM,
           "untyped-info-allowed-without-untyped-cap");
 
+    /* CPU time is a capability too (scheduling contexts, step 4a): captest holds
+     * no CAP_SCHED_CONTEXT, so it can neither carve time, bind a task to time,
+     * nor read a context. The sharp probe is SLOT_CLIENT_EP: a CAP_ENDPOINT
+     * whose object is 6, which is ALSO the index of CPU 5's root context, so a
+     * kernel that resolved the slot without testing the type would report on
+     * (and let this task split) a whole CPU. Refused in the handler body, so
+     * these are also what enters the three handlers in the coverage workload. */
+    {
+        struct sched_info si;
+        check(sys_sched_info(SLOT_EMPTY_HI, &si) == SYS_ERR_PERM,
+              "sched-info-allowed-without-a-context");
+        check(sys_sched_info(SLOT_CLIENT_EP, &si) == SYS_ERR_PERM,
+              "sched-info-allowed-through-endpoint-cap-onto-a-root-context");
+        check(sys_sched_split(SLOT_CLIENT_EP, SLOT_UNTYPED, SLOT_EMPTY_HI, 1000, 100000, 0)
+                  == SYS_ERR_PERM,
+              "sched-split-allowed-through-endpoint-cap-onto-a-root-context");
+        check(sys_sched_bind(sys_getpid(), SLOT_CLIENT_EP) == SYS_ERR_PERM,
+              "sched-bind-allowed-through-endpoint-cap-onto-a-root-context");
+    }
+
     /* With the capability held, the region is observable. */
     check(sys_untyped_info(SLOT_UNTYPED, &uinfo) == 0, "untyped-info-refused-with-cap");
     check(uinfo.size > 0, "untyped-region-reported-empty");

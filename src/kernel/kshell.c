@@ -464,6 +464,15 @@ void spawn_initial_userspace_init(void) {
          * at most this much kernel memory" expressible for the first time. Note the
          * object must be restated, per the NB above. */
         cap_install_from_root(pid, CAPSLOT_UNTYPED, 17, UNTYPED_ROOT);
+        /* CAP_SCHED_CONTEXT (root[24], step 4a): each schedulable CPU's root
+         * scheduling context, at CAPSLOT_SCHED_ROOT_FIRST + cpu. init is the
+         * delegation root for CPU time as it is for kernel memory; nothing it
+         * spawns is given one, and every task runs on the BSP's root until a
+         * holder binds it elsewhere. */
+        for (int c = 0; c < MAX_CPUS; c++)
+            if (sched_cpu_schedules(c))
+                cap_install_from_root(pid, CAPSLOT_SCHED_ROOT_FIRST + (uint32_t)c, 24,
+                                      sched_root_index(c));
         /* CAP_STORAGE_FORMAT (root[22], roadmap 2.9 / S72): the authority to
          * DESTROY the volume on the attached disk and lay a new one down. init
          * holds it so it can decide whether this machine needs installing and

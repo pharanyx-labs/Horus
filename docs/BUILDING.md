@@ -257,6 +257,11 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `RETYPE_RACE_SELFTEST=1` | Instrument, never shipped: boots `retyperace` and `retyperevoker`, and holds each of `retyperace`'s retype windows (the object made, its capability not yet installed) open until a sweep on another CPU has crossed it, 30 ms to 2 s, reporting a window none crossed as inconclusive. | `smoke-retype-race`, `smoke-retype-race-control` (arm of `smoke-retype-race`), `smoke-retype-race-gc-control` (arm of `smoke-retype-race`) |
 | `KOBJ_UNPINNED=1` | Kernel objects are collectable from birth, as before 2026-10-17, so a revoke on another CPU collects a retyped object before its capability is installed. `make smoke-retype-race` must go red under it. | `smoke-retype-race-control` (arm of `smoke-retype-race`) |
 | `GC_TEARDOWN_UNLOCKED=1` | Task teardown runs the object collector without `cap_lock`, as before 2026-10-17. `make smoke-retype-race` must go red under it: the collector halts by name. | `smoke-retype-race-gc-control` (arm of `smoke-retype-race`) |
+| `SCHED_BUDGET_SELFTEST=1` | Instrument, never shipped: boots `schedtest` with an untyped region and every root scheduling context, and `schedspin` and `schedcount` held for it to bind; the spinner reports the share of ticks it saw, and the counter counts in a frame `schedtest` reads. | `smoke-sched-budget`, `smoke-sched-budget-control` (arm of `smoke-sched-budget`), `smoke-sched-budget-revoke-control` (arm of `smoke-sched-budget`), `smoke-sched-budget-fork-control` (arm of `smoke-sched-budget`) |
+| `BUDGET_UNENFORCED=1` | Every scheduling context always has budget, so a task runs on time it was not given. `make smoke-sched-budget` must go red under it. | `smoke-sched-budget-control` (arm of `smoke-sched-budget`) |
+| `BUDGET_CROSS_CPU=1` | Charges a task's time to its context on whichever CPU runs it, so an AP running the BSP root's slack work charges a budget that is not its own. `make smoke-sched-invariants` must go red under it. | `smoke-sched-invariants-cross-cpu-control` (arm of `smoke-sched-invariants`) |
+| `SC_DESTROY_KEEPS_TASKS=1` | A destroyed scheduling context leaves its tasks bound to its index, so the next context carved at that index runs them on its time. `make smoke-sched-budget` must go red under it. | `smoke-sched-budget-revoke-control` (arm of `smoke-sched-budget`) |
+| `SC_UNBOUND_CREATOR_GETS_ROOT=1` | A task created by a task bound to no context gets the BSP's root, so a task whose context was revoked while it ran forks its way back to a whole CPU. `make smoke-sched-budget` must go red under it. | `smoke-sched-budget-fork-control` (arm of `smoke-sched-budget`) |
 | `SPAWN_PUBLISH_EARLY=1` | Restores the spawn path as it stood before 2026-10-16: publish the child's frame (`runnable_ctx = 1`) and retract it a line later, a window in which another CPU can run the child before its supervisor has endowed it. `make smoke-spawn-window` must go red under it. | `smoke-spawn-window-control` (arm of `smoke-spawn-window`) |
 | `SPAWN_WINDOW_WIDEN=1` | Instrument, never shipped: holds the spawning CPU for three AP ticks once the child's frame is built, and turns on the check that no CPU chooses a task still being built. | `smoke-spawn-window`, `smoke-spawn-window-control` (arm of `smoke-spawn-window`) |
 | `RUNQ_UNHOMED=1` | `create_task` puts a new task on no CPU's run list, so no CPU would ever select it again. `make smoke-sched-invariants` must go red under it. | `smoke-runq-unhomed-control` (arm of `smoke-sched-invariants`) |
@@ -628,7 +633,7 @@ of the most important:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (228 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (232 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
 | `smoke-wx` | No kernel page is both writable and executable |
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |

@@ -1328,6 +1328,15 @@ void kclock_delay_us(uint64_t us) {
     while (!kclock_passed(d)) __asm__ volatile ("pause");
 }
 
+/* Microseconds since boot from the calibrated TSC, for the scheduler's budget
+ * accounting (scheduling contexts, step 4a) and for nothing else. It never
+ * reaches ring 3 at this resolution: SYS_SCHED_INFO, the one syscall that
+ * reports anything measured with it, rounds to the 10 ms tick, so S34 holds.
+ * 0 before kmsg_clock_init calibrates, which is before any task exists. */
+uint64_t sched_clock_us(void) {
+    return tsc_per_us ? (rd_tsc() - boot_tsc0) / tsc_per_us : 0;
+}
+
 #ifdef CLOCK_TSC_RESOLUTION
 /* Microseconds since boot from the calibrated TSC. Exists ONLY for the
  * CLOCK_TSC_RESOLUTION control arm (roadmap 2.2): it is the cycle-accurate

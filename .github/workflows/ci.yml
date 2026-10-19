@@ -2279,6 +2279,17 @@ jobs:
         run: make smoke-spawn-window
       - name: Control arm, a child published during its spawn is chosen and named
         run: make smoke-spawn-window-control
+      # CPU time as a capability (docs/design/scheduler.md 3.1, step 4a, S153):
+      # a spinner bound to a fifth of an AP sees at most 45% of the ticks over
+      # 3 s, measured by the spinner itself.
+      - name: A task bound to a fifth of a CPU runs on that fifth and no more
+        run: make smoke-sched-budget
+      - name: Control arm, a budget never enforced lets the spinner take the whole CPU
+        run: make smoke-sched-budget-control
+      - name: Control arm, a revoked context's task runs again on the next context at its index
+        run: make smoke-sched-budget-revoke-control
+      - name: Control arm, a child of a task whose context was revoked gets a whole CPU
+        run: make smoke-sched-budget-fork-control
       # Eight CPUs on the topologies firmware produces, not only QEMU's default:
       # sparse LAPIC ids, SMT, and more threads than slots (docs/ARCHITECTURE.md
       # section 7). Every schedulable AP must run a task and none may be an SMT
@@ -2440,6 +2451,10 @@ jobs:
       # list; this arm creates tasks on none, and the check must name one.
       - name: Control arm, a task homed on no run list is named
         run: make smoke-runq-unhomed-control
+      # S152: a budget is charged only by its own CPU. This arm charges a task's
+      # time wherever it runs, and the same kernel's check must halt the boot.
+      - name: Control arm, a budget charged by another CPU is named
+        run: make smoke-sched-invariants-cross-cpu-control
 
   smoke-proc:
     name: QEMU process-control self-test (headless)

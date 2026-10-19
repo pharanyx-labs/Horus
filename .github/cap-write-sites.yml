@@ -63,6 +63,13 @@ sites:
     status: locked
     reason: The locked, accounted, authority-checked install into the current cspace.
   - file: src/kernel/capability.c
+    function: cap_install_derived_object
+    status: locked
+    reason: >
+      As cap_install_object, for SYS_SCHED_SPLIT's child: the source capability
+      is re-checked under the same cap_lock as the store, so the child is never
+      installed under a parent a concurrent revoke has already swept.
+  - file: src/kernel/capability.c
     function: cap_install_object_first_free
     status: locked
     reason: >

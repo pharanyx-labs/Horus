@@ -82,6 +82,9 @@ slot number; it never sees the capability itself.
 
 - Preemptive scheduling on up to eight CPUs, with SMT siblings parked and a microarchitectural
   flush on every switch between tasks.
+- CPU time as a capability: a task bound to a scheduling context runs only on the budget it was
+  given, measured and charged by its own CPU (S152, S153). `init` holds every CPU's root and binds
+  nothing yet, so no shipped program has a smaller budget.
 - Per-task four-level page tables, demand paging, copy-on-write, `fork`, `exec` and signals.
 - All of a machine's RAM up to 4 GiB in the page pool, every region the firmware's memory map
   names, with nothing else mapped above 1 GiB (S117).
@@ -265,10 +268,10 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 153 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 585 `smoke-*` targets: 249 base gates and 336 control arms |
+| Security properties | 155 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 590 `smoke-*` targets: 250 base gates and 340 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
-| Kani | 41 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
+| Kani | 43 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
 | Fuzzing | The FFI predicates under cargo-fuzz, ten minutes per target, nightly |
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |

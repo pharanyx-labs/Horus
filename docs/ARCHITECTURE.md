@@ -418,8 +418,19 @@ untyped reserve, and `g_max_tasks` is derived at boot from the reserve that exis
 
 **Preemption.** The timer ISR calls `preempt_on_tick` with the interrupted task's trap frame. A
 switch happens **only when the tick interrupted ring 3**, where the task holds no spinlock and its
-whole state is in the frame; a tick in ring 0 only advances the clock. The kernel is therefore not
-preemptible, which removes a whole class of reentrancy hazard.
+whole state is in the frame; a tick in ring 0 only advances the clock and charges the running
+task's time (below). The kernel is therefore not preemptible, which removes a whole class of
+reentrancy hazard.
+
+**CPU time is a capability** ([`design/scheduler.md`](design/scheduler.md) §3.1). Every task is
+bound to a scheduling context, a share of one CPU spent as a budget every period, and is chosen
+only on the time it grants: a CPU runs its own budgeted work first and slack work (a context with
+the slack right, out of budget or on another CPU) after it. The time a task runs is measured with
+the TSC between one choice and the next and charged by the context's own CPU; a tick that finds
+the running task out of budget switches it away, or, if the tick landed in a system call, marks it
+to be switched away on its way back to ring 3. `init` holds the per-CPU roots, `SYS_SCHED_SPLIT`
+divides a context and `SYS_SCHED_BIND` binds a task to one (S152, S153). Until something binds a
+task elsewhere every task runs on the BSP's root, budgeted on the BSP and slack on every AP.
 
 **One switch mechanism, four entry points.** Timer preemption, blocking IPC, voluntary yield and
 first entry (`sched_enter_user`) all resume a saved trap frame; first entry fabricates the frame a
@@ -530,14 +541,16 @@ one that is.
 | `page_lock` | The pager's structures |
 | `untyped_lock` | The untyped regions; `cap_lock -> untyped_lock` |
 | `pipe_lock` | Pipe objects; a leaf, and `cap_lock -> pipe_lock` |
-| `scheduler_lock` | The per-CPU run lists and the claim invariant |
+| `scheduler_lock` | The per-CPU run lists, the claim invariant and the scheduling contexts; `untyped_lock -> scheduler_lock` |
 
 The nestings that exist on purpose are declared, each with its reason, in
 `.github/lock-order.yml`: `endpoint_lock -> cap_lock` (the reply capability is minted before the
 receiver wakes, which a receiver already running on another CPU would otherwise race),
 `endpoint_lock -> page_lock` (delivering a reply body can fault the destination in),
 `page_lock -> swap_lock` and `endpoint_lock -> swap_lock` (a swapped page is freed or brought back
-under the swap slot table), and `cap_lock -> pipe_lock` (a pipe end and its count change together
+under the swap slot table), `cap_lock -> untyped_lock` (the object collector reads every cspace
+and must see none mid-write, S151), `untyped_lock -> scheduler_lock` (a collected scheduling context
+gives its share back and unbinds its tasks), and `cap_lock -> pipe_lock` (a pipe end and its count change together
 under `cap_lock`, S134). None is a cycle while its reverse stays absent, and
 `tools/check_lock_order.py` keeps it so. There is no runtime lock-order check: `spin_lock` records
 no lock identity.

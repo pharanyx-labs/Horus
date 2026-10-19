@@ -47,7 +47,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 585 `smoke-*` targets: 249 gates and 336 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 590 `smoke-*` targets: 250 gates and 340 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -56,7 +56,7 @@ There are 585 `smoke-*` targets: 249 gates and 336 control arms. Each row is a g
 |---|---|---|---|
 | `smoke-cap-lookup` | `cap_lookup` resolves only against the caller's own cspace: no cspace, or a slot past its end, is refused rather than served from the root | S55 | `smoke-cap-lookup-control`, `smoke-cap-lookup-range-control` |
 | `smoke-cspace-release` | A dead task holds no capability: teardown empties its cspace and leaves the slot reusable | S56 | `smoke-cspace-release-control` |
-| `smoke-captest` | **228 checks** in the conformance suite: unheld, revoked, stale and mistyped capabilities are refused across the syscall table, including capability-addressed IPC, untyped memory and "identity is not authority" | S1, S5, S6, S7, S13, S13a, S13b, S14, S18, S28, S32, S34, S46, S52, S58, S60, S72, S77, S78, S80, S93, S94, S95, S122, S133, S135 | `smoke-cap-accounting-control`, `smoke-captest-capenum-control`, `smoke-captest-clock-control`, `smoke-captest-devcap-control`, `smoke-captest-getline-control`, `smoke-captest-hashed-revoke-control`, `smoke-captest-irq-ack-control`, `smoke-captest-lookup-type-control`, `smoke-captest-mint-hang-control`, `smoke-captest-pipe-grant-control`, `smoke-captest-pipe-slot-control`, `smoke-captest-poll-notify-control`, `smoke-captest-setmeta-control`, `smoke-captest-split-control`, `smoke-captest-storage-format-control`, `smoke-captest-userlist-control` |
+| `smoke-captest` | **232 checks** in the conformance suite: unheld, revoked, stale and mistyped capabilities are refused across the syscall table, including capability-addressed IPC, untyped memory and "identity is not authority" | S1, S5, S6, S7, S13, S13a, S13b, S14, S18, S28, S32, S34, S46, S52, S58, S60, S72, S77, S78, S80, S93, S94, S95, S122, S133, S135 | `smoke-cap-accounting-control`, `smoke-captest-capenum-control`, `smoke-captest-clock-control`, `smoke-captest-devcap-control`, `smoke-captest-getline-control`, `smoke-captest-hashed-revoke-control`, `smoke-captest-irq-ack-control`, `smoke-captest-lookup-type-control`, `smoke-captest-mint-hang-control`, `smoke-captest-pipe-grant-control`, `smoke-captest-pipe-slot-control`, `smoke-captest-poll-notify-control`, `smoke-captest-setmeta-control`, `smoke-captest-split-control`, `smoke-captest-storage-format-control`, `smoke-captest-userlist-control` |
 | `smoke-captoken` | Endpoint tokens: a server with no mint authority hands out capabilities only by reply-mint, which can only narrow what the caller invoked it with | S105 | `smoke-captoken-unmasked-control` |
 | `smoke-captoken-smp` | The same under four CPUs, where the reply-mint has a cross-CPU racer to lose to | S105 |  |
 | `smoke-fs-cap` | The real `fs_server` answers through tokened capabilities: children come back narrowed from mkdir, create and lookup, a read-only capability cannot write, a file's cannot create entries, `..` `.` and `/` are refused, a removed object's capability is refused, and revoking a directory's capability revokes what was opened through it; a rename or link across directories is refused `EXDEV`, and a rename within one directory needs `CREATE` and `DELETE`; a walk of several names gives one capability derived from the one invoked, never wider and not held up by anything along the path, and a bad name in any position refuses it; a session opened from the compiled-in policy reaches only its grants (an ordinary account's root lists only the way to them, refuses `/etc` and another home `NOENT`, cannot create although it carries the union of the session's rights, and gives exactly read, lookup and exec on `/bin` and everything in its own home), only init's untokened `MINT` capability opens one, and an ended session's capabilities reach nothing; each session's `/tmp` is its own (read, write, create and delete, no exec), the administrator's session neither sees the user's nor the store they live in, and a `/tmp` twelve levels deep is gone when its session ends; a stat through a session's capability reports its own rights as owner bits and a bound on everyone else's as other bits (a file in a home and a `/tmp` are `0700`, `/bin` is `0505`, and a user's file reached by the administrator is `0707`, its owner reaching it too), and a rename onto or off a name the policy names is `EXDEV`; a chmod or chown through a session's capability succeeds when it asks for what is true (`600` on the user's own file, a chown to the session's account) and is refused otherwise (`600` on a file the user's grant also reaches, a group bit, a looser mode, set-user-id, a chown to someone else or to the uid of the task asking), storing nothing | S77, S120, S121, S128, S129, S130, S131, S132 | `smoke-fs-cap-control`, `smoke-fs-cap-session-caller-control`, `smoke-fs-cap-session-control`, `smoke-fs-cap-session-rights-control`, `smoke-fs-cap-session-tmp-kept-control`, `smoke-fs-cap-session-tmp-shared-control`, `smoke-fs-cap-session-tmp-store-control`, `smoke-fs-cap-stat-control`, `smoke-fs-cap-chmod-control`, `smoke-fs-cap-link-control`, `smoke-fs-cap-walk-control`, `smoke-fs-cap-xdev-control` |
@@ -125,7 +125,7 @@ There are 585 `smoke-*` targets: 249 gates and 336 control arms. Each row is a g
 | `smoke-resume-guard` | A bogus resume stack pointer is caught and reported after the console handover |  | `smoke-resume-guard-legacy`, `smoke-resume-guard-nofloor`, `smoke-resume-guard-preclaim` |
 | `smoke-resume-guard-ist` | The resume guard never fires on a legitimate return to an IST stack |  | `smoke-resume-guard-ist-control` |
 | `smoke-resume-guard-negative` | The resume guard rejects a negative bogus value |  | `smoke-resume-guard-negative-control` |
-| `smoke-sched-invariants` | A kernel built with the scheduler's claim checks and run-list checks boots clean (local only) | S20 | `smoke-runq-unhomed-control` |
+| `smoke-sched-invariants` | A kernel built with the scheduler's claim checks, run-list checks and budget-charge check boots clean (local only) | S20, S152 | `smoke-runq-unhomed-control`, `smoke-sched-invariants-cross-cpu-control` |
 | `smoke-sched-invariants-stress` | The same, as a rate over thirty boots pinned to two host cores: no stale claim, and every live task on exactly one CPU's run list |  |  |
 | `smoke-kstack-imp` | The stack-collision detector identifies CPUs by what they run, not by the task they are impersonating | S20 | `smoke-kstack-imp-control` |
 | `smoke-claim-reread` | The claim auditor re-reads a suspect state before accusing it |  | `smoke-claim-reread-control` |
@@ -134,6 +134,7 @@ There are 585 `smoke-*` targets: 249 gates and 336 control arms. Each row is a g
 | `smoke-tickless` | Eight CPUs idle at the login prompt: over 500 of the BSP's ticks the APs take fewer LAPIC ticks than two APs ticking all the time would (the watcher is one) |  | `smoke-tickless-control` |
 | `smoke-frame-budget` | The kernel carves single-page frames from each half of the arena until it refuses, and the frame table still has room: only the region ever refuses a frame |  | `smoke-frame-budget-control` |
 | `smoke-retype-race` | `retyperace` retypes and uses a frame, an endpoint and a notification twelve times each, every retype held open between the object's creation and its capability's install until a sweep on the other CPU has crossed it, while `retyperevoker` mints and revokes in a loop; then it kills the revoker, so a teardown sweep runs before the verdict. No object is collected before it is named; a boot in which a window saw no sweep is inconclusive and retried, up to three | S151 | `smoke-retype-race-control`, `smoke-retype-race-gc-control` |
+| `smoke-sched-budget` | `schedtest` carves a fifth of an AP with no slack right, every refusal a split and a bind owe is checked, and `schedspin`, bound to the fifth and making a system call in every loop, sees at most 45% of the ticks in 3 s and at least 5%; revoking the fifth gives it back to the root; a counter whose context is revoked stops, and stays stopped when a new context takes the freed index; the counter revokes its own context and forks at once, and no child runs | S152, S153 | `smoke-sched-budget-control`, `smoke-sched-budget-revoke-control`, `smoke-sched-budget-fork-control` |
 | `smoke-spawn-window` | Four CPUs boot with every spawn held for three AP ticks once the child's frame is built, and no CPU ever chooses a child still being built | S150 | `smoke-spawn-window-control` |
 | `smoke-sibling-kick` | No task runs on an SMT sibling even when every sibling is interrupted while work is waiting | S101 | `smoke-sibling-kick-control` |
 | `smoke-shootdown-unacked` | A TLB shootdown that one CPU never acknowledges halts the kernel instead of returning | S124 | `smoke-shootdown-unacked-control` |
@@ -362,9 +363,9 @@ which handler bodies three tracked workloads actually enter (the scripted sessio
 conformance suite and the boot-modules session) and compares that with
 `.github/syscall-coverage.yml`, which would give a reason for any syscall not covered.
 
-Capability conformance (228 checks in `userspace/captest.c`, which prints its own count) is the widest single suite, and it is still only a refusal suite.
+Capability conformance (232 checks in `userspace/captest.c`, which prints its own count) is the widest single suite, and it is still only a refusal suite.
 
-Currently **103 of 103** implemented syscalls are covered, and **0** are listed uncovered (`SECURITY.md` S25). A new syscall is entered by a tracked workload or listed uncovered with its reason; the manifest records what each kind of gap has cost to close.
+Currently **106 of 106** implemented syscalls are covered, and **0** are listed uncovered (`SECURITY.md` S25). A new syscall is entered by a tracked workload or listed uncovered with its reason; the manifest records what each kind of gap has cost to close.
 
 ## CI
 
@@ -429,11 +430,11 @@ The jobs that are not boot tests:
 | `kani-bounded` | Formal verification of the capability algebra (every Kani proof) |
 
 Two of those deserve a sentence each.
-**`kani-bounded` is the only Kani job, and it can fail anything.** All **41** harnesses run
+**`kani-bounded` is the only Kani job, and it can fail anything.** All **43** harnesses run
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 153 properties name a witness that resolves.
+currently **empty**: all 155 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

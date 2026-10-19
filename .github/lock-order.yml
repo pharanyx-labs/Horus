@@ -61,6 +61,18 @@ nesting:
       nesting above landed 2026-08-11 and made it false the next day. Both
       paths are still correct -- exactly one of them nests -- but the reason
       given in the second is not.
+  - outer: untyped_lock
+    inner: scheduler_lock
+    reason: >-
+      Scheduling contexts (docs/design/scheduler.md 3.1, step 4a). The collector
+      destroys a context no capability names with the untyped lock held
+      (destroy_dyn_sc), and sched_context_destroyed then takes the scheduler lock
+      to give the context's share back and unbind its tasks. Nothing holding the
+      scheduler lock takes the untyped lock: SYS_SCHED_SPLIT carves the memory
+      first and releases the untyped lock before sched_carve takes the scheduler
+      lock, and selection reads the context table without it. The scheduler lock
+      is taken through sched_raw_lock, which this checker does not read, so this
+      edge is declared for the reader rather than observed by the check.
   - outer: cap_lock
     inner: untyped_lock
     reason: >-

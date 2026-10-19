@@ -588,7 +588,9 @@ void tasks_init(void) {
 }
 
 void scheduler_init(void) {
+    sched_contexts_init();   /* the per-CPU roots, before any task is bound to one */
     for (int i = 0; i < g_max_tasks; i++) {
+        tasks[i].sc_index = 0;
         tasks[i].state = 0;
         tasks[i].esp = 0;
         tasks[i].eip = 0;
@@ -692,6 +694,417 @@ static void sched_raw_lock(void);     /* defined below, with the scheduler lock 
 static void sched_raw_unlock(void);
 #endif
 
+/* ---- SCHEDULING CONTEXTS (docs/design/scheduler.md 3.1, step 4a) -----------
+ *
+ * CPU time as a capability. A context holds a share of one CPU and spends it
+ * as a budget every period; a task runs only on what the context it is bound to
+ * grants. This block is the whole of the mechanism: where the time is measured
+ * and charged, when a context is refilled, how the choosing code asks whether a
+ * task may run, and the three operations a capability holder can ask for.
+ *
+ * WHO WRITES WHAT. Every field of every context is read and written under the
+ * scheduler lock. A context's budget is charged and refilled only by the CPU it
+ * belongs to (design decision 7): another CPU may READ it, to decide whether one
+ * of its tasks could run as slack, and never writes it. So no budget is ever
+ * contended between CPUs, and the gate for that (S152, BUDGET_CROSS_CPU) is an
+ * assertion at the one place a charge is made.
+ *
+ * WHERE TIME IS MEASURED. At the selection seam: each CPU stamps the time and
+ * the context when it chooses a task, and charges the elapsed time to that
+ * context when it next chooses, whatever made it choose (a tick, a block, a
+ * yield, an exit). Measured with the TSC, not counted in ticks: a task charged
+ * a tick for each tick it was seen running could yield just before every tick
+ * and run for nothing. Enforcement is still at the tick, which is when a CPU
+ * finds a task out of budget and chooses again, so a task can overrun by up to
+ * a tick; the overrun is debt, carried into the next period, so over many
+ * periods a context runs its budget and no more. Step 3b's deadline timer
+ * removes the overrun, not the accounting. */
+
+/* The per-CPU roots: a whole CPU each, with the slack right. Live from boot for
+ * every index; a root for a CPU that never schedules names a CPU nothing ever
+ * runs on, and init is never handed one (sched_cpu_schedules). */
+struct sched_context sc_roots[MAX_CPUS];
+/* Which CPUs schedule tasks: the BSP, and each AP that checked in and is not a
+ * parked SMT sibling. Set once each, before init exists. */
+static volatile uint8_t sc_cpu_up[MAX_CPUS];
+/* The accounting stamp: the context CPU c last chose a task to run on as
+ * budgeted work (0: none, or slack, which is never charged), and when. Written
+ * only by CPU c, and cleared by sched_context_destroyed so a context's index is
+ * never charged after it is reused. */
+static uint32_t sc_stamp_idx[MAX_CPUS];
+static uint64_t sc_stamp_us[MAX_CPUS];
+
+extern uint64_t sched_clock_us(void);   /* terminal.c: TSC microseconds, kernel-internal */
+#ifdef SCHED_INVARIANTS
+static void panic_begin(void);           /* defined below, with the claim auditor */
+static void panic_str(const char *s);
+static void panic_dec(int v);
+#endif
+extern struct sched_context *sc_dyn_by_index(uint32_t idx);   /* untyped.c */
+
+/* The scheduler lock with interrupts off, for the syscall-facing operations:
+ * the tick takes the same lock from its ISR, so holding it with IF=1 on this
+ * CPU could deadlock against our own tick. On one CPU the flags are the lock. */
+static inline uint64_t sc_lock(void) {
+    uint64_t fl;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(fl) :: "memory");
+#ifdef SMP
+    sched_raw_lock();
+#endif
+    return fl;
+}
+static inline void sc_unlock(uint64_t fl) {
+#ifdef SMP
+    sched_raw_unlock();
+#endif
+    if (fl & 0x200) __asm__ volatile ("sti" ::: "memory");
+}
+
+uint32_t sched_root_index(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) return 0;
+    return SC_ROOT_BASE + (uint32_t)cpu;
+}
+
+int sched_cpu_schedules(int cpu) {
+    return cpu >= 0 && cpu < MAX_CPUS && sc_cpu_up[cpu];
+}
+
+void sched_cpu_online(int cpu) {
+    if (cpu >= 0 && cpu < MAX_CPUS) sc_cpu_up[cpu] = 1;
+}
+
+struct sched_context *sc_by_index(uint32_t idx) {
+    if (idx >= SC_ROOT_BASE && idx < SC_ROOT_BASE + MAX_CPUS)
+        return &sc_roots[idx - SC_ROOT_BASE];
+    if (idx >= DYN_SC_BASE && idx < SC_INDEX_MAX) return sc_dyn_by_index(idx);
+    return 0;
+}
+
+void sched_contexts_init(void) {
+    uint64_t now = sched_clock_us();
+    for (int c = 0; c < MAX_CPUS; c++) {
+        struct sched_context *sc = &sc_roots[c];
+        sc->live            = 1;
+        sc->cpu             = c;
+        sc->share_ppm       = SC_PPM_WHOLE;
+        sc->period_us       = SC_ROOT_PERIOD_US;
+        sc->flags           = SC_FLAG_SLACK | SC_FLAG_ROOT;
+        sc->parent          = 0;
+        sc->remaining_us    = (int64_t)SC_ROOT_PERIOD_US;
+        sc->period_start_us = now;
+        sc->consumed_us     = 0;
+        sc->charged_cpu     = -1;
+        sc_stamp_idx[c]     = 0;
+    }
+    sc_cpu_up[0] = 1;
+}
+
+/* The context task t runs on, or 0: unbound, or bound to one that has died.
+ * Either way the task is chosen by no CPU (fail closed). */
+static struct sched_context *task_sc(int t) {
+    if (t <= 0 || t >= g_max_tasks) return 0;
+    struct sched_context *sc = sc_by_index(tasks[t].sc_index);
+    return (sc && sc->live) ? sc : 0;
+}
+
+/* What `sc` would have left at `now` once every period that has ended is
+ * refilled: one budget per period, debt paid first, and never more than one
+ * budget banked. `*periods` says how many periods have ended. Pure, so any CPU
+ * may ask it; only the owner writes the answer back (sc_refresh). */
+static int64_t sc_projected(const struct sched_context *sc, uint64_t now, uint64_t *periods) {
+    *periods = 0;
+    int64_t r = sc->remaining_us;
+    if (now < sc->period_start_us || sc->period_us == 0) return r;
+    uint64_t n = (now - sc->period_start_us) / sc->period_us;
+    if (n == 0) return r;
+    *periods = n;
+    int64_t budget = (int64_t)sc_budget_us(sc);
+    if (budget <= 0) return r > 0 ? 0 : r;
+    /* Overflow-safe: a debt is at most a few ticks, so n budgets clear it once
+     * n exceeds debt/budget + 1, and nothing is banked beyond one budget. */
+    if (r < 0 && n <= (uint64_t)((-r) / budget)) return r + (int64_t)n * budget;
+    return budget;
+}
+
+/* Refill `sc` for the periods that have ended, on its own CPU only. */
+static void sc_refresh(struct sched_context *sc, int cpu, uint64_t now) {
+    if (sc->cpu != cpu) return;
+    uint64_t n;
+    int64_t r = sc_projected(sc, now, &n);
+    if (n == 0) return;
+    sc->remaining_us     = r;
+    sc->period_start_us += n * sc->period_us;
+}
+
+static int sc_has_budget(const struct sched_context *sc, uint64_t now) {
+#ifdef BUDGET_UNENFORCED
+    /* CONTROL ARM, never ship: every context always has budget, so a task runs
+     * on time it was not given. make smoke-sched-budget-control. */
+    (void)sc; (void)now;
+    return 1;
+#else
+    uint64_t n;
+    return sc_projected(sc, now, &n) > 0;
+#endif
+}
+
+/* How task t may run on CPU `cpu` now. */
+#define SC_RUN_NONE   0
+#define SC_RUN_BUDGET 1   /* budgeted work: its context belongs here and has time */
+#define SC_RUN_SLACK  2   /* slack: below all budgeted work, on any CPU (decision 8) */
+static int sc_eligible(int t, int cpu, uint64_t now) {
+    struct sched_context *sc = task_sc(t);
+    if (!sc) return SC_RUN_NONE;
+    if (sc->cpu == cpu && sc_has_budget(sc, now)) return SC_RUN_BUDGET;
+    if (sc->flags & SC_FLAG_SLACK) return SC_RUN_SLACK;
+    return SC_RUN_NONE;
+}
+
+#ifdef SMP
+/* Could task t run anywhere now? For the tickless wake, which counts waiting
+ * work without being any one CPU. */
+static int sc_runnable_somewhere(int t, uint64_t now) {
+    struct sched_context *sc = task_sc(t);
+    if (!sc) return 0;
+    return (sc->flags & SC_FLAG_SLACK) || sc_has_budget(sc, now);
+}
+#endif
+
+/* Charge CPU `cpu`'s last choice for the time since it was made, and stamp the
+ * new one. Called at every choice, with the scheduler lock held, by the CPU
+ * choosing. `chosen` is the task it is about to run, or <= 0 for none.
+ *
+ * "None chosen" does not mean the CPU stops: the selection never returns the
+ * task a CPU is running (that task is claimed, and sched_selectable passes over
+ * a claimed task), so a tick or a yield that finds nobody else goes on running
+ * the current task. That task is the one stamped, or a task that has only ever
+ * been alone on its CPU would be charged once and then run for nothing. A task
+ * that is blocking or has died is no longer runnable here, and is not. */
+static void sc_account(int cpu, int chosen, uint64_t now) {
+    if (cpu < 0 || cpu >= MAX_CPUS) return;
+    struct sched_context *sc = sc_by_index(sc_stamp_idx[cpu]);
+    if (sc && sc->live && now > sc_stamp_us[cpu]) {
+        uint64_t ran = now - sc_stamp_us[cpu];
+#ifdef SCHED_INVARIANTS
+        /* S152: a budget is charged only by its own CPU. The stamp is set only
+         * for a context of this CPU, so this cannot fire unless something
+         * charges across CPUs, which is the defect BUDGET_CROSS_CPU puts back. */
+        if (sc->cpu != cpu) {
+            panic_begin();
+            panic_str("\nPANIC: a budget was charged by a CPU it does not belong to: cpu ");
+            panic_dec(cpu);
+            panic_str(" charged a context of cpu "); panic_dec(sc->cpu);
+            panic_str("\n");
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+#endif
+        sc->remaining_us -= (int64_t)ran;
+        sc->consumed_us  += ran;
+        sc->charged_cpu   = cpu;
+    }
+    sc_stamp_idx[cpu] = 0;
+    sc_stamp_us[cpu]  = now;
+    if (chosen <= 0) {
+        int cur = percpu_current_task[cpu];
+        if (cur > 0 && cur < g_max_tasks && tasks[cur].state == TASK_RUNNABLE &&
+            tasks[cur].pending_block == 0)
+            chosen = cur;
+        else
+            return;
+    }
+    sc = task_sc(chosen);
+    if (!sc) return;
+#ifdef BUDGET_CROSS_CPU
+    /* CONTROL ARM, never ship: the time a task runs is charged to its context
+     * wherever it runs, so a CPU running another CPU's slack work charges a
+     * budget that is not its own. */
+    sc_stamp_idx[cpu] = tasks[chosen].sc_index;
+    return;
+#endif
+    if (sc->cpu != cpu) return;          /* slack elsewhere: free */
+    sc_refresh(sc, cpu, now);
+    if (sc->remaining_us > 0)            /* slack at home after its budget: free */
+        sc_stamp_idx[cpu] = tasks[chosen].sc_index;
+}
+
+/* Set by a tick that found the task on this CPU out of budget while it was in
+ * ring 0, where the tick cannot switch it; taken on its way out of the system
+ * call (sched_budget_resched_take). Written and read by this CPU only. */
+static volatile int sc_resched[MAX_CPUS] = { [0 ... MAX_CPUS - 1] = -1 };
+
+/* A tick that landed in ring 0 with task `cur` current on `cpu`: charge it the
+ * time since the last stamp and restamp it, and mark the CPU if its context now
+ * gives it no time here. Called from the timer ISR with interrupts off. On SMP
+ * the lock is only TRIED: ring-0 code that holds it is not interrupted for this,
+ * and a tick that misses loses nothing, because the stamp keeps its time and
+ * the next charge takes it all. */
+static void sc_tick_in_kernel(int cpu, int cur) {
+    if (cpu < 0 || cpu >= MAX_CPUS || cur <= 0 || cur >= g_max_tasks) return;
+#ifdef SMP
+    if (__sync_lock_test_and_set(&scheduler_lock.locked, 1)) return;
+#endif
+    uint64_t now = sched_clock_us();
+    if (tasks[cur].state != 0) {
+        sc_account(cpu, cur, now);
+        if (sc_eligible(cur, cpu, now) == SC_RUN_NONE) sc_resched[cpu] = cur;
+    }
+#ifdef SMP
+    sched_raw_unlock();
+#endif
+}
+
+int sched_budget_resched_take(int cur) {
+    int cpu = this_cpu();
+    if (cpu < 0 || cpu >= MAX_CPUS || sc_resched[cpu] < 0) return 0;
+    int t = sc_resched[cpu];
+    sc_resched[cpu] = -1;
+    return t == cur;
+}
+
+#ifdef SMP
+/* The stamp is dropped when a CPU goes idle, so the idle time is charged to
+ * nobody. Caller holds the scheduler lock. */
+static void sc_account_idle(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) return;
+    sc_account(cpu, 0, sched_clock_us());
+}
+#endif
+
+/* Bind task t to context `idx` and home it where it may run. Caller holds the
+ * scheduler lock and has checked both are live. */
+#ifdef SMP
+static void rq_home_on(int t, int c);
+#endif
+static void sc_bind_locked(int t, uint32_t idx, const struct sched_context *sc) {
+    tasks[t].sc_index = idx;
+#if defined(SMP) && !defined(RUNQ_UNHOMED)
+    /* Budgeted work waits on its own CPU's list: no other CPU may run it, so it
+     * must not wait where only stealing would find it. Slack work stays where it
+     * is; any CPU may take it. */
+    if (!(sc->flags & SC_FLAG_SLACK) && tasks[t].rq_home != sc->cpu)
+        rq_home_on(t, sc->cpu);
+#else
+    (void)sc;
+#endif
+}
+
+/* SYS_SCHED_SPLIT's locked half: carve `budget_us` every `period_us` out of
+ * the context at `parent_idx` into the fresh object `child`.
+ * The arithmetic is rust_sc_split's, which Kani proves never creates share.
+ * Returns 0 or a negative SYS_ERR_*; on a refusal nothing changes. */
+int sched_carve(uint32_t parent_idx, struct sched_context *child,
+                uint32_t budget_us, uint32_t period_us, uint32_t flags) {
+    if (!child || (flags & ~SC_FLAG_SLACK)) return SYS_ERR_INVAL;
+    uint64_t fl = sc_lock();
+    struct sched_context *p = sc_by_index(parent_idx);
+    if (!p || !p->live) { sc_unlock(fl); return SYS_ERR_INVAL; }
+    /* The slack right only narrows: a child may keep it only if its parent has
+     * it, as a rights mask only narrows on a mint. */
+    if ((flags & SC_FLAG_SLACK) && !(p->flags & SC_FLAG_SLACK)) {
+        sc_unlock(fl);
+        return SYS_ERR_PERM;
+    }
+    uint32_t np = 0, nc = 0;
+    int32_t rc = rust_sc_split(p->share_ppm, budget_us, period_us, &np, &nc);
+    if (rc != 0) {
+        sc_unlock(fl);
+        return rc == -2 ? SYS_ERR_NOMEM : SYS_ERR_INVAL;
+    }
+    uint64_t now = sched_clock_us();
+    int64_t parent_budget_before = (int64_t)sc_budget_us(p);
+    p->share_ppm = np;
+    /* The parent's budget shrank with its share; what it has left this period
+     * shrinks by the same amount, so a split cannot hand a child time the parent
+     * has already been given for this period as well. */
+    p->remaining_us -= parent_budget_before - (int64_t)sc_budget_us(p);
+    child->cpu             = p->cpu;
+    child->share_ppm       = nc;
+    child->period_us       = period_us;
+    child->flags           = flags & SC_FLAG_SLACK;
+    child->parent          = parent_idx;
+    child->remaining_us    = (int64_t)sc_budget_us(child);
+    child->period_start_us = now;
+    child->consumed_us     = 0;
+    child->charged_cpu     = -1;
+    __asm__ volatile ("" ::: "memory");
+    child->live            = 1;
+    sc_unlock(fl);
+    return 0;
+}
+
+/* SYS_SCHED_BIND's locked half. The caller has checked the CAP_TCB and the
+ * context capability; this checks that both still name something live. */
+int sched_bind(int target, uint32_t idx) {
+    if (target <= 0 || target >= g_max_tasks) return SYS_ERR_INVAL;
+    uint64_t fl = sc_lock();
+    struct sched_context *sc = sc_by_index(idx);
+    if (!sc || !sc->live || tasks[target].state == 0) {
+        sc_unlock(fl);
+        return SYS_ERR_INVAL;
+    }
+    sc_bind_locked(target, idx, sc);
+    sc_unlock(fl);
+    return 0;
+}
+
+/* SYS_SCHED_INFO's locked half. Time is reported to the tick, never finer:
+ * ring 3 sees no clock below 10 ms (S34), and a remaining budget read in a
+ * loop would otherwise be one. */
+int sched_info_index(uint32_t idx, struct sched_info *out) {
+    uint64_t fl = sc_lock();
+    struct sched_context *sc = sc_by_index(idx);
+    if (!sc || !sc->live) { sc_unlock(fl); return SYS_ERR_INVAL; }
+    const int64_t tick = 1000000 / PIT_TICK_HZ;
+    out->cpu          = (uint32_t)sc->cpu;
+    out->flags        = sc->flags;
+    out->share_ppm    = sc->share_ppm;
+    out->period_us    = sc->period_us;
+    out->budget_us    = sc_budget_us(sc);
+    out->remaining_us = (sc->remaining_us / tick) * tick;
+    out->consumed_us  = (sc->consumed_us / (uint64_t)tick) * (uint64_t)tick;
+    sc_unlock(fl);
+    return 0;
+}
+
+/* Called by untyped.c's collector, under the untyped lock, when no capability
+ * names context `idx` any more. Gives its share back to its parent (or, if the
+ * parent is gone, to the nearest living ancestor), hands its children to that
+ * same ancestor, and unbinds every task bound to it: those stop until their
+ * supervisor binds them again (step 4 answer 3, 2026-10-17; fail closed, never
+ * a fallback to time nobody gave). */
+void sched_context_destroyed(uint32_t idx, struct sched_context *sc) {
+    if (!sc) return;
+    uint64_t fl = sc_lock();
+    if (!sc->live || (sc->flags & SC_FLAG_ROOT)) { sc_unlock(fl); return; }
+    sc->live = 0;
+    /* The nearest living ancestor. A chain is at most as long as the table, and
+     * a parent index is always an older context, so this ends. */
+    struct sched_context *heir = 0;
+    uint32_t hidx = sc->parent;
+    for (int n = 0; n < (int)SC_INDEX_MAX && hidx; n++) {
+        struct sched_context *a = sc_by_index(hidx);
+        if (a && a->live) { heir = a; break; }
+        hidx = a ? a->parent : 0;
+    }
+    if (heir) {
+        heir->share_ppm = rust_sc_reclaim(heir->share_ppm, sc->share_ppm);
+        for (uint32_t i = DYN_SC_BASE; i < SC_INDEX_MAX; i++) {
+            struct sched_context *k = sc_by_index(i);
+            if (k && k->live && k->parent == idx) k->parent = hidx;
+        }
+    }
+#ifndef SC_DESTROY_KEEPS_TASKS
+    for (int t = 1; t < g_max_tasks; t++)
+        if (tasks[t].sc_index == idx) tasks[t].sc_index = 0;
+#else
+    /* CONTROL ARM, never ship: the tasks keep the dead index, so the next context
+     * carved at it runs them. make smoke-sched-budget-revoke-control. */
+#endif
+    for (int c = 0; c < MAX_CPUS; c++)
+        if (sc_stamp_idx[c] == idx) sc_stamp_idx[c] = 0;
+    sc_unlock(fl);
+}
+
 void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
                  uint32_t premap_pages, uint32_t untyped_index) {
     if (id >= g_max_tasks) return;
@@ -770,19 +1183,48 @@ void create_task(int id, addr_t entry, addr_t stack_top, addr_t image_base,
      * the one about to exist. The compiler barrier keeps the store ahead of
      * `state = 1`; x86 keeps stores in order, so any CPU that sees the slot
      * live also sees its new generation. */
-#if defined(SMP) && !defined(RUNQ_UNHOMED)
-    /* Home the task on its creator's CPU before it goes live, so there is no
-     * moment at which it is live and on no list (see PER-CPU RUN LISTS). An idle
-     * CPU takes it from there if this one is busy. RUNQ_UNHOMED=1 leaves it on
-     * no list, for the control arm: nothing then ever selects it. */
+    /* The new task runs on its creator's scheduling context (design 3.1: the
+     * child spends what the parent already could, so this needs no authority),
+     * and a task the kernel creates runs on the BSP's root. A spawner that wants
+     * the child elsewhere binds it before resuming it. Set before the task goes
+     * live, like its home.
+     *
+     * A creator bound to NOTHING passes nothing on: its context was revoked
+     * while it ran, and it is still running only until its CPU next chooses.
+     * Giving its child the BSP's root instead would let a task whose time was
+     * taken away spawn its way back to a whole CPU, so the child is unbound
+     * too, and no CPU chooses it until a holder of a context binds it. */
     if (id > 0) {
+        uint64_t fl = sc_lock();
+        int creator = get_current_task();
+#ifndef SC_UNBOUND_CREATOR_GETS_ROOT
+        uint32_t idx = (creator > 0 && creator < g_max_tasks)
+                           ? (task_sc(creator) ? tasks[creator].sc_index : 0)
+                           : sched_root_index(0);
+#else
+        /* CONTROL ARM, never ship: a child of an unbound creator gets the BSP's
+         * root, so a task whose time was revoked forks its way back to a whole
+         * CPU. make smoke-sched-budget-fork-control. */
+        uint32_t idx = (creator > 0 && creator < g_max_tasks && task_sc(creator))
+                           ? tasks[creator].sc_index : sched_root_index(0);
+#endif
+        struct sched_context *sc = sc_by_index(idx);
+        tasks[id].sc_index = idx;
+#if defined(SMP) && !defined(RUNQ_UNHOMED)
+        /* Home the task before it goes live, so there is no moment at which it is
+         * live and on no list (see PER-CPU RUN LISTS): on its context's CPU when
+         * only that CPU may run it, and otherwise on its creator's, where an idle
+         * CPU takes it if this one is busy. RUNQ_UNHOMED=1 leaves it on no list,
+         * for the control arm: nothing then ever selects it. */
         int hc = this_cpu();
         if (hc < 0 || hc >= MAX_CPUS) hc = 0;   /* placement only; never skip it */
-        sched_raw_lock();
+        if (sc && !(sc->flags & SC_FLAG_SLACK)) hc = sc->cpu;
         rq_home_on(id, hc);
-        sched_raw_unlock();
-    }
+#else
+        (void)sc;
 #endif
+        sc_unlock(fl);
+    }
     tasks[id].slot_gen++;
     __asm__ volatile ("" ::: "memory");
     tasks[id].state = 1;
@@ -3009,15 +3451,30 @@ static inline int sched_selectable(int t)
  * the tick asks that way, while a ring-0 caller's `start` is 0, which is never a
  * task. Every other path is switching away from `start` and excludes it. These
  * are exactly the ranges the six loops used. One CPU has no lists to keep. */
-static int sched_pick_after(int start, int include_start)
+static int sched_pick_scan(int start, int include_start, int want, uint64_t now)
 {
     int last = include_start ? g_max_tasks : g_max_tasks - 1;
     for (int i = 1; i <= last; i++) {
         int cand = (start + i) % g_max_tasks;
         if (cand == 0) continue;
-        if (sched_selectable(cand)) return cand;
+        if (!sched_selectable(cand)) continue;
+        int e = sc_eligible(cand, 0, now);
+        if (e != SC_RUN_NONE && (want == SC_RUN_SLACK || e == want)) return cand;
     }
     return -1;
+}
+
+/* Budgeted work first, then slack (scheduling contexts, step 4a). The one CPU
+ * is CPU 0, so every context is this CPU's and slack is what a context with the
+ * slack right runs on once its budget is spent. The choice is charged and
+ * stamped here, as on SMP. */
+static int sched_pick_after(int start, int include_start)
+{
+    uint64_t now = sched_clock_us();
+    int t = sched_pick_scan(start, include_start, SC_RUN_BUDGET, now);
+    if (t < 0) t = sched_pick_scan(start, include_start, SC_RUN_SLACK, now);
+    sc_account(0, t, now);
+    return t;
 }
 #else
 /* How long a CPU may go without choosing before the tasks waiting on its list
@@ -3033,7 +3490,7 @@ static int sched_pick_after(int start, int include_start)
  * `start` itself; or -1. Caller holds sched_raw_lock. The walk is bounded by
  * the table's size as well as by returning to where it began, so a damaged list
  * ends the walk rather than the kernel. */
-static int rq_first_selectable(int c, int start)
+static int rq_first_selectable(int c, int start, int cpu, int want, uint64_t now)
 {
     int h = rq_head[c];
     if (h < 0) return -1;
@@ -3041,7 +3498,15 @@ static int rq_first_selectable(int c, int start)
     int origin = on_c ? tasks[start].rq_next : h;
     int t = origin;
     for (int n = 0; n < g_max_tasks; n++) {
-        if (t != start && sched_selectable(t)) return t;
+        if (t != start && sched_selectable(t)) {
+            /* Scheduling contexts (step 4a): `want` is SC_RUN_BUDGET for
+             * budgeted work on `cpu` only, SC_RUN_SLACK for anything `cpu` may
+             * run at all. A task whose context gives it nothing here is passed
+             * over, so a placement can never run a task on time it was not
+             * given. */
+            int e = sc_eligible(t, cpu, now);
+            if (e != SC_RUN_NONE && (want == SC_RUN_SLACK || e == want)) return t;
+        }
         t = tasks[t].rq_next;
         if (t == origin) break;
     }
@@ -3055,17 +3520,18 @@ static int rq_first_selectable(int c, int start)
  * disturb the claim protocol: S20 rests on task_running_cpu, which a list never
  * touches. RUNQ_NO_STEAL=1 takes nothing, for the control arm: a CPU then runs
  * only what was created on it, and the APs of smoke-smp never run a worker. */
-static int rq_steal(int cpu, int start, int stalled_only, uint64_t now)
+static int rq_steal(int cpu, int start, int stalled_only, uint64_t now,
+                    int want, uint64_t now_us)
 {
 #ifdef RUNQ_NO_STEAL
-    (void)cpu; (void)start; (void)stalled_only; (void)now;
+    (void)cpu; (void)start; (void)stalled_only; (void)now; (void)want; (void)now_us;
     return -1;
 #else
     for (int k = 1; k < MAX_CPUS; k++) {
         int c = (cpu + k) % MAX_CPUS;
         if (rq_head[c] < 0) continue;
         if (stalled_only && now - percpu_pick_tick[c] <= RQ_STALL_TICKS) continue;
-        int t = rq_first_selectable(c, start);
+        int t = rq_first_selectable(c, start, cpu, want, now_us);
         if (t > 0) { rq_home_on(t, cpu); return t; }
     }
     return -1;
@@ -3087,7 +3553,7 @@ static int rq_steal(int cpu, int start, int stalled_only, uint64_t now)
  * Each candidate still passes sched_selectable, so placement can make a task
  * wait but never makes a task run that the rule would refuse. Caller holds
  * sched_raw_lock. */
-static int sched_pick_after_list(int start, int include_start);
+static int sched_pick_after_list(int start, int include_start, uint64_t now_us);
 
 /* The selection seam. Under SCHED_INVARIANTS (and the SPAWN_WINDOW_WIDEN build
  * of smoke-spawn-window) it also checks S150 on every choice: the task chosen is
@@ -3097,7 +3563,10 @@ static int sched_pick_after_list(int start, int include_start);
  * puts back. */
 static int sched_pick_after(int start, int include_start)
 {
-    int t = sched_pick_after_list(start, include_start);
+    uint64_t now_us = sched_clock_us();
+    int t = sched_pick_after_list(start, include_start, now_us);
+    /* Charge this CPU's last choice and stamp this one (scheduling contexts). */
+    sc_account(this_cpu(), t, now_us);
 #if defined(SCHED_INVARIANTS) || defined(SPAWN_WINDOW_WIDEN)
     if (t > 0 && tasks[t].spawn_building) {
         panic_begin();
@@ -3111,20 +3580,38 @@ static int sched_pick_after(int start, int include_start)
     return t;
 }
 
-static int sched_pick_after_list(int start, int include_start)
+static int sched_pick_after_list(int start, int include_start, uint64_t now_us)
 {
     int cpu = this_cpu();
     if (cpu < 0 || cpu >= MAX_CPUS) cpu = 0;
     uint64_t now = system_ticks;
     percpu_pick_tick[cpu] = now;
 
-    int t = rq_steal(cpu, start, 1, now);
+    /* Budgeted work before slack (scheduling contexts, step 4a; design 3.1,
+     * decision 8), each in the order step 2 chose: a stalled CPU's waiting
+     * tasks, then this CPU's own list, then any other list, then (budgeted only)
+     * the task it is running. Only work this CPU
+     * may run is ever taken, so budgeted work of another CPU is never moved. While
+     * every task runs on a root with the slack right this is exactly step 2's
+     * order: the BSP's root makes every task budgeted on the BSP and slack on
+     * every AP. */
+    int t = rq_steal(cpu, start, 1, now, SC_RUN_BUDGET, now_us);
     if (t > 0) return t;
-    t = rq_first_selectable(cpu, start);
+    t = rq_first_selectable(cpu, start, cpu, SC_RUN_BUDGET, now_us);
     if (t > 0) return t;
-    t = rq_steal(cpu, start, 0, now);
+    t = rq_steal(cpu, start, 0, now, SC_RUN_BUDGET, now_us);
     if (t > 0) return t;
-    if (include_start && start > 0 && start < g_max_tasks && sched_selectable(start))
+    if (include_start && start > 0 && start < g_max_tasks && sched_selectable(start) &&
+        sc_eligible(start, cpu, now_us) == SC_RUN_BUDGET)
+        return start;
+    t = rq_steal(cpu, start, 1, now, SC_RUN_SLACK, now_us);
+    if (t > 0) return t;
+    t = rq_first_selectable(cpu, start, cpu, SC_RUN_SLACK, now_us);
+    if (t > 0) return t;
+    t = rq_steal(cpu, start, 0, now, SC_RUN_SLACK, now_us);
+    if (t > 0) return t;
+    if (include_start && start > 0 && start < g_max_tasks && sched_selectable(start) &&
+        sc_eligible(start, cpu, now_us) != SC_RUN_NONE)
         return start;
     return -1;
 }
@@ -3153,23 +3640,42 @@ void sched_wake_tickless(void)
     for (int c = 1; c < MAX_CPUS; c++) if (percpu_tickless[c]) stopped++;
     if (!stopped) return;
 
+    /* Budgeted work that only one CPU may run (a context with no slack right)
+     * is not "waiting work" any CPU can take: it waits for its own CPU, so that
+     * CPU is the one kicked if it has stopped. Everything else is counted as
+     * before. A context still out of budget counts for nothing until its
+     * refill is due, which is what wakes a stopped CPU for its refill. */
     int waiting = 0;
+    uint8_t want[MAX_CPUS] = { 0 };
+    uint64_t now_us = sched_clock_us();
     sched_raw_lock();
     for (int c = 0; c < MAX_CPUS && waiting < stopped; c++) {
         int h = rq_head[c];
         if (h < 0) continue;
         int t = h;
         for (int n = 0; n < g_max_tasks; n++) {
-            if (sched_selectable(t) && ++waiting >= stopped) break;
+            if (sched_selectable(t) && sc_runnable_somewhere(t, now_us)) {
+                struct sched_context *sc = task_sc(t);
+                if (!(sc->flags & SC_FLAG_SLACK)) {
+                    if (sc->cpu > 0 && sc->cpu < MAX_CPUS) want[sc->cpu] = 1;
+                } else if (++waiting >= stopped) {
+                    break;
+                }
+            }
             t = tasks[t].rq_next;
             if (t == h) break;
         }
     }
     sched_raw_unlock();
 
+    int self = this_cpu();
+    for (int c = 1; c < MAX_CPUS; c++) {
+        if (!want[c] || c == self) continue;
+        if (__sync_bool_compare_and_swap(&percpu_tickless[c], 1, 0)) smp_kick_cpu(c);
+    }
+
     /* An idle BSP takes one itself at its next PIT tick. */
     if (percpu_idle[0]) waiting--;
-    int self = this_cpu();
     for (int c = 1; c < MAX_CPUS && waiting > 0; c++) {
         /* Never this CPU: it has just decided to stop, and taking its own flag
          * would leave it stopped with nobody believing it needs a kick. */
@@ -3185,7 +3691,10 @@ void sched_wake_tickless(void)
 uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
     if (!preempt_enabled) return frame_rsp;
 #ifndef SMP
-    if ((interrupted_cs & 3) != 3) return frame_rsp;   /* only preempt ring 3 */
+    if ((interrupted_cs & 3) != 3) {                    /* only preempt ring 3 */
+        sc_tick_in_kernel(0, get_current_task());      /* but charge it (step 4a) */
+        return frame_rsp;
+    }
 
     int cur = get_current_task();
     if (cur <= 0 || cur >= g_max_tasks) return frame_rsp;
@@ -3323,7 +3832,10 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
      * this removes a special case rather than adding one. `percpu_idle` is set by
      * enter_cpu_idle() and by an AP parking at bringup (smp.c), and cleared by
      * set_current_task() the moment a CPU takes a real task. */
-    if (!ring3 && !percpu_idle[cpu]) return frame_rsp;
+    if (!ring3 && !percpu_idle[cpu]) {
+        sc_tick_in_kernel(cpu, percpu_current_task[cpu]);   /* charge it (step 4a) */
+        return frame_rsp;
+    }
 
     sched_raw_lock();
 
@@ -3388,6 +3900,26 @@ uint64_t preempt_on_tick(uint64_t frame_rsp, uint64_t interrupted_cs) {
         }
     }
 
+    /* ---- OUT OF BUDGET, AND NOTHING ELSE TO RUN (step 4a) ------------------
+     *
+     * "Keep running cur" below is right when cur may run and nobody else wants
+     * the CPU. It is wrong when cur's context gives it no time here: a task
+     * bound to a context with no slack right, its budget spent, would otherwise
+     * run on for as long as the CPU had nothing else to do, which is exactly the
+     * time it was not given. So it is switched away from like a task that
+     * blocked, its frame saved and its claim released, and this CPU idles. It is
+     * chosen again when its context refills: by this CPU's next choice, or, if
+     * this CPU has stopped its timer, after sched_wake_tickless kicks it. */
+    if (next < 0 && !cur_dead && ring3 && cur > 0 && cur < g_max_tasks &&
+        sc_eligible(cur, cpu, sched_clock_us()) == SC_RUN_NONE) {
+        tasks[cur].saved_ksp    = frame_rsp;
+        tasks[cur].runnable_ctx = 1;
+        sched_release_outgoing(cpu, cur);
+        uint64_t idle = enter_cpu_idle(cpu);
+        sched_raw_unlock();
+        KSTACK_WIDEN(cpu);
+        return idle;
+    }
     if (next < 0) { sched_raw_unlock(); return frame_rsp; }   /* keep running cur */
 
     /* Save + release the outgoing task if it was a real user task in ring 3. A
@@ -3470,6 +4002,7 @@ extern void ap_idle_loop(void);               /* smp.c */
  * pinned stress harness from 24/24 to 13/20. See the note at task_running_cpu[];
  * a stale claim is a symptom to diagnose, never a value to correct. */
 static uint64_t enter_cpu_idle(int cpu) {
+    sc_account_idle(cpu);              /* idle time is charged to nobody */
     uint8_t *top = ap_idle_stack_top(cpu);
     struct interrupt_frame64 *f =
         (struct interrupt_frame64 *)(void *)(top - sizeof(struct interrupt_frame64));
@@ -4079,6 +4612,22 @@ uint64_t sched_yield_switch(int cur, uint64_t frame_rsp) {
     int cpu = this_cpu();
 #endif
     int next = sched_pick_after(cur, 0);
+#ifdef SMP
+    /* Out of budget with nothing else to run (step 4a): idle rather than go on
+     * running cur on time it was not given, exactly as preempt_on_tick does.
+     * Reached through a yield, and through sched_budget_resched_take when a tick
+     * found cur out of budget in the kernel. */
+    if (next < 0 && tasks[cur].state != 0 &&
+        sc_eligible(cur, cpu, sched_clock_us()) == SC_RUN_NONE) {
+        tasks[cur].saved_ksp    = frame_rsp;
+        tasks[cur].runnable_ctx = 1;
+        sched_release_outgoing(cpu, cur);
+        uint64_t idle = enter_cpu_idle(cpu);
+        sched_raw_unlock();
+        KSTACK_WIDEN(cpu);
+        return idle;
+    }
+#endif
     if (next < 0) {
 #ifdef SMP
         sched_raw_unlock();

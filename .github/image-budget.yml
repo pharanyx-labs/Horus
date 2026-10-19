@@ -83,4 +83,10 @@
 #   26,624 (16 bytes a slot) and gc_fr_marks 256 -> 1,664, +23,936, which the
 #   section's page rounding makes 24 KiB. Measured with nm against the build
 #   without the change.
-bss_bytes: 6971392
+# 2026-10-17: 6,979,584 bytes (+8,192), for ROADMAP 1.8 step 4a, scheduling
+#   contexts: dyn_scs 4,096 (the index table of carved contexts, 16 bytes a
+#   slot, MAX_TASKS of them), sc_roots 448 (one root per CPU), gc_sc_marks 256,
+#   and the per-CPU accounting stamps sc_stamp_us 64, sc_stamp_idx 32 and
+#   sc_cpu_up 8, +4,904, which the section's page rounding makes 8 KiB. The
+#   contexts themselves are untyped memory. Measured with nm.
+bss_bytes: 6979584

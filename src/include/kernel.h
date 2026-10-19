@@ -687,6 +687,13 @@ static inline int reply_ep_for_task(int tid) {
  * dynamic capability now cannot land in a slot something else is entitled to
  * fill, by construction. 24 to 63 are the slots programs choose for themselves,
  * and the shared libc starts at CAPSLOT_LIBC_FIRST. */
+/* init alone: the root scheduling context of CPU c is installed at
+ * CAPSLOT_SCHED_ROOT_FIRST + c, for each CPU that schedules (step 4a). The top
+ * MAX_CPUS slots of the dynamic range, below the shared libc's: 24 to 63 are a
+ * program's own and hvfs's pool, and a first-free allocation from
+ * CAPSLOT_DYNAMIC_FIRST passes over an occupied slot. No other task is given a
+ * root. */
+#define CAPSLOT_SCHED_ROOT_FIRST 120
 #define CAPSLOT_DYNAMIC_FIRST 64
 /* What the allocations use: CAPSLOT_DYNAMIC_FIRST, except under the arm. */
 #ifndef CAP_DYNAMIC_FLOOR_LOW
@@ -969,7 +976,97 @@ struct notification *notification_by_index(uint32_t idx);
 #define KOBJ_REVOKE_SPACES      6
 #define KOBJ_TASK_RUNNING_CPU   7
 #define KOBJ_KSTACK_INFLIGHT    8
+/* A scheduling context (struct sched_context). Above KOBJ_TYPE_MAX so SYS_RETYPE
+ * cannot make one: a context with no share is no object at all, and the only way
+ * to give it a share is to take it from a parent, so SYS_SCHED_SPLIT is the one
+ * constructor and it carves the memory and the share in one step. */
+#define KOBJ_SCHED_CONTEXT      9
 #define KOBJ_TYPE_MAX           4
+
+/* ---- Scheduling contexts (docs/design/scheduler.md 3.1, step 4a) ----------
+ *
+ * A context holds a SHARE of one CPU, in parts per million, and spends it as a
+ * budget per period. A split moves share from a parent to a child; nothing else
+ * ever creates share, so a CPU's contexts never hold more than its root's
+ * million. That sum is the property the Kani proof over rust_sc_split states.
+ *
+ * Time is accounted in microseconds, measured with the TSC between the moment a
+ * CPU chooses a task and the moment it chooses again, and charged only by the
+ * CPU the context belongs to. Enforcement is at the tick until step 3b brings
+ * deadline timers: a task can overrun by up to one tick, and the overrun is
+ * carried as debt into the next period, so over many periods a context gets its
+ * budget and no more. Sampling at the tick instead would let a task that yields
+ * just before each tick run for nothing.
+ *
+ * The roots are `.bss`, one per CPU; every other context is untyped memory,
+ * named by an index table like the retyped endpoints. Every field is read and
+ * written under the scheduler lock. */
+#define SC_PPM_WHOLE            1000000u      /* a whole CPU */
+#define SC_MIN_PERIOD_US        10000u        /* one tick, until step 3b */
+#define SC_MAX_PERIOD_US        10000000u     /* 10 s: keeps every product in 64 bits */
+#define SC_ROOT_PERIOD_US       100000u       /* a root's period: 100 ms, ten ticks */
+#define SC_FLAG_SLACK           0x1u          /* its tasks may run as slack (design 3.1, decision 8) */
+#define SC_FLAG_ROOT            0x2u          /* a per-CPU root: never destroyed */
+#define MAX_DYN_SCHED_CONTEXTS  MAX_TASKS
+#define SC_ROOT_BASE            1u
+#define DYN_SC_BASE             (SC_ROOT_BASE + MAX_CPUS)
+#define SC_INDEX_MAX            (DYN_SC_BASE + MAX_DYN_SCHED_CONTEXTS)
+
+struct sched_context {
+    uint32_t live;          /* 1 while the object exists; scrubbed to 0 on destroy */
+    int32_t  cpu;           /* the CPU it belongs to, fixed when it is made */
+    uint32_t share_ppm;     /* the part of its CPU it holds and has not split off */
+    uint32_t period_us;
+    uint32_t flags;         /* SC_FLAG_* */
+    uint32_t parent;        /* index of the context it was split from; 0 for a root */
+    int64_t  remaining_us;  /* left in this period; negative = debt from an overrun */
+    uint64_t period_start_us;
+    uint64_t consumed_us;   /* everything ever charged, for SYS_SCHED_INFO */
+    int32_t  charged_cpu;   /* the CPU that last charged it, for the S152 audit */
+    uint32_t pad;
+};
+
+/* A context's budget per period: its share of its period, rounded down, so a
+ * context is never given more than the share it holds. */
+static inline uint64_t sc_budget_us(const struct sched_context *sc) {
+    return ((uint64_t)sc->share_ppm * sc->period_us) / SC_PPM_WHOLE;
+}
+
+/* What SYS_SCHED_INFO copies out. MUST stay byte-identical to the struct of the
+ * same name in include/syscall.h. */
+struct sched_info {
+    uint32_t cpu;
+    uint32_t flags;
+    uint32_t share_ppm;
+    uint32_t period_us;
+    uint64_t budget_us;
+    int64_t  remaining_us;
+    uint64_t consumed_us;
+};
+
+struct sched_context *sc_by_index(uint32_t idx);
+/* untyped.c: carve the memory of a context from region `untyped_index`, or 0. */
+struct sched_context *sc_alloc(uint32_t untyped_index, uint32_t *out_index);
+/* scheduler.c, called by untyped.c's collector under the untyped lock: give a
+ * dying context's share back to its parent and unbind every task bound to it. */
+void sched_context_destroyed(uint32_t idx, struct sched_context *sc);
+void sched_contexts_init(void);
+int  sched_split(uint32_t parent_slot, uint32_t untyped_slot, uint32_t dest_slot,
+                 uint32_t budget_us, uint32_t period_us, uint32_t flags);
+/* scheduler.c: the locked halves, called once the capabilities are checked. */
+int  sched_carve(uint32_t parent_idx, struct sched_context *child,
+                 uint32_t budget_us, uint32_t period_us, uint32_t flags);
+int  sched_bind(int target, uint32_t idx);
+int  sched_info_index(uint32_t idx, struct sched_info *out);
+uint32_t sched_root_index(int cpu);
+int  sched_cpu_schedules(int cpu);
+/* idt.c, after a system call: 1 if a tick found the caller out of budget while
+ * it was in the kernel (and clears the mark), so it is switched away from. */
+int  sched_budget_resched_take(int cur);
+/* rust/src/sched.rs: the split arithmetic, proved by Kani. */
+int32_t rust_sc_split(uint32_t parent_share, uint32_t budget_us, uint32_t period_us,
+                      uint32_t *out_parent, uint32_t *out_child);
+uint32_t rust_sc_reclaim(uint32_t parent_share, uint32_t child_share);
 
 /* ---- Frame objects (roadmap 2.1, audit finding F-2.1) ---------------------
  *
@@ -1402,6 +1499,12 @@ void users_init(void);
 #define SYS_IPC_CALL_CAP     118   /* (ep_slot, recv_slot, msg, len, reply_buf, carry_slot) -> reply length; SYS_IPC_CALL, naming an EMPTY slot for a reply-minted capability and optionally presenting one more capability to the same endpoint. IPC_NO_CAP for either means none. */
 #define SYS_IPC_INVOKER      119   /* (ep_slot, struct ipc_invoker *) -> 0; the token and rights of the capability the last received message came through, and of a carried one. Needs READ (the receive right) on ep_slot. */
 #define SYS_FS_STORE_KIND    122   /* (void) -> FS_STORE_EPHEMERAL or FS_STORE_PERSISTENT; which kind of store the object store is serving, so fs_server can choose its policy from the store it serves (docs/design/filesystem.md §6.4). CAP_ENCRYPTED_STORAGE + READ at CAPSLOT_AUDIT: the holder already reads every block of that store. SYS_ERR_INVAL when no store is mounted. */
+/* Scheduling contexts (docs/design/scheduler.md 3.1, step 4a). Authority is the
+ * CAP_SCHED_CONTEXT the caller names, so each is SC_NONE in the dispatch table
+ * and resolved inside, as SYS_RETYPE resolves its untyped. */
+#define SYS_SCHED_SPLIT      123   /* (parent_slot, untyped_slot, dest_slot, budget_us, period_us, flags) -> 0; carve a child context from the parent's share, its memory from the untyped (parent WRITE, untyped WRITE). The child's capability is derived from the parent's, so revoking the parent revokes it. */
+#define SYS_SCHED_BIND       124   /* (tid, ctx_slot) -> 0; run task tid on the context (CAP_TCB to tid with WRITE, context WRITE). */
+#define SYS_SCHED_INFO       125   /* (ctx_slot, struct sched_info *) -> 0; what the context holds and has left (context READ). */
 #define SYS_MEM_SEAL         121   /* (addr, len) -> 0; make pages of the caller's own image read-only for good: WRITE and copy-on-write cleared, the page marked sealed so no break, fork or device mapping can make it writable again. Only drops rights, so no capability gates it; bounded to [image_base, image_end), page-aligned, all or nothing. For the ring-3 linker's RELRO (docs/design/shared-libc.md §9). */
 #define SYS_IPC_REPLY_CAP    120   /* (req_slot, msg, len, rights, token) -> 0; SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with that capability's. Refused = nothing delivered, reply right kept. */
 #define SYS_STORAGE_DEVICE   113   /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT). An index past the end is REFUSED rather than clamped: a survey that answered about a different disk would be read as a description of the disk about to be erased. */
@@ -1709,6 +1812,21 @@ struct boot_module_info {
  * the store's contents: an installer formats a volume and never reads the one it
  * replaced. The two capabilities are disjoint on purpose. */
 #define CAP_STORAGE_FORMAT      19
+
+/* CAP_SCHED_CONTEXT: CPU time as a capability (docs/design/scheduler.md 3.1,
+ * step 4a). Names one scheduling context: a share of one CPU, a budget and a
+ * period. A task runs only on time a context it is bound to grants, so the
+ * authority to run is held and passed on like any other, and only shrinks.
+ *
+ *   READ   SYS_SCHED_INFO: what the context holds and has left
+ *   WRITE  SYS_SCHED_SPLIT carves a child out of it; SYS_SCHED_BIND binds a
+ *          task to it (with a CAP_TCB to that task carrying WRITE)
+ *   GRANT, MINT, REVOKE as for every other capability.
+ *
+ * The object is reached by index (sc_by_index): 1..MAX_CPUS are the per-CPU
+ * roots, which only init is handed; DYN_SC_BASE and above are contexts carved
+ * from a caller's untyped by SYS_SCHED_SPLIT. */
+#define CAP_SCHED_CONTEXT       20
 
 #define CAP_RIGHT_READ          (1u << 0)
 #define CAP_RIGHT_WRITE         (1u << 1)
@@ -2090,6 +2208,12 @@ typedef struct tcb {
      * under SCHED_INVARIANTS and SPAWN_WINDOW_WIDEN (S150): no CPU may choose a
      * task that is still being built. Was the last byte of padding. */
     uint8_t  spawn_building;
+    /* The scheduling context this task runs on (step 4a), as an index for
+     * sc_by_index, or 0 for none. Inherited from the creating task by
+     * create_task, changed by SYS_SCHED_BIND, and cleared when the context is
+     * destroyed: a task bound to nothing is never chosen. Read and written
+     * under the scheduler lock. */
+    uint32_t sc_index;
 } tcb_t;
 
 /* The task table is carved from the kernel's untyped reserve, and the reserve is
@@ -3043,6 +3167,9 @@ _Static_assert(CAPSLOT_DYNAMIC_FIRST > CAPSLOT_STORAGE_FORMAT &&
                "a dynamic capability could land in a well-known slot");
 _Static_assert(CAPSLOT_DYNAMIC_FIRST < CAPSLOT_LIBC_FIRST,
                "dynamic capabilities would start inside the shared libc's slots");
+_Static_assert(CAPSLOT_SCHED_ROOT_FIRST >= CAPSLOT_DYNAMIC_FIRST &&
+               CAPSLOT_SCHED_ROOT_FIRST + MAX_CPUS <= CAPSLOT_LIBC_FIRST,
+               "init's root scheduling contexts must sit between the dynamic floor and the libc");
 
 /* The shipped endowment (docs/design/shared-libc.md §3 to §5). */
 int  user_map_private_copy(uint32_t task_id, uint64_t vaddr, const uint8_t *src);
@@ -3211,6 +3338,12 @@ bool cap_install_object_first_free(uint32_t min_slot, uint32_t type, uint64_t ob
  * SYS_RETYPE to name a newly created kernel object. */
 bool cap_install_object(uint32_t dest_slot, uint32_t type, uint64_t object,
                         uint32_t rights, uint64_t badge);
+/* As cap_install_object, for an object made from the capability at `src_slot`,
+ * which must still hold `src_serial` (checked under the install's cap_lock): the
+ * new capability is its child (badge = src_serial), with its rights at most.
+ * Used by SYS_SCHED_SPLIT. */
+bool cap_install_derived_object(uint32_t dest_slot, uint32_t src_slot, uint64_t src_serial,
+                                uint32_t src_type, uint64_t object, uint32_t rights);
 
 /* Drop a capability the current task holds and return its budget. The
  * counterpart to cap_install_object: caps_in_use is incremented on NULL ->

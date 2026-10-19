@@ -313,7 +313,9 @@ until another CPU's tick wakes it (#585). Under TCG emulation more cores are slo
 hardware. Each supported CPU costs about 104 KiB of `.bss` whether present or not, so beyond about
 16 the per-CPU blocks would have to be allocated at boot. The scheduler, capability, IPC, spawn,
 page and storage locks are each global, and a storage call holds the storage layer for the whole
-call (S146), so beyond eight to sixteen cores extra CPUs mostly wait.
+call (S146), so beyond eight to sixteen cores extra CPUs mostly wait. Every revoke and every task
+exit holds `cap_lock` for a whole sweep of the capability graph (S151): 29 µs at the median of 40
+sweeps in a session and 236 µs at the most, under KVM (2026-10-17).
 The SMP race gates run at four CPUs; `smoke-smp-topology` covers bring-up at eight. The design that
 replaces this is [`design/scheduler.md`](design/scheduler.md) (ROADMAP 1.8).
 
@@ -537,6 +539,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.38 | [HORUS-20261015-03] | The shell lent the keyboard from the slot holding its session capability, so the first program a login ran destroyed it; logout ended nothing and the next login on that console walked by the previous one's root, a standard user by root's (S147) | 2026-10-15, #579 |
 | 1.39 | [HORUS-20261015-04] | The shell held `CAP_USER`, the kernel log, `CAP_DEBUG` and the object store's capability for the whole boot, so in every login; only its own uid check kept a standard account from them. `SYS_SUDO` took the caller's own password to a uid-0 spawn, which no armed image could reach. Administration is now lent to the administrator's session and taken back at logout, and `SYS_SUDO` is withdrawn (S149) | 2026-10-15, #582 |
 | 1.40 | [HORUS-20261016-01] | A spawned child could run before its supervisor resumed it: the spawn path published the child's frame and retracted it a line later, and a CPU choosing in between ran it with a half-populated cspace. `smoke-installer-sd-smp` failed 3 boots in 50 on `main` because the shell's watcher ran, found nothing granted and exited, so `init` waited on the shell directly and no login got a filesystem session (S150) | 2026-10-16, #586 |
+| 1.41 | [HORUS-20261017-01] | A retyped object could be collected before the capability naming it was installed: `SYS_RETYPE` carved it, released the untyped lock and waited for `cap_lock`, while a revoke on another CPU ran the collector under that lock, found the object unnamed and freed its index; the capability then named a freed index that the next retype, by any task, reused, so a task could come to map another task's frame. Found by review on 2026-10-17; the control arm reproduces it on the first round. Teardown also ran the collector without `cap_lock`, so it could read a capability mid-write (S151) | 2026-10-17, #591 |
 | 2.0 | [C-3] | Spinlock interrupt state was global | 2026-08-13, #135 |
 | 2.1 | [I-2] | Heap syscalls truncated 64-bit arithmetic | 2026-08-13, #145 |
 | 2.2 | [I-5] | Endpoints were single-slot mailboxes | 2026-08-10, #120 |

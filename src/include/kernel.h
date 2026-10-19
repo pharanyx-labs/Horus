@@ -1177,7 +1177,14 @@ int untyped_info(uint32_t untyped_slot, struct untyped_info *out);
  * C and Rust halves of the capability implementation, and a single missed site is
  * either a leak or a use-after-free. Reachability is computed from the same graph
  * the security argument is stated over, so it cannot disagree with it. */
-void kobj_gc(void);
+void kobj_gc(void);              /* takes cap_lock; for a caller holding no lock */
+void kobj_gc_locked(void);       /* the caller holds cap_lock; halts unless THIS CPU does */
+/* A new object is collectable only once a capability names it (untyped.c, NAMED
+ * BEFORE COLLECTABLE): the install functions call kobj_note_named under cap_lock. */
+void kobj_note_named(uint32_t cap_type, uint64_t object);
+void kobj_unpin(uint32_t kobj_type, uint32_t idx);
+/* Teardown's capability step: empty the cspace and sweep, in one cap_lock section. */
+void cap_release_cspace_and_collect(int id);
 
 /* Live retyped-object counts, for the self-test to assert destruction actually
  * happened rather than assuming it. */
@@ -2408,8 +2415,10 @@ extern uint32_t kb_head;
 extern uint32_t kb_tail;
 
 typedef struct spinlock {
-    volatile uint32_t locked;
+    volatile uint32_t locked;   /* 0 free; held: the holding CPU's index + 1 (spin_lock) */
 } spinlock_t;
+/* Does THIS CPU hold `lock`? Exact for every lock taken with spin_lock. */
+int spin_held_here(const spinlock_t *lock);
 
 extern spinlock_t storage_lock;
 extern spinlock_t cap_lock;

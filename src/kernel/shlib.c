@@ -215,6 +215,12 @@ int shlib_init(const uint8_t *elf, uint64_t len) {
         uint32_t idx = 0;
         void *mem = kobj_alloc(UNTYPED_KERNEL, KOBJ_FRAME, 1, &idx);
         if (!mem || idx == 0) return -1;
+        /* Born pinned (untyped.c, NAMED BEFORE COLLECTABLE), and unpinned here:
+         * the library's frames are kept by being roots of the sweep
+         * (mark_reachable), for the life of the boot. That is the mechanism
+         * SHLIB_TEMPLATE_UNPINNED takes away, and a pin kept as well would hide
+         * the arm's defect behind a second, unrelated keep-alive. */
+        kobj_unpin(KOBJ_FRAME, idx);
         shlib_text_frames[p] = idx;
         shlib_text_count = p + 1;
         uint8_t *b = (uint8_t *)mem;

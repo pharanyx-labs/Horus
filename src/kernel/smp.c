@@ -984,6 +984,10 @@ void smp_bringup(void) {
      * FRAMETEST: PASS <n> checks from ring 3. Falsified by
      * FRAME_INDEX_UNCHECKED=1 and FRAME_RIGHTS_UNCHECKED=1. */
     { extern void frame_selftest(void); frame_selftest(); }
+#elif defined(RETYPE_RACE_SELFTEST)
+    /* Gated: a retyped object is never collected before it is named
+     * (RETYPETEST: PASS, S151). */
+    { extern void retype_race_selftest(void); retype_race_selftest(); }
 #elif defined(FSCAP_SELFTEST)
     /* Gated: phase 1b step 1, the real fs_server answering requests through
      * tokened capabilities (FSCAPTEST: PASS). docs/design/filesystem.md §5. */

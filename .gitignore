@@ -187,6 +187,7 @@ soak-evidence/
 # rejected -- which is the only run anyone needs it for. A glob, so the control
 # arm's own directory (-control) is covered by the same line.
 .boot-media-evidence*/
+.retype-race-evidence/
 .ahci-evidence*/
 .sdhci-evidence*/
 .boot-media-control.out

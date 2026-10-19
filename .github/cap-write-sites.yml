@@ -99,9 +99,11 @@ sites:
       the caller can release what the capability owned. A reduction of authority,
       never a widening, which is why it accepts a pid where the installs do not.
   - file: src/kernel/capability.c
-    function: cap_release_cspace
+    function: release_cspace
     status: locked
-    reason: Empties a dead task's cspace at teardown under cap_lock.
+    reason: >
+      Empties a dead task's cspace at teardown under cap_lock, and with `collect`
+      sweeps in the same section (cap_release_cspace, cap_release_cspace_and_collect).
   - file: src/kernel/capability.c
     function: cap_mint_untyped_child
     status: locked

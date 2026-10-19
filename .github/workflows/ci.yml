@@ -3881,6 +3881,16 @@ jobs:
         run: make smoke-frame-budget
       - name: Control arm, the fixed 256-entry table fills with the budget unspent
         run: make smoke-frame-budget-control
+      # S151: a retyped object is never collected before its capability is
+      # installed, and the collector always holds cap_lock. Each retype's window
+      # is held open until a sweep on another CPU has crossed it; a boot in
+      # which none did is retried, never scored (tools/retype_race_boot.sh).
+      - name: No retyped object is collected before a capability names it
+        run: make smoke-retype-race
+      - name: Control arm, objects born collectable are taken inside the window
+        run: make smoke-retype-race-control
+      - name: Control arm, a teardown that sweeps without cap_lock is halted by name
+        run: make smoke-retype-race-gc-control
 
   devcap:
     name: "A device capability names one device, and reaches only that device"

@@ -62,6 +62,19 @@ nesting:
       paths are still correct -- exactly one of them nests -- but the reason
       given in the second is not.
   - outer: cap_lock
+    inner: untyped_lock
+    reason: >-
+      The object collector reads every cspace and must see none mid-write, so it
+      runs with cap_lock held and takes the untyped lock to destroy what nothing
+      names. cap_revoke calls kobj_gc_locked under the cap_lock it already holds;
+      task teardown empties the cspace and sweeps inside one cap_lock section
+      (cap_release_cspace_and_collect); kobj_gc takes cap_lock first for the
+      self-tests. kobj_gc_locked halts unless this CPU holds cap_lock. This order was always cap_revoke's and is stated in
+      docs/ARCHITECTURE.md; until 2026-10-17 teardown swept with no cap_lock at
+      all, which is why the checker never saw the edge. Nothing holding the
+      untyped lock takes cap_lock: untyped_retype and untyped_split release it
+      before they install a capability.
+  - outer: cap_lock
     inner: pipe_lock
     reason: >-
       A pipe end is a capability and a count of ends in the pipe table, and the

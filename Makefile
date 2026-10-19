@@ -225,7 +225,8 @@ DEFECT_FLAGS = \
 	RUNQ_UNHOMED RUNQ_NO_STEAL \
 	TICKLESS_PROBE TICKLESS_OFF TICKLESS_NO_KICK \
 	SPAWN_PUBLISH_EARLY SPAWN_WINDOW_WIDEN \
-	FRAME_TABLE_FIXED
+	FRAME_TABLE_FIXED \
+	RETYPE_RACE_SELFTEST KOBJ_UNPINNED GC_TEARDOWN_UNLOCKED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -3558,6 +3559,27 @@ ASFLAGS += -DPASSWD_PROBE
 PASSWD_PROBE_DEP = userspace/passwdprobe.bin
 endif
 
+# A retyped object is never collected before it is named (untyped.c, NAMED BEFORE
+# COLLECTABLE; S151). RETYPE_RACE_SELFTEST=1 (instrument) boots retyperace and
+# retyperevoker and holds each of retyperace's retype windows open until a sweep
+# has crossed it, 30 ms to 2 s (RETYPE_WINDOW_WIDEN); KOBJ_UNPINNED=1 (defect) makes objects collectable from
+# birth, as before 2026-10-17; GC_TEARDOWN_UNLOCKED=1 (defect) runs teardown's
+# sweep without cap_lock, as before 2026-10-17. See smoke-retype-race.
+RETYPE_RACE_SELFTEST ?= 0
+ifeq ($(RETYPE_RACE_SELFTEST),1)
+CFLAGS  += -DRETYPE_RACE_SELFTEST -DRETYPE_WINDOW_WIDEN
+ASFLAGS += -DRETYPE_RACE_SELFTEST
+RETYPE_RACE_SELFTEST_DEP = userspace/retyperace.bin userspace/retyperevoker.bin
+endif
+KOBJ_UNPINNED ?= 0
+ifeq ($(KOBJ_UNPINNED),1)
+CFLAGS += -DKOBJ_UNPINNED
+endif
+GC_TEARDOWN_UNLOCKED ?= 0
+ifeq ($(GC_TEARDOWN_UNLOCKED),1)
+CFLAGS += -DGC_TEARDOWN_UNLOCKED
+endif
+
 FRAME_SELFTEST ?= 0
 ifeq ($(FRAME_SELFTEST),1)
 CFLAGS  += -DFRAME_SELFTEST
@@ -5260,7 +5282,7 @@ endif
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
 
-src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin userspace/shellwatch.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(ATAD_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(FORMATPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
+src/boot/multiboot.o: userspace/shell.bin userspace/init.bin userspace/hello.bin userspace/captest.bin userspace/fs_server.bin userspace/console_server.bin userspace/installer.bin userspace/shellwatch.bin $(ELF_SELFTEST_DEP) $(ELF64_SELFTEST_DEP) $(ASLR_SELFTEST_DEP) $(PREEMPT_SELFTEST_DEP) $(SIGNAL_SELFTEST_DEP) $(TSD_SELFTEST_DEP) $(FS_SELFTEST_DEP) $(INIT_FS_SELFTEST_DEP) $(INIT_PROVISION_SELFTEST_DEP) $(NEWLIB_SELFTEST_DEP) $(NOTIFY_SELFTEST_DEP) $(KLOG_FORGE_SELFTEST_DEP) $(MAPPHYS_SELFTEST_DEP) $(DEVCAP_SELFTEST_DEP) $(NET_SELFTEST_DEP) $(NVME_SELFTEST_DEP) $(SDHCID_SELFTEST_DEP) $(ATAD_SELFTEST_DEP) $(BLKPROTO_SELFTEST_DEP) $(SHLIB_SELFTEST_DEP) $(SHLIBC_SELFTEST_DEP) $(IOPORT_SELFTEST_DEP) $(IRQ_SELFTEST_DEP) $(CONSOLE_SELFTEST_DEP) $(RECVBLOCK_SELFTEST_DEP) $(TOKEN_SELFTEST_DEP) $(FSCAP_SELFTEST_DEP) $(FSCAPPOSIX_SELFTEST_DEP) $(LIBHORUS_SELFTEST_DEP) $(FRAME_SELFTEST_DEP) $(RETYPE_RACE_SELFTEST_DEP) $(PASSWD_PROBE_DEP) $(AUDITPROBE_DEP) $(BLOCKPROBE_DEP) $(EXECPROBE_DEP) $(FORMATPROBE_DEP) $(VFS_SELFTEST_DEP) $(COW_SELFTEST_DEP) $(FORK_SELFTEST_DEP) $(FORKEXEC_SELFTEST_DEP) $(PIPEREVOKE_SELFTEST_DEP) $(FPU_SELFTEST_DEP) $(AP_TRAMPOLINE_DEP) $(SMP_SELFTEST_DEP) $(PROC_SELFTEST_DEP) $(TUI_SELFTEST_DEP)
 
 # AP startup trampoline: 16-bit real-mode code assembled with -m32 (the .code16
 # directive emits the right encodings) and linked flat at its SIPI load address
@@ -6860,7 +6882,7 @@ $(SHIPPED_PIE_BINS): userspace/%.bin: userspace/%.stripped.elf tools/mkheadered
 # PIE (not flat) because it dereferences .rodata string literals, which on 32-bit
 # -fPIE go through the GOT and only resolve once try_elf_load applies the
 # R_386_RELATIVE relocations — the flat load path does not.
-PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/atad.bin userspace/blktest.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/formatprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
+PIE_TEST_BINS = userspace/fsclient.bin userspace/proctest.bin userspace/exectest.bin userspace/grantee.bin userspace/sigtarget.bin userspace/faulter.bin userspace/kfaulter.bin userspace/waiter.bin userspace/exitprobe.bin userspace/slotheir.bin userspace/killspin.bin userspace/replyprobe.bin userspace/sigwaiter.bin userspace/argtest.bin userspace/notifytest.bin userspace/cowtest.bin userspace/forktest.bin userspace/forkexectest.bin userspace/forkexecee.bin userspace/piperevoketest.bin userspace/piperevokee.bin userspace/coninee.bin userspace/fputest.bin userspace/fpupeer.bin userspace/mapphystest.bin userspace/devcaptest.bin userspace/netd.bin userspace/nvmed.bin userspace/sdhcid.bin userspace/atad.bin userspace/blktest.bin userspace/shlibtest.bin userspace/shlibpeer.bin userspace/ioporttest.bin userspace/irqtest.bin userspace/consoletest.bin userspace/recvblocksrv.bin userspace/recvblockcli.bin userspace/tokensrv.bin userspace/tokencli.bin userspace/klogtest.bin userspace/libhorustest.bin userspace/frametest.bin userspace/framepeer.bin userspace/retyperace.bin userspace/retyperevoker.bin userspace/passwdprobe.bin userspace/auditprobe.bin userspace/blockprobe.bin userspace/formatprobe.bin userspace/dev_server.bin userspace/vfstest.bin userspace/libctest.bin userspace/hello_shared.bin userspace/shlibdata.bin userspace/shlibprobe.bin userspace/tuitest.bin userspace/execprobe.bin userspace/execimgee.bin userspace/sealprobe.bin userspace/dynstale.bin userspace/dyncanary.bin userspace/hello_dyn.bin userspace/swaphog.bin userspace/fscaptest.bin
 $(PIE_TEST_BINS): userspace/%.bin: userspace/%.pie.elf tools/mkheadered
 	@./tools/mkheadered $< $@ "$*"
 
@@ -14940,6 +14962,45 @@ smoke-captoken-unmasked-control:
 	@SMP_CPUS=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='TOKENTEST: FAIL reply-mint-escalated' \
 		tools/smoke_test.sh horus.iso
+
+# A retyped object is never collected before it is named (S151). retyperace
+# retypes a frame, an endpoint and a notification twelve times, each with the gap
+# before its capability is installed held open until a sweep on the other CPU has
+# crossed it (30 ms to 2 s), and uses each one; retyperevoker mints and revokes in
+# a loop, each revoke a sweep. Then retyperace kills the revoker and waits for
+# it, so a teardown sweep runs before the verdict. A boot in which a window saw
+# no sweep is INCONCLUSIVE and retried (tools/retype_race_boot.sh).
+.PHONY: smoke-retype-race
+smoke-retype-race:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RETYPE_RACE_SELFTEST=1
+	@$(MAKE) --no-print-directory RETYPE_RACE_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='RETYPETEST: PASS' FAIL_MARKER='RETYPETEST: FAIL' \
+		tools/retype_race_boot.sh horus.iso
+
+# Control arm: objects born collectable, as before 2026-10-17. The collector
+# takes a retyped object inside its window and the retyper cannot use it.
+.PHONY: smoke-retype-race-control
+smoke-retype-race-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RETYPE_RACE_SELFTEST=1 KOBJ_UNPINNED=1
+	@$(MAKE) --no-print-directory RETYPE_RACE_SELFTEST=1 KOBJ_UNPINNED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='RETYPETEST: FAIL retyped-object-collected-before-named' \
+		tools/retype_race_boot.sh horus.iso
+
+# Control arm: teardown sweeps without cap_lock, as before 2026-10-17. The
+# revoker's death, which retyperace causes before its verdict, is a teardown, and
+# the collector must halt by name before RETYPETEST: PASS can be printed.
+.PHONY: smoke-retype-race-gc-control
+smoke-retype-race-gc-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory RETYPE_RACE_SELFTEST=1 GC_TEARDOWN_UNLOCKED=1
+	@$(MAKE) --no-print-directory RETYPE_RACE_SELFTEST=1 GC_TEARDOWN_UNLOCKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		EXPECT_FAULT='PANIC: the object collector ran without cap_lock' \
+		tools/retype_race_boot.sh horus.iso
 
 .PHONY: smoke-sched-invariants
 smoke-sched-invariants:

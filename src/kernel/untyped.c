@@ -52,11 +52,21 @@
  */
 #include "kernel.h"
 #include "errno.h"
+#include "syscall_internal.h"   /* kstrcmp */
 
 /* Set by paging_init to PHYS_KVA(...) of the reserved arena. */
 uint8_t *g_untyped_arena = 0;
 
 struct untyped untypeds[MAX_UNTYPED];
+
+/* What a new indexed object's pin starts at (NAMED BEFORE COLLECTABLE, at
+ * kobj_gc_locked). KOBJ_UNPINNED=1 is the control arm, never shipped: objects
+ * are born collectable, as they were until 2026-10-17. */
+#ifndef KOBJ_UNPINNED
+#define KOBJ_PIN_AT_ALLOC 1
+#else
+#define KOBJ_PIN_AT_ALLOC 0
+#endif
 
 /* Descriptor for one retyped endpoint / notification / frame. These ARE `.bss`, and
  * deliberately so: what they cost is one pointer per addressable object, while
@@ -66,7 +76,11 @@ struct untyped untypeds[MAX_UNTYPED];
  * second is a security property. */
 struct kobj_slot {
     void    *mem;        /* into the arena; NULL == this index holds no object */
-    uint32_t untyped;    /* the region it was carved from (for accounting)     */
+    uint16_t untyped;    /* the region it was carved from (for accounting)     */
+    /* 1 from kobj_alloc until its creator has NAMED the object (a capability
+     * installed, or a mapping that holds it), and the collector never destroys
+     * a pinned object. See NAMED BEFORE COLLECTABLE below. */
+    uint16_t pinned;
     /* FRAMES ONLY: how many contiguous pages this object spans (roadmap 2.1).
      * Endpoints and notifications leave it 0 and never read it; the field is
      * shared rather than given its own parallel array because a parallel array
@@ -80,6 +94,7 @@ static struct kobj_slot dyn_notifs[MAX_DYN_NOTIFICATIONS];
 /* Frames (roadmap 2.1). Indexed by (object - DYN_FRAME_BASE), same shape as the
  * two above; `mem` points at a PAGE_SIZE-aligned page in the arena. */
 static struct kobj_slot dyn_frames[MAX_DYN_FRAMES];
+_Static_assert(MAX_UNTYPED <= 0xFFFF, "kobj_slot.untyped is 16 bits");
 
 /* ------------------------------------------------------------------------- *
  *  Locking.
@@ -474,13 +489,15 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t pages,
             e->q[s].sender = -1;
         }
         dyn_eps[idx].mem     = mem;
-        dyn_eps[idx].untyped = untyped_index;
+        dyn_eps[idx].untyped = (uint16_t)untyped_index;
+        dyn_eps[idx].pinned  = KOBJ_PIN_AT_ALLOC;
         if (out_index) *out_index = DYN_EP_BASE + (uint32_t)idx;
     } else if (kobj_type == KOBJ_NOTIFICATION) {
         struct notification *n = (struct notification *)mem;
         n->blocked_waiter = -1;
         dyn_notifs[idx].mem     = mem;
-        dyn_notifs[idx].untyped = untyped_index;
+        dyn_notifs[idx].untyped = (uint16_t)untyped_index;
+        dyn_notifs[idx].pinned  = KOBJ_PIN_AT_ALLOC;
         if (out_index) *out_index = DYN_NOTIF_BASE + (uint32_t)idx;
     } else if (kobj_type == KOBJ_FRAME) {
         /* ---- The permanent reference, and why it is not an optimisation ----
@@ -523,7 +540,8 @@ void *kobj_alloc(uint32_t untyped_index, uint32_t kobj_type, uint32_t pages,
         for (uint32_t pg = 0; pg < pages; pg++)
             frame_pin_refcount(base_phys + (uint64_t)pg * PAGE_SIZE);
         dyn_frames[idx].mem     = mem;
-        dyn_frames[idx].untyped = untyped_index;
+        dyn_frames[idx].untyped = (uint16_t)untyped_index;
+        dyn_frames[idx].pinned  = KOBJ_PIN_AT_ALLOC;
         dyn_frames[idx].pages   = pages;
         if (out_index) *out_index = DYN_FRAME_BASE + (uint32_t)idx;
     } else {
@@ -652,7 +670,8 @@ static void destroy_dyn_endpoint(int i) {
     zero_bytes((uint8_t *)e, sizeof(*e));
     if (dyn_eps[i].untyped < MAX_UNTYPED && untypeds[dyn_eps[i].untyped].objects > 0)
         untypeds[dyn_eps[i].untyped].objects--;
-    dyn_eps[i].mem = 0;
+    dyn_eps[i].mem    = 0;
+    dyn_eps[i].pinned = 0;
 }
 
 static void destroy_dyn_notification(int i) {
@@ -667,7 +686,8 @@ static void destroy_dyn_notification(int i) {
     zero_bytes((uint8_t *)n, sizeof(*n));
     if (dyn_notifs[i].untyped < MAX_UNTYPED && untypeds[dyn_notifs[i].untyped].objects > 0)
         untypeds[dyn_notifs[i].untyped].objects--;
-    dyn_notifs[i].mem = 0;
+    dyn_notifs[i].mem    = 0;
+    dyn_notifs[i].pinned = 0;
 }
 
 /* Release a frame's index, if nothing has it mapped.
@@ -736,8 +756,9 @@ static void destroy_dyn_frame(int i) {
         frame_unpin_refcount(phys + (uint64_t)k * PAGE_SIZE);
     if (dyn_frames[i].untyped < MAX_UNTYPED && untypeds[dyn_frames[i].untyped].objects > 0)
         untypeds[dyn_frames[i].untyped].objects--;
-    dyn_frames[i].mem   = 0;
-    dyn_frames[i].pages = 0;
+    dyn_frames[i].mem    = 0;
+    dyn_frames[i].pages  = 0;
+    dyn_frames[i].pinned = 0;
 }
 
 /* Mark bitmaps. Static rather than on the stack: kobj_gc runs from
@@ -748,16 +769,104 @@ static uint8_t gc_ep_marks[MAX_DYN_ENDPOINTS];
 static uint8_t gc_nt_marks[MAX_DYN_NOTIFICATIONS];
 static uint8_t gc_fr_marks[MAX_DYN_FRAMES];
 
-void kobj_gc(void) {
+/* ---- NAMED BEFORE COLLECTABLE ------------------------------------------------
+ *
+ * An object is created unnamed and named a moment later: untyped_retype carves
+ * it here, drops the untyped lock, and then takes cap_lock to install the
+ * capability that names it. Until 2026-10-17 nothing covered that gap. cap_revoke
+ * runs this collector holding cap_lock, so a revoke on another CPU could sweep in
+ * between, find an object no capability names, destroy it and release its index;
+ * the retype then installed a capability naming the freed index, and the next
+ * retype by ANY task reused it. For a frame that is one task mapping another's
+ * memory. Both sides of the race are reachable by an unprivileged task, which
+ * can retype and revoke as often as it likes (LIMITATIONS 1.41, S151).
+ *
+ * So every indexed object is born pinned (kobj_alloc), the collector passes a
+ * pinned object over, and the pin is cleared BY THE INSTALL that names it:
+ * cap_install_object, cap_install_object_first_free and cap_install_from_root
+ * call kobj_note_named under the same cap_lock as the write, so no creator has
+ * to remember to, and the moment an object becomes collectable is the moment a
+ * capability names it. A creator whose install fails destroys the object
+ * itself. Objects nothing ever names (a self-test's leaked frame) stay pinned;
+ * the shared library's frames are unpinned by shlib_init, because they are kept
+ * by being roots of the sweep and that is what SHLIB_TEMPLATE_UNPINNED tests.
+ * KOBJ_UNPINNED=1 is the control arm: objects are born unpinned, as before, and
+ * make smoke-retype-race must go red. */
+static void unpin_slot(struct kobj_slot *tbl, uint32_t n, uint32_t base, uint64_t idx) {
+    if (idx >= base && idx < (uint64_t)base + n) tbl[idx - base].pinned = 0;
+}
+
+/* The one place a pin is cleared. Range-checked BEFORE the untyped lock, so an
+ * install that names a static endpoint, the legacy slot-3 frame or anything else
+ * outside the retyped ranges costs nothing. */
+void kobj_unpin(uint32_t kobj_type, uint32_t idx) {
+    struct kobj_slot *tbl; uint32_t n, base;
+    if (kobj_type == KOBJ_ENDPOINT)          { tbl = dyn_eps;    n = MAX_DYN_ENDPOINTS;     base = DYN_EP_BASE; }
+    else if (kobj_type == KOBJ_NOTIFICATION) { tbl = dyn_notifs; n = MAX_DYN_NOTIFICATIONS; base = DYN_NOTIF_BASE; }
+    else if (kobj_type == KOBJ_FRAME)        { tbl = dyn_frames; n = MAX_DYN_FRAMES;        base = DYN_FRAME_BASE; }
+    else return;
+    if (idx < base || idx >= base + n) return;
     ut_lock();
+    unpin_slot(tbl, n, base, idx);
+    ut_unlock();
+}
+
+/* Called with cap_lock held, by the install that has just written a capability
+ * of `cap_type` naming `object` (cap_lock -> untyped_lock). */
+void kobj_note_named(uint32_t cap_type, uint64_t object) {
+    if (object > 0xFFFFFFFFull) return;
+    uint32_t kt = cap_type == CAP_ENDPOINT     ? KOBJ_ENDPOINT :
+                  cap_type == CAP_NOTIFICATION ? KOBJ_NOTIFICATION :
+                  cap_type == CAP_FRAME        ? KOBJ_FRAME : 0;
+    if (kt) kobj_unpin(kt, (uint32_t)object);
+}
+
+#ifdef RETYPE_WINDOW_WIDEN
+/* Instrument (make smoke-retype-race): while a widened retype window is open,
+ * count the sweeps that run, so the window can be held until one has. */
+static volatile int      retype_window_open;
+static volatile uint32_t retype_window_sweeps;
+#endif
+
+/* The sweep. The caller holds cap_lock.
+ *
+ * WHY cap_lock, AND WHY CHECKED. The sweep decides an object's fate by reading
+ * every cspace, and a capability is written field by field under cap_lock (every
+ * such write is declared in .github/cap-write-sites.yml and checked by
+ * tools/check_cap_writes.py), so a sweep that holds it never reads one mid-write.
+ * Until 2026-10-17 cap_revoke held it and task_teardown did not. Now every caller
+ * does, and this halts by name unless THIS CPU holds it: a held spinlock's word
+ * names its holder (spin_held_here), so the check is exact and cannot be passed
+ * because some other CPU happens to hold the lock. GC_TEARDOWN_UNLOCKED=1 is the
+ * control arm: teardown sweeps without the lock, as before. */
+void kobj_gc_locked(void) {
+    if (!spin_held_here(&cap_lock)) {
+        kfault_begin(0);
+        kfault_str("\nPANIC: the object collector ran without cap_lock\n");
+        kfault_end(0);
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+    ut_lock();
+#ifdef RETYPE_WINDOW_WIDEN
+    if (retype_window_open) retype_window_sweeps++;
+#endif
     mark_reachable(gc_ep_marks, gc_nt_marks, gc_fr_marks);
     for (int i = 0; i < MAX_DYN_ENDPOINTS; i++)
-        if (dyn_eps[i].mem && !gc_ep_marks[i]) destroy_dyn_endpoint(i);
+        if (dyn_eps[i].mem && !dyn_eps[i].pinned && !gc_ep_marks[i]) destroy_dyn_endpoint(i);
     for (int i = 0; i < MAX_DYN_NOTIFICATIONS; i++)
-        if (dyn_notifs[i].mem && !gc_nt_marks[i]) destroy_dyn_notification(i);
+        if (dyn_notifs[i].mem && !dyn_notifs[i].pinned && !gc_nt_marks[i])
+            destroy_dyn_notification(i);
     for (int i = 0; i < MAX_DYN_FRAMES; i++)
-        if (dyn_frames[i].mem && !gc_fr_marks[i]) destroy_dyn_frame(i);
+        if (dyn_frames[i].mem && !dyn_frames[i].pinned && !gc_fr_marks[i]) destroy_dyn_frame(i);
     ut_unlock();
+}
+
+/* For a caller holding no lock: cap_lock first, as the declared order
+ * cap_lock -> untyped_lock requires. */
+void kobj_gc(void) {
+    spin_lock(&cap_lock);
+    kobj_gc_locked();
+    spin_unlock(&cap_lock);
 }
 
 /* ------------------------------------------------------------------------- *
@@ -1089,6 +1198,26 @@ int untyped_retype(uint32_t untyped_slot, uint32_t kobj_type, uint32_t count,
         uint32_t obj_index = 0;
         void *mem = kobj_alloc(u, kobj_type, pages, &obj_index);
         if (!mem) break;   /* region or name table exhausted: stop, keep what we made */
+#ifdef RETYPE_WINDOW_WIDEN
+        /* Instrument, never shipped (make smoke-retype-race): hold the gap
+         * between making the object and naming it open, for the one task that
+         * asks to be tested, until a sweep on another CPU has run inside it, for
+         * at least 30 ms and at most 2 s. No lock is held here. A window no
+         * sweep crossed in 2 s tested nothing: it is reported as INCONCLUSIVE,
+         * never scored as a pass or a fail, and the harness retries the boot. */
+        if (kstrcmp(tasks[get_current_task()].name, "retyperace") == 0) {
+            retype_window_sweeps = 0;
+            retype_window_open   = 1;
+            uint64_t min_until = kclock_deadline_us(30000);
+            uint64_t max_until = kclock_deadline_us(2000000);
+            while (!kclock_passed(min_until) ||
+                   (retype_window_sweeps == 0 && !kclock_passed(max_until)))
+                __asm__ volatile ("pause");
+            retype_window_open = 0;
+            if (retype_window_sweeps == 0)
+                print("RETYPETEST: INCONCLUSIVE no sweep ran inside a retype window\n");
+        }
+#endif
         if (!cap_install_object(dest_slot + i, cap_type, (uint64_t)obj_index, rights, 0)) {
             /* The capability could not be installed (slot ceiling, authority),
              * so nothing will ever name this object. Drop it now rather than

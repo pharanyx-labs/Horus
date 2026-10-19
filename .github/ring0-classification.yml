@@ -670,7 +670,10 @@
 # embeds, out of the ship build), and terminal.c +3, smp.c +3, idt.c +2 (hooks).
 # CPU time cannot be accounted or enforced from ring 3: the scheduler is the
 # only thing that runs a task, so core.
-core_budget_loc: 12823
+# 2026-10-19: 12823 -> 12831, +8, syscall.c: SYS_SCHED_BIND under the spawn
+# lock (its SCHED_BIND_UNLOCKED arm) and task_tcb_held refusing a check made
+# outside it (S100). Authority over a task is checked in the kernel, so core.
+core_budget_loc: 12831
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

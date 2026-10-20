@@ -1884,6 +1884,43 @@ void kdiag_task_killed(int t, uint64_t vector, uint64_t rip, uint64_t rsp) {
     kfault_end(0);
 }
 
+/* An approved fault the pager could not resolve, in full, on COM3 only. The
+ * one line print() writes for it (idt.c) says that it happened and nothing
+ * else, and on 2026-10-20 that was all CI left of one: a counter in
+ * smoke-sched-budget-tscdl killed with code -2 (the entry was present and not
+ * copy-on-write), 0 in 105 local boots. The address, error code, rip, the entry
+ * the pager would have found and both page-table roots, the one loaded and the
+ * one the pager walks (the task's), are what tell those cases apart. Addresses
+ * of a task's memory go only to COM3, which no ring-3 task reads, never to the
+ * log SYS_DMESG returns. */
+void kdiag_pager_unresolved(int t, uint64_t addr, uint64_t err, uint64_t rip,
+                            uint64_t rsp, int prc) {
+    extern uint64_t paging_pte_peek(uint64_t cr3, uint64_t va, int *level);
+    uint64_t loaded;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(loaded));
+    uint64_t tcr3 = (t > 0 && t < g_max_tasks) ? tasks[t].cr3 : 0;
+    int level;
+    uint64_t pte = paging_pte_peek(tcr3, addr, &level);
+    kfault_begin(0);
+    kdiag_str("[task "); kdiag_num((unsigned)t, 10); kdiag_str(" '");
+    if (t > 0 && t < g_max_tasks)
+        for (unsigned i = 0; i < sizeof(tasks[t].name) && tasks[t].name[i]; i++)
+            kdiag_ch(tasks[t].name[i]);
+    kdiag_str("' killed: the pager could not resolve an approved fault, code -");
+    kdiag_num((uint64_t)(prc < 0 ? -prc : prc), 10);
+    kdiag_str(" addr=0x"); kdiag_num(addr, 16);
+    kdiag_str(" err=0x");  kdiag_num(err, 16);
+    kdiag_str(" rip=0x");  kdiag_num(rip, 16);
+    kdiag_str(" rsp=0x");  kdiag_num(rsp, 16);
+    kdiag_str(" cpu=");    kdiag_num((uint64_t)(this_cpu() < 0 ? 0 : this_cpu()), 10);
+    kdiag_str(" entry=0x"); kdiag_num(pte, 16);
+    kdiag_str(" level=");  kdiag_num((uint64_t)level, 10);
+    kdiag_str(" cr3=0x");  kdiag_num(loaded, 16);
+    kdiag_str(" task-cr3=0x"); kdiag_num(tcr3, 16);
+    kdiag_str("]\n");
+    kfault_end(0);
+}
+
 /* #PF error bits, spelled out. "err=0x11" has cost this project a
  * symbolisation cycle more than once: it is present + instruction fetch at
  * CPL 0 -- the kernel executed a page marked NX -- which is an entirely

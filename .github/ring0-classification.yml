@@ -707,7 +707,12 @@
 # TSC_CLOCK_OFF arms), terminal.c (the TSC value at a microsecond, and the
 # invariant-TSC test). When a CPU stops and starts a task, and what the clock
 # says, are the scheduler's and the clock's alone, so core.
-core_budget_loc: 13237
+# 2026-10-20: 13237 -> 13286, +49, the same PR: an approved page fault the pager
+# could not resolve is now reported in full on COM3 (scheduler.c, the report;
+# paging.c, a read-only walk for the entry it found; idt.c, the call). CI's KVM
+# job killed a task that way once and logged one line with no address, and the
+# fault never reproduced locally. The fault path is core, so its report is.
+core_budget_loc: 13286
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

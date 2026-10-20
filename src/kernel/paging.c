@@ -2861,6 +2861,33 @@ int swap_fault_in(uint64_t *ptv, uint64_t pt_i, uint64_t fault_addr) {
     return 0;
 }
 
+/* The entry that translates `va` in the tree at `cr3`, for a fault report and
+ * nothing else: the PTE, or the huge PDE or PDPTE that maps it, or 0 where a
+ * level above it is absent. `*level` says which: 4 for a PTE, 3 or 2 for a huge
+ * PDPTE or PDE, 0 for absent. Read under page_lock so a concurrent change
+ * cannot tear the walk; it writes nothing. */
+uint64_t paging_pte_peek(uint64_t cr3, uint64_t va, int *level) {
+    *level = 0;
+    if (cr3 == 0 || (cr3 & 0xFFFULL)) return 0;
+    uint64_t r = 0;
+    spin_lock(&page_lock);
+    uint64_t e = ((uint64_t *)PHYS_KVA(cr3))[(va >> 39) & 0x1FF];
+    if (e & PAGE_PRESENT) {
+        e = ((uint64_t *)PHYS_KVA(e & PTE_ADDR_MASK))[(va >> 30) & 0x1FF];
+        if ((e & PAGE_PRESENT) && (e & PAGE_PS)) { r = e; *level = 3; }
+        else if (e & PAGE_PRESENT) {
+            e = ((uint64_t *)PHYS_KVA(e & PTE_ADDR_MASK))[(va >> 21) & 0x1FF];
+            if ((e & PAGE_PRESENT) && (e & PAGE_PS)) { r = e; *level = 2; }
+            else if (e & PAGE_PRESENT) {
+                r = ((uint64_t *)PHYS_KVA(e & PTE_ADDR_MASK))[(va >> 12) & 0x1FF];
+                *level = 4;
+            }
+        }
+    }
+    spin_unlock(&page_lock);
+    return r;
+}
+
 int handle_demand_page_fault(uint64_t fault_addr, uint32_t err_code) {
     /* LOW ON FRAMES, AND SWAP IS ON: idle pages go to swap before this fault
      * takes another frame. First from tasks no CPU is running, so a large idle

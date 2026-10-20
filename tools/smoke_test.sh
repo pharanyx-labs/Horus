@@ -587,6 +587,20 @@ echo "------------------- serial log -------------------"
 cat "$LOG" 2>/dev/null || true
 echo ""
 echo "--------------------------------------------------"
+# A RUN THAT FAILED SHOWS COM3 TOO. The kernel writes its diagnostics there (a
+# task killed by a trap, an approved fault the pager could not resolve), and
+# only the kernel writes it, so nothing on it is ring-3 output. CI keeps no log
+# file, so a red run that printed only COM1 left the kernel's own account of it
+# behind: on 2026-10-20 a fault that never reproduced locally reached CI's log
+# as one line with no address. Printed on a failure only, and only if non-empty.
+case "$status" in
+    ok|expected_fault) ;;
+    *)  if [ -s "$KDIAG" ]; then
+            echo "----------- kernel diagnostic channel (COM3) -----------"
+            tail -n 60 "$KDIAG" 2>/dev/null || true
+            echo "--------------------------------------------------"
+        fi ;;
+esac
 
 case "$status" in
     ok)

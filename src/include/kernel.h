@@ -2666,6 +2666,8 @@ void kfault_claims(int task);            /* who else claims this task (SMP only)
  * idt.c's print() of the same line stays the copy a person reads; this is the one
  * a gate can match (smoke-kdiag-ioport, S81). */
 void kdiag_task_killed(int t, uint64_t vector, uint64_t rip, uint64_t rsp);
+void kdiag_pager_unresolved(int t, uint64_t addr, uint64_t err, uint64_t rip,
+                            uint64_t rsp, int prc);   /* COM3 only: addresses */
 
 #ifdef RESUME_RSP_INJECT_PRECLAIM
 /* Test-only: leave the UART in the state another CPU's FATAL exception leaves

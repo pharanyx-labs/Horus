@@ -51,6 +51,7 @@ control_arms:
   smoke-captest-hashed-revoke-control: smoke-captest
   smoke-captest-pipe-grant-control: smoke-captest
   smoke-captest-fork-nomem-control: smoke-captest
+  smoke-captest-reparent-control: smoke-captest
   smoke-cr3-return-control: smoke-cr3-return
   smoke-captest-clock-control: smoke-captest
   smoke-captest-devcap-control: smoke-captest

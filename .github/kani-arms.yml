@@ -19,6 +19,12 @@
 # and see it go red before committing.
 
 arms:
+- id: reparent-forgets-the-edge
+  harness: a_death_leaves_no_edge_into_the_dead
+  file: rust/src/capability.rs
+  defect: a death empties the cspace without moving its children's edges (LIMITATIONS 1.33)
+  find: '            c.badge = parent;'
+  replace: '            let _ = parent;'
 - id: serial-floor-below-primordial
   harness: serial_never_reserved_or_zero
   file: rust/src/capability.rs

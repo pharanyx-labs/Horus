@@ -81,24 +81,6 @@ off a name the policy names. A capability with no grant set (held by system task
 session) renames without that rule, so a file moved that way under another principal's grant can
 show a bound that is low through a capability minted before the move, until it is opened again.
 
-### 1.33 A revocation cannot reach through a task that has died **[HORUS-20261013-01]**
-
-A derived capability names its parent by serial, and a revocation finds a capability's descendants
-by following those names down from the one revoked (S3). When a task dies, its cspace is emptied
-(`cap_release_cspace`), and with it every capability other tasks' copies name as their parent. A
-copy whose parent was in the dead task is then out of reach of any revocation above it: nothing
-revokes it but its own holder, or that holder's death.
-
-Found while closing 2.9b, where it is concrete: if the shell dies while a program it lent the
-keyboard to is still running, `init` takes back the shell's copy, and the program's copy, derived
-through the dead shell, is not taken back with it. The program can read what is typed at the next
-shell's prompt until it ends. The same holds for a filesystem capability a dead spawner lent
-(decision 10) and for any delegation chain with a dead link.
-
-Closing it means a task's death passing its capabilities' children to their grandparents, so a
-revocation above still reaches them; that is a change to the derivation tree's rules (S3, S4) and
-is not made here.
-
 ## 2. Correctness
 
 ### 2.3 Only retyped kernel objects have a lifecycle
@@ -300,7 +282,7 @@ copies the file and removes the original, and a directory cannot be moved at all
 **The kernel image is itself a ceiling.** It must end below `USER_PHYS_BASE` (16 MiB), which the
 `linker64.ld` ASSERT enforces. That 16 MiB is the window in which the kernel maps itself with
 4 KiB pages, the only place a guard page can exist. GRUB stages boot modules in the same room.
-`.bss` is budgeted at **6,816 KiB** (`.github/image-budget.yml`), held exactly by
+`.bss` is budgeted at **6,820 KiB** (`.github/image-budget.yml`), held exactly by
 `tools/check_image_budget.py`, and `argon2_scratch` is 4,096 KiB of it: the Argon2 memory cost,
 which must not be cut to buy room. Raising `MAX_CPUS`, `BLOCKS_PER_DISK` or the Argon2 cost spends
 that budget; raising `MAX_TASKS` spends pool memory instead.
@@ -473,7 +455,7 @@ the fix.
 Kani proves properties of capability derivation, lookup (the typed resolver every gate goes
 through, and IPC authority) and revocation, the ELF validator, the user-address validators,
 the random pool's seed gate, the login throttle and the page-pool refcount
-arithmetic: **43** harnesses, every one of them gating in the required `kani-bounded` job. That is
+arithmetic: **44** harnesses, every one of them gating in the required `kani-bounded` job. That is
 the whole of the formal methods here. The kernel as a whole is not verified, no refinement proof
 links a specification to the code, and no TLA+ specification exists (two unsound ones were removed on
 2026-09-10).
@@ -489,7 +471,7 @@ Against "a complete, self-hosting operating system":
 | Boot and low-level x86-64 | 85% |
 | Memory management | 70% |
 | Capability model, design | 80% |
-| Capability model, enforcement | 85% (no ambient authority left in the ship kernel; 1.33) |
+| Capability model, enforcement | 85% (no ambient authority left in the ship kernel) |
 | Scheduling | 55% |
 | SMP | 50% |
 | IPC | 55% |
@@ -545,6 +527,7 @@ One line each. The number is kept so that citations resolve; the pull request ha
 | 1.30 | [HORUS-20261012-04] | The inode table and allocation bitmaps were not authenticated at rest, so an owner, mode, size, link count or bitmap could be changed on the disk undetected (S143) | 2026-10-14, #575 |
 | 1.31 | [HORUS-20261012-05] | The uid path reached a file by inode number and checked only that inode's mode bits, so a file inside another account's private directory answered to anyone who named its number; the uid path is gone, and every filesystem request is decided by the capability it came through (S14) | 2026-10-16, #583 |
 | 1.32 | [HORUS-20261012-06] | A reply, and the sender identity a server authorises on, named a task slot, so a dead client's successor could receive both (S13, S13b) | 2026-10-12, #554 |
+| 1.33 | [HORUS-20261013-01] | A revocation could not reach a copy derived through a task that had died: the death emptied its cspace and cut the edges its capabilities' children named, so a program lent the keyboard by a shell that died kept it; a death now gives those children their grandparents (S3) | 2026-10-20, #599 |
 | 1.34 | [HORUS-20261013-02] | A register BAR smaller than a page handed its driver the whole page, so a neighbour's registers in that page were reachable (S43) | 2026-10-13, #562 |
 | 1.35 | [HORUS-20261014-01] | Once authenticated, the inode table and allocation bitmaps were still in the clear, so every file's size, owner, mode and link count could be read off the disk; every block of them the kernel writes is now sealed (S143) | 2026-10-14, #575 |
 | 1.36 | [HORUS-20261014-02] | Indirect pointer blocks were stored in the clear with no MAC, and a freed block keeps its nonce and tag, so a pointer edited on the disk could serve a file its own earlier contents (S143) | 2026-10-14, #575 |

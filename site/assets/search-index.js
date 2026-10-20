@@ -217,12 +217,6 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
-"t": "1.33A revocation cannot reach through a task that has died",
-"p": "Limitations",
-"u": "limitations.html#1-33a-revocation-cannot-reach-through-a-task-that-has-died",
-"k": 3
-},
-{
 "t": "2.9Measured boot is opt-in",
 "p": "Limitations",
 "u": "limitations.html#2-9measured-boot-is-opt-in",

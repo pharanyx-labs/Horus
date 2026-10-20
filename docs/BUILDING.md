@@ -368,6 +368,7 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `PIPE_GRANT_UNREFUSED=1` | Restores the pre-2026-10-12 `SYS_CAP_GRANT`, which copied a pipe end into a supervised child without counting it, so the granter closing its end freed the pipe under the child ([HORUS-20261012-03]). | `smoke-captest-pipe-grant-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
 | `FORK_NOMEM_KEEPS_KCR3=1` | Restores the pre-2026-10-20 `SYS_FORK`, whose refusal for a spent region returned to ring 3 with the kernel's page tables still loaded. Before S156 the caller died on its next instruction fetch ("the pager could not resolve an approved fault (code -2)"); now the return is repaired, and the repair, reported on COM3, fails any gate that does not expect it. Also the injector of `smoke-cr3-return`, which expects the repair. | `smoke-captest-fork-nomem-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it; `smoke-cr3-return`, `smoke-cr3-return-control` |
 | `CR3_RETURN_UNCHECKED=1` | Skips `ring3_cr3_check`, so a return to ring 3 is not checked for the task's own page tables, as before 2026-10-20 (S156). `make smoke-cr3-return` must go red under it. | `smoke-cr3-return-control` (arm of `smoke-cr3-return`) |
+| `CAP_REPARENT_SKIPPED=1` | Empties a dying task's cspace without giving its capabilities' children their grandparents, as before 2026-10-20, so a copy derived through the dead task survives a revocation above it (LIMITATIONS 1.33). `make smoke-captest` must go red under it. | `smoke-captest-reparent-control` (arm of `smoke-captest`) |
 | `INSTRUMENTS_UNANNOUNCED=1` | Names only this table's flags in `DEFECT FLAGS:`, as before 2026-10-20, so a build with a switch that has no row (every `*_SELFTEST`, `SCHED_INVARIANTS`, `DEBUG_SHELL`) announces `none`. `make smoke-defect-flags-instrument` must go red under it. | `smoke-defect-flags-instrument-control` (arm of `smoke-defect-flags-instrument`) |
 | `PIPE_CHILD_END_UNDERIVED=1` | Restores the pre-2026-10-13 spawn stdio wiring, which installed the child's pipe end as a root rather than a child of the spawner's end, so revoking the spawner's end left the child's working ([HORUS-20260911-04]). | `smoke-pipe-revoke-child-control` (arm of `smoke-pipe-revoke-child`); `make smoke-pipe-revoke-child` must go red under it |
 | `PIPE_REVOKE_UNCOUNTED=1` | Makes a revocation leave the pipe ends it removed counted in the pipe table, so a peer whose last opposite end was revoked never sees EOF ([HORUS-20260911-04]). | `smoke-pipe-revoke-uncounted-control` (arm of `smoke-pipe-revoke-child`); `make smoke-pipe-revoke-child` must go red under it |
@@ -654,7 +655,7 @@ of the most important:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (260 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (269 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
 | `smoke-wx` | No kernel page is both writable and executable |
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |

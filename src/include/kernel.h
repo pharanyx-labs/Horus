@@ -2999,6 +2999,8 @@ extern volatile uint64_t *g_kstack_inflight;
  * caller bounds-checks `t`. */
 int kstack_inflight_task(int t);
 void sched_release_deferred(void);
+struct interrupt_frame64;
+void ring3_cr3_check(const struct interrupt_frame64 *f);   /* lowlevel64.S, every ISR return */
 int  sched_kstack_holder(int t);
 
 /* Record that this CPU is about to park at ring 0 on `rsp` (the fault/exit

@@ -51,6 +51,7 @@ control_arms:
   smoke-captest-hashed-revoke-control: smoke-captest
   smoke-captest-pipe-grant-control: smoke-captest
   smoke-captest-fork-nomem-control: smoke-captest
+  smoke-cr3-return-control: smoke-cr3-return
   smoke-captest-clock-control: smoke-captest
   smoke-captest-devcap-control: smoke-captest
   smoke-captest-getline-control: smoke-captest
@@ -511,6 +512,7 @@ gates:
   - smoke-cr3-reclaim
   - smoke-defect-flags
   - smoke-defect-flags-instrument
+  - smoke-cr3-return
   - smoke-defect-flags-rebuild
   - smoke-defer-exemption
   - smoke-devcap

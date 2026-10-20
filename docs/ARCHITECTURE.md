@@ -420,7 +420,9 @@ untyped reserve, and `g_max_tasks` is derived at boot from the reserve that exis
 switch happens **only when the tick interrupted ring 3**, where the task holds no spinlock and its
 whole state is in the frame; a tick in ring 0 only advances the clock and charges the running
 task's time (below). The kernel is therefore not preemptible, which removes a whole class of
-reentrancy hazard.
+reentrancy hazard. Every return to ring 3 passes one epilogue, which checks that the loaded CR3
+is the returning task's own and loads it if not (S156), so no kernel path that leaves the wrong
+page tables loaded can run one task's code in another's memory.
 
 **CPU time is a capability** ([`design/scheduler.md`](design/scheduler.md) §3.1). Every task is
 bound to a scheduling context, a share of one CPU spent as a budget every period, and is chosen

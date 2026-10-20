@@ -717,7 +717,11 @@
 # buffer is larger and a list too long for it says "(list cut short)" rather
 # than ending as though it were complete. The boot's statement of what it is is
 # core.
-core_budget_loc: 13288
+# 2026-10-20: 13288 -> 13330, +42, S156: ring3_cr3_check (scheduler.c) and its
+# call in the ISR epilogue (lowlevel64.S), which checks on every return to ring 3
+# that the loaded CR3 is the task's own and loads it if not. Which address space
+# a task runs in is the kernel's isolation itself, so core.
+core_budget_loc: 13330
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

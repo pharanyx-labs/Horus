@@ -11,6 +11,8 @@ Two rules shape all of them:
   [`docs/BUILDING.md`](docs/BUILDING.md) names each flag, and every kernel prints
   `DEFECT FLAGS:` at boot, naming every build switch but the shipped ones, so an instrumented build
   cannot pass for a clean one.
+  A return to ring 3 that the kernel had to repair (S156) fails any gate that does not expect it,
+  as a panic does, so the backstop cannot hide the defect it backs.
 
 ## The layers
 
@@ -48,7 +50,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 607 `smoke-*` targets: 254 gates and 353 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 609 `smoke-*` targets: 255 gates and 354 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -354,6 +356,7 @@ There are 607 `smoke-*` targets: 254 gates and 353 control arms. Each row is a g
 |---|---|---|---|
 | `smoke-ap-trampoline` | The embedded secondary-CPU trampoline is exactly its code, whatever the host assembler emits |  | `smoke-ap-trampoline-control` |
 | `smoke-defect-flags` | Every boot states which defect flags built it |  | `smoke-defect-flags-control` |
+| `smoke-cr3-return` | With the #596 fork refusal put back (`FORK_NOMEM_KEEPS_KCR3=1`), the task it returns on the kernel's page tables is returned on its own instead: `captest` passes, and COM3 records the repair | S156 | `smoke-cr3-return-control` |
 | `smoke-defect-flags-instrument` | A `SCHED_INVARIANTS` build, which no defect-flag row lists, names it in `DEFECT FLAGS:` and never says `none` |  | `smoke-defect-flags-instrument-control` |
 | `smoke-defect-flags-rebuild` | Changing a defect flag rebuilds what it affects |  | `smoke-defect-flags-rebuild-control` |
 | `smoke-repro-iso` | `kernel.elf`, the gates' `horus.iso` and the release's `install.iso` are the same bytes when built in two directories, at two times, serially and in parallel; a difference names the file inside the ISO and keeps both copies | S17 | `smoke-repro-iso-path-control`, `smoke-repro-iso-serial-control` |
@@ -439,7 +442,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 157 properties name a witness that resolves.
+currently **empty**: all 158 properties name a witness that resolves.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

@@ -1921,6 +1921,60 @@ void kdiag_pager_unresolved(int t, uint64_t addr, uint64_t err, uint64_t rip,
     kfault_end(0);
 }
 
+/* NO TASK RETURNS TO RING 3 ON PAGE TABLES THAT ARE NOT ITS OWN. Called by the
+ * ISR epilogue (lowlevel64.S) on every return, after the deferred release and
+ * before the iretq, with the frame about to be resumed. On 2026-10-20 a fork
+ * refused for a spent region returned to ring 3 with the kernel's pml4 still
+ * loaded (#596): there, the task's next fetch faulted and only it died, but the
+ * same slip with another task's tables loaded would run one task's code in
+ * another's memory, and nothing would have noticed. Every path that changes
+ * CR3 is meant to put the right one back; this checks the result, at the one
+ * place every return to ring 3 passes, so the next such slip cannot cross
+ * address spaces whatever caused it.
+ *
+ * A mismatch is a kernel defect. The task's own tables are loaded (the return
+ * then runs exactly where it should, so no task executes on tables not its own)
+ * and the event is reported on COM3, with both roots; under SCHED_INVARIANTS it
+ * halts instead, so a gate sees the defect at its source. A task with no tables
+ * of its own cannot be returned to at all, so that halts in every build: fail
+ * closed. CR3_RETURN_UNCHECKED=1 skips the check, for the control arm of
+ * smoke-cr3-return. Costs one CR3 read per return to ring 3. */
+void ring3_cr3_check(const struct interrupt_frame64 *f) {
+#ifndef CR3_RETURN_UNCHECKED
+    if (!f || (f->cs & 3) != 3) return;
+    int cpu = this_cpu();
+    if (cpu < 0 || cpu >= MAX_CPUS) cpu = 0;
+    int t = percpu_current_task[cpu];
+    uint64_t want = (t > 0 && t < g_max_tasks) ? tasks[t].cr3 : 0;
+    uint64_t have;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(have));
+    if (want && (have & ~0xFFFULL) == want) return;
+    kfault_begin(want == 0);
+    kdiag_str("[ring-3 return on page tables not the task's own: task ");
+    kdiag_num((uint64_t)(t < 0 ? 0 : t), 10);
+    kdiag_str(" cpu ");      kdiag_num((uint64_t)cpu, 10);
+    kdiag_str(" cr3=0x");    kdiag_num(have, 16);
+    kdiag_str(" task-cr3=0x"); kdiag_num(want, 16);
+    kdiag_str(" rip=0x");    kdiag_num(f->rip, 16);
+#ifdef SCHED_INVARIANTS
+    kdiag_str("; halting (SCHED_INVARIANTS)]\n");
+    panic_str("\nPANIC: a task was returned to ring 3 on page tables not its own\n");
+    for (;;) __asm__ volatile ("cli; hlt");
+#else
+    if (!want) {
+        kdiag_str("; it has none, halting]\n");
+        panic_str("\nPANIC: a task with no page tables was returned to ring 3\n");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+    kdiag_str("; its own loaded]\n");
+    kfault_end(0);
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(want) : "memory");
+#endif
+#else
+    (void)f;
+#endif
+}
+
 /* #PF error bits, spelled out. "err=0x11" has cost this project a
  * symbolisation cycle more than once: it is present + instruction fetch at
  * CPL 0 -- the kernel executed a page marked NX -- which is an entirely

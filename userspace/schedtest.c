@@ -21,6 +21,10 @@
 #define SLOT_CTX3             46
 #define SLOT_UT_COUNT         47
 #define SLOT_CTX_FINE         48
+#define SLOT_CTX_NINE         49   /* step 3c: nine tenths, for the counter */
+#define SLOT_CTX_HOME         50   /* step 3c: a BSP-only context for this task */
+#define SLOT_CTX_X            51   /* step 3c: this task's, beside the counter */
+#define SLOT_CTX_Y            52   /* step 3c: the counter's, delayed by X */
 #define COUNT_VA              0x0000000030000000UL
 #define SLOT_CHILD            40
 #define SLOT_CHILD_RO         41
@@ -80,6 +84,19 @@ static unsigned long now_ticks(void) {
 static void wait_ticks(unsigned long n) {
     unsigned long start = now_ticks();
     while (now_ticks() - start < n) sys_yield();
+}
+
+/* The share of its CPU the context at `slot` was charged over the next `n`
+ * ticks, in thousandths, or -1. SYS_SCHED_INFO reports to the tick, so over
+ * 300 ticks this is good to a few thousandths. */
+static long share_permille(uint32_t slot, unsigned long n) {
+    struct sched_info si;
+    if (sys_sched_info(slot, &si) != 0) return -1;
+    unsigned long c0 = si.consumed_us, t0 = now_ticks();
+    wait_ticks(n);
+    if (sys_sched_info(slot, &si) != 0) return -1;
+    unsigned long dt = now_ticks() - t0;
+    return dt ? (long)((si.consumed_us - c0) / (dt * 10ul)) : -1;
 }
 
 void _start(void) {
@@ -290,6 +307,83 @@ void _start(void) {
     expect(fine <= 90, "a-small-budget-ran-beyond-its-share", (long)fine);
     rc = sys_cap_revoke(SLOT_CTX_FINE);
     expect(rc == 0, "revoke-the-millisecond", rc);
+    rc = sys_cap_revoke(SLOT_CTX3);
+    expect(rc == 0, "revoke-the-reused-index", rc);
+
+    /* Step 3c: a refill is noticed when it is due. The counter is given 9 ms
+     * every 10 ms on its CPU, and this task moves to a context of the BSP that
+     * has no slack right, so it cannot run there and notice the refill at its
+     * own choices (as its yields did in every phase above). With the refill
+     * armed the counter runs nine tenths of the time. Noticed at the CPU's
+     * next tick instead, it runs 9 ms of every 19 or so, about half:
+     * REFILL_UNARMED=1. Measured under TCG: 903 to 910 in 8 boots, the arm
+     * 496. On one CPU there is no CPU to move to; skipped. */
+    if (cpu == 0) {
+        report("SCHEDTEST: one CPU, the refill checks are skipped\n");
+    } else {
+        rc = sys_sched_split(CAPSLOT_SCHED_ROOT_FIRST, CAPSLOT_UNTYPED, SLOT_CTX_HOME, 50000, 100000, 0);
+        expect(rc == 0, "split-a-bsp-context-for-this-task", rc);
+        rc = sys_sched_bind(sys_getpid(), SLOT_CTX_HOME);
+        expect(rc == 0, "bind-this-task-to-the-bsp", rc);
+        rc = sys_sched_split(root, CAPSLOT_UNTYPED, SLOT_CTX_NINE, 9000, 10000, 0);
+        expect(rc == 0, "split-nine-tenths", rc);
+        rc = sys_sched_bind(count, SLOT_CTX_NINE);
+        expect(rc == 0, "bind-the-counter-to-nine-tenths", rc);
+        wait_ticks(5);
+        long nine = share_permille(SLOT_CTX_NINE, 300);
+        rc = sys_sched_bind(sys_getpid(), CAPSLOT_SCHED_ROOT_FIRST);
+        expect(rc == 0, "bind-this-task-back-from-the-bsp-context", rc);
+        report("SCHEDTEST: nine tenths alone ran ");
+        report_num(nine);
+        report(" thousandths\n");
+        expect(nine >= 750, "a-refill-waited-for-the-next-tick", nine);
+        expect(nine <= 950, "nine-tenths-ran-beyond-its-share", nine);
+        rc = sys_cap_revoke(SLOT_CTX_NINE);
+        expect(rc == 0, "revoke-nine-tenths", rc);
+        rc = sys_cap_revoke(SLOT_CTX_HOME);
+        expect(rc == 0, "revoke-the-bsp-context", rc);
+
+        /* A run that crosses the end of its period is charged to both. This
+         * task, at the top priority, takes 7 ms of every 20 on the counter's
+         * CPU; the counter, lowered to 100 above, has 5 ms of every 10. Every
+         * other period of the counter's starts while this task runs, so the
+         * counter starts 7 ms into it with all 5 left, and its run crosses the
+         * period's end before the CPU's next tick (each interrupt pushes that
+         * 10 ms out). Split at the end, it runs 3 ms there and 5 in the next:
+         * 8 ms in 20, four tenths. Charged whole to the first period, it then
+         * has the next period's 5 besides and runs 10 in 20, half:
+         * BOUNDARY_UNSPLIT=1. A tick between the start and the end would
+         * restamp the run and hide the defect, which is why the periods are
+         * this short: a choice charges what ran since the last, so a whole
+         * charge gives away only the time since the last choice before the
+         * period's end. The same phase sees the counter start at once when
+         * this task's budget ends: judged before it was charged, this task
+         * looked budgeted still, kept the CPU, and the counter waited for the
+         * CPU's next interrupt, under three tenths in all: CHARGE_AFTER_PICK=1.
+         * Measured under TCG, 8 boots: 392 to 403; the arms 506 (4 of 4) and
+         * 283 to 300 (4 of 4). */
+        rc = sys_sched_split(root, CAPSLOT_UNTYPED, SLOT_CTX_X, 7000, 20000, 0);
+        expect(rc == 0, "split-seven-in-twenty", rc);
+        rc = sys_sched_split(root, CAPSLOT_UNTYPED, SLOT_CTX_Y, 5000, 10000, 0);
+        expect(rc == 0, "split-five-in-ten", rc);
+        rc = sys_sched_bind(count, SLOT_CTX_Y);
+        expect(rc == 0, "bind-the-counter-to-five-in-ten", rc);
+        rc = sys_sched_bind(sys_getpid(), SLOT_CTX_X);
+        expect(rc == 0, "bind-this-task-beside-it", rc);
+        wait_ticks(5);
+        long half = share_permille(SLOT_CTX_Y, 300);
+        rc = sys_sched_bind(sys_getpid(), CAPSLOT_SCHED_ROOT_FIRST);
+        expect(rc == 0, "bind-this-task-back-to-the-bsp-root-again", rc);
+        report("SCHEDTEST: five in ten, delayed, ran ");
+        report_num(half);
+        report(" thousandths\n");
+        expect(half <= 450, "a-run-across-a-period-end-was-charged-to-one-period", half);
+        expect(half >= 345, "a-task-out-of-budget-kept-its-cpu-over-a-lower-priority", half);
+        rc = sys_cap_revoke(SLOT_CTX_Y);
+        expect(rc == 0, "revoke-five-in-ten", rc);
+        rc = sys_cap_revoke(SLOT_CTX_X);
+        expect(rc == 0, "revoke-seven-in-twenty", rc);
+    }
 
     report("SCHEDTEST: PASS ");
     report_num(checks);

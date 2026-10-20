@@ -426,10 +426,13 @@ reentrancy hazard.
 bound to a scheduling context, a share of one CPU spent as a budget every period, and is chosen
 only on the time it grants: a CPU runs its own budgeted work first and slack work (a context with
 the slack right, out of budget or on another CPU) after it. The time a task runs is measured with
-the TSC between one choice and the next and charged by the context's own CPU, which arms its
-LAPIC timer at each choice for the moment the chosen budget runs out (§3.4, step 3b). The
-interrupt, or the tick, that finds the running task out of budget switches it away, or, if it
-landed in a system call, marks it to be switched away on its way back to ring 3. `init` holds the per-CPU roots, `SYS_SCHED_SPLIT`
+the TSC between one choice and the next and charged by the context's own CPU, before it chooses
+again, and a run across its period's end is charged to both periods. At each choice the CPU arms
+its timer for the moment the chosen budget runs out (§3.4, step 3b) or a refill lets a more
+urgent task run (step 3c), whichever is first; the timer is the TSC-deadline mode where the CPU
+offers it with an invariant TSC, a LAPIC one-shot otherwise. The interrupt, or the tick, that finds
+the running task out of budget switches it away, or, if it landed in a system call, marks it to be
+switched away on its way back to ring 3. `init` holds the per-CPU roots, `SYS_SCHED_SPLIT`
 divides a context and `SYS_SCHED_BIND` binds a task to one (S152, S153). Until something binds a
 task elsewhere every task runs on the BSP's root, budgeted on the BSP and slack on every AP.
 
@@ -501,7 +504,10 @@ SMP is on by default; `SMP=0` compiles it out.
   core's L1 and L2 with another. A parked sibling keeps interrupts on to answer shootdowns, so
   `preempt_on_tick` also refuses to schedule on one, whatever interrupts it.
 - **Each AP takes its own one-shot LAPIC timer tick** while it has a task, and an idle AP stops
-  ticking until another CPU's tick wakes it for waiting work; one AP, the watcher, always ticks. Each CPU chooses from its own run list first. Every live
+  ticking until another CPU's tick wakes it for waiting work; one AP, the watcher, always ticks.
+  The BSP's tick is the PIT's. Where the TSC is invariant the clock (`system_ticks`) is derived
+  from it in whole ticks, so it keeps time while the BSP holds interrupts off; elsewhere it counts
+  PIT interrupts. Each CPU chooses from its own run list first. Every live
   task is homed on one CPU's list; a CPU with nothing of its own takes another's waiting task, and
   the tasks waiting on a CPU stuck in the kernel go to the others ([`design/scheduler.md`](design/scheduler.md) §3.5).
 - **TLB shootdown** is an acknowledged IPI, and a wait that runs out with a CPU unacknowledged

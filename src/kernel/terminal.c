@@ -1337,6 +1337,28 @@ uint64_t sched_clock_us(void) {
     return tsc_per_us ? (rd_tsc() - boot_tsc0) / tsc_per_us : 0;
 }
 
+/* The TSC value at which sched_clock_us() reaches `us`, for the TSC-deadline
+ * timer (smp.c, step 3c), which takes a TSC value and fires when the counter
+ * passes it. 0 before calibration, which no caller reaches: the timers start
+ * after kmsg_clock_init. Kernel-internal, like sched_clock_us. */
+uint64_t sched_clock_tsc_at(uint64_t us) {
+    return tsc_per_us ? boot_tsc0 + us * tsc_per_us : 0;
+}
+
+/* Whether the TSC runs at one rate whatever the processor does (CPUID
+ * 0x80000007 EDX bit 8, "invariant TSC"): through frequency changes and deep
+ * idle states. Only then is a TSC count a measure of time that can stand in
+ * for the PIT's, so the TSC-deadline timer and the TSC clock (step 3c) are used
+ * only where this is 1; elsewhere the PIT stays the clock (the maintainer's
+ * answer of 2026-10-20). QEMU's TCG never reports it; KVM does when asked. */
+int kclock_tsc_invariant(void) {
+    uint32_t a, b, c, d;
+    __asm__ volatile ("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000000u), "c"(0));
+    if (a < 0x80000007u) return 0;
+    __asm__ volatile ("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000007u), "c"(0));
+    return (d >> 8) & 1u;
+}
+
 #ifdef CLOCK_TSC_RESOLUTION
 /* Microseconds since boot from the calibrated TSC. Exists ONLY for the
  * CLOCK_TSC_RESOLUTION control arm (roadmap 2.2): it is the cycle-accurate

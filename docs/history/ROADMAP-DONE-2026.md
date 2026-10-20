@@ -26,7 +26,7 @@ open. The account of each is in its pull requests.
 | 1.55 A durable write-ahead journal [I-10], [I-11] | 2026-08-16, #158, #161 |
 | 1.6 Unbounded revocation closure [I-3] | 2026-08-16, #160 |
 | 1.7 Serialise the spawn and exec path [G-10], [G-9] | 2026-08-17 to 2026-08-21, #164, #168, #170, #188 |
-| 1.8 Per-CPU scheduling, steps 0, 1, 1b, 2a, 2, 3a, 4a, 4b and 3b | LIMITATIONS 5.3e settled (#526), the shootdown wait fails closed (#523), SMT siblings refuse work (#525), one selection rule for every switch path (#524), 2026-10-09; per-CPU run lists and stealing (#584), one-shot AP timers and tickless idle (#585), 2026-10-16; scheduling contexts and budgets (#592), 2026-10-19; priorities capped by authority (#594), budget deadlines (#595), 2026-10-20 |
+| 1.8 Per-CPU scheduling, steps 0, 1, 1b, 2a, 2, 3a, 4a, 4b, 3b and 3c | LIMITATIONS 5.3e settled (#526), the shootdown wait fails closed (#523), SMT siblings refuse work (#525), one selection rule for every switch path (#524), 2026-10-09; per-CPU run lists and stealing (#584), one-shot AP timers and tickless idle (#585), 2026-10-16; scheduling contexts and budgets (#592), 2026-10-19; priorities capped by authority (#594), budget deadlines (#595), the TSC-deadline timer, the TSC clock and refills (#596), 2026-10-20 |
 
 ## Track 2: toward a complete operating system
 

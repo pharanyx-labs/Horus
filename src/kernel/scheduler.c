@@ -734,6 +734,10 @@ static volatile uint8_t sc_cpu_up[MAX_CPUS];
  * never charged after it is reused. */
 static uint32_t sc_stamp_idx[MAX_CPUS];
 static uint64_t sc_stamp_us[MAX_CPUS];
+/* How many carved (non-root) contexts of CPU c are live. Only such a context
+ * can be waiting for a refill, so a CPU with none, which is every CPU of the
+ * shipped system, never looks for one (sc_next_refill). Under the lock. */
+static uint16_t sc_carved_live[MAX_CPUS];
 
 extern uint64_t sched_clock_us(void);   /* terminal.c: TSC microseconds, kernel-internal */
 #ifdef SCHED_INVARIANTS
@@ -889,8 +893,54 @@ static int sc_runnable_somewhere(int t, uint64_t now) {
  * a claimed task), so a tick or a yield that finds nobody else goes on running
  * the current task. That task is the one stamped, or a task that has only ever
  * been alone on its CPU would be charged once and then run for nothing. A task
- * that is blocking or has died is no longer runnable here, and is not. */
-static void sc_account_stamp(int cpu, int chosen, uint64_t now) {
+ * that is blocking or has died is no longer runnable here, and is not.
+ *
+ * The charge itself is sc_charge, which the selection also calls first, before
+ * it looks at anyone (sched_pick_after); called again here at the same `now`,
+ * it finds nothing more to charge. */
+static void sc_charge(int cpu, uint64_t now);
+static int sc_account_stamp(int cpu, int chosen, uint64_t now) {
+    sc_charge(cpu, now);
+    sc_stamp_idx[cpu] = 0;
+    sc_stamp_us[cpu]  = now;
+    struct sched_context *sc;
+    if (chosen <= 0) {
+        int cur = percpu_current_task[cpu];
+        if (cur > 0 && cur < g_max_tasks && tasks[cur].state == TASK_RUNNABLE &&
+            tasks[cur].pending_block == 0)
+            chosen = cur;
+        else
+            return 0;
+    }
+    sc = task_sc(chosen);
+    if (!sc) return 0;
+#ifdef SCHED_INVARIANTS
+    sc_xslack[cpu] = (sc->cpu != cpu);   /* before the arm's return: both arms count it */
+#endif
+#ifdef BUDGET_CROSS_CPU
+    /* CONTROL ARM, never ship: the time a task runs is charged to its context
+     * wherever it runs, so a CPU running another CPU's slack work charges a
+     * budget that is not its own. */
+    sc_stamp_idx[cpu] = tasks[chosen].sc_index;
+    return chosen;
+#endif
+    if (sc->cpu != cpu) return 0;        /* slack elsewhere: free */
+    sc_refresh(sc, cpu, now);
+    if (sc->remaining_us <= 0) return 0; /* slack at home after its budget: free */
+    sc_stamp_idx[cpu] = tasks[chosen].sc_index;
+    return chosen;
+}
+
+/* Close CPU `cpu`'s last choice: charge the context it stamped for the time
+ * since, and move the stamp to `now`, leaving it on the same context. Called by
+ * the selection before it looks at any candidate, as well as at every stamp.
+ * Before step 3c the selection looked first and charged after, so the task a
+ * CPU was running was judged on the budget it had when it was chosen: one whose
+ * deadline had just ended its budget still looked budgeted, kept its CPU over
+ * the lower priorities waiting there, and only then was charged and found
+ * spent, so the CPU went idle with that work waiting until its next interrupt.
+ * CHARGE_AFTER_PICK=1 restores that order, for the control arm. */
+static void sc_charge(int cpu, uint64_t now) {
     struct sched_context *sc = sc_by_index(sc_stamp_idx[cpu]);
 #ifdef SCHED_INVARIANTS
     if (sc_xslack[cpu]) {
@@ -914,55 +964,74 @@ static void sc_account_stamp(int cpu, int chosen, uint64_t now) {
             for (;;) __asm__ volatile ("cli; hlt");
         }
 #endif
-        sc->remaining_us -= (int64_t)ran;
+        uint64_t from = sc_stamp_us[cpu];
+#ifndef BOUNDARY_UNSPLIT
+        /* A run that crossed the end of the period it was stamped in is two
+         * charges: the time before the end to that period, and the rest to the
+         * period after, once refilled. Charged whole to the first, the time
+         * after the end was never charged at all, since the refill that
+         * followed gave a full budget: a task chosen late in a period with
+         * budget left ran on past the end and then had its next period's
+         * budget besides, up to twice its share in that period. The stamp was
+         * taken after this CPU refreshed the context, so `from` lies in the
+         * period that ends at `end`. If more than one period ended, the rest
+         * is charged to the latest, which errs towards debt, never towards
+         * time nobody gave. BOUNDARY_UNSPLIT=1 charges the run whole, for the
+         * control arm of smoke-sched-budget. */
+        uint64_t end = sc->period_start_us + sc->period_us;
+        if (sc->period_us && sc->cpu == cpu && from < end && end < now) {
+            sc->remaining_us -= (int64_t)(end - from);
+            sc_refresh(sc, cpu, now);
+            from = end;
+        }
+#endif
+        sc->remaining_us -= (int64_t)(now - from);
         sc->consumed_us  += ran;
         sc->charged_cpu   = cpu;
     }
-    sc_stamp_idx[cpu] = 0;
-    sc_stamp_us[cpu]  = now;
-    if (chosen <= 0) {
-        int cur = percpu_current_task[cpu];
-        if (cur > 0 && cur < g_max_tasks && tasks[cur].state == TASK_RUNNABLE &&
-            tasks[cur].pending_block == 0)
-            chosen = cur;
-        else
-            return;
-    }
-    sc = task_sc(chosen);
-    if (!sc) return;
-#ifdef SCHED_INVARIANTS
-    sc_xslack[cpu] = (sc->cpu != cpu);   /* before the arm's return: both arms count it */
-#endif
-#ifdef BUDGET_CROSS_CPU
-    /* CONTROL ARM, never ship: the time a task runs is charged to its context
-     * wherever it runs, so a CPU running another CPU's slack work charges a
-     * budget that is not its own. */
-    sc_stamp_idx[cpu] = tasks[chosen].sc_index;
-    return;
-#endif
-    if (sc->cpu != cpu) return;          /* slack elsewhere: free */
-    sc_refresh(sc, cpu, now);
-    if (sc->remaining_us > 0)            /* slack at home after its budget: free */
-        sc_stamp_idx[cpu] = tasks[chosen].sc_index;
+    if (now > sc_stamp_us[cpu]) sc_stamp_us[cpu] = now;
 }
 
-/* Every charge is followed by arming this CPU's timer for the moment the budget
- * just stamped runs out (step 3b, smp.c BUDGET DEADLINES), or by disarming it
- * when the choice runs on no budget. A root's budget is a whole CPU's for a
+#ifdef SMP
+static uint64_t sc_next_refill(int cpu, int over, uint64_t now);
+#endif
+
+/* Every charge is followed by arming this CPU's timer for the first of two
+ * moments (smp.c BUDGET DEADLINES): the budget just stamped running out (step
+ * 3b), and a refill that lets a more urgent task of this CPU run (step 3c), or
+ * by disarming it when there is neither. A root's budget is a whole CPU's for a
  * whole period, so work on a root times nothing and keeps the tick it had.
+ *
+ * "More urgent" is the selection's own order: anything outranks slack work and
+ * an idle CPU, and among budgeted work a higher priority outranks a lower. A
+ * refill that would bring back only an equal waits for the next tick or yield,
+ * as a wake does (§3.2). Before 3c every refill waited so: a context given 9 ms
+ * every 10 ms on a CPU with nothing else to do ran 9 and then sat until the
+ * CPU's tick, about half the CPU where it was given nine tenths.
+ *
  * DEADLINE_UNARMED=1 arms nothing, for the control arm of smoke-sched-budget:
- * a budget then ends at the next tick, as it did in step 4a. Without SMP there
- * is no LAPIC timer and the tick remains the deadline. */
+ * a budget then ends at the next tick, as it did in step 4a. REFILL_UNARMED=1
+ * arms only the budget's end, for the arm of the refill check. Without SMP
+ * there is no LAPIC timer and the tick remains the deadline. */
 static void sc_account(int cpu, int chosen, uint64_t now) {
     if (cpu < 0 || cpu >= MAX_CPUS) return;
-    sc_account_stamp(cpu, chosen, now);
+    int stamped = sc_account_stamp(cpu, chosen, now);
 #if defined(SMP) && !defined(DEADLINE_UNARMED)
     uint64_t dl = 0;
+    int over = -1;                       /* the priority a refill must beat */
     struct sched_context *sc = sc_by_index(sc_stamp_idx[cpu]);
-    if (sc && sc->live && sc->cpu == cpu && !(sc->flags & SC_FLAG_ROOT) &&
-        sc->remaining_us > 0)
-        dl = now + (uint64_t)sc->remaining_us;
+    if (sc && sc->live && sc->cpu == cpu && stamped > 0) {
+        over = (int)tasks[stamped].priority;
+        if (!(sc->flags & SC_FLAG_ROOT) && sc->remaining_us > 0)
+            dl = now + (uint64_t)sc->remaining_us;
+    }
+#ifndef REFILL_UNARMED
+    uint64_t rf = sc_next_refill(cpu, over, now);
+    if (rf && (!dl || rf < dl)) dl = rf;
+#endif
     smp_timer_deadline(cpu, dl);
+#else
+    (void)stamped;
 #endif
 }
 
@@ -1067,6 +1136,7 @@ int sched_carve(uint32_t parent_idx, struct sched_context *child,
     child->charged_cpu     = -1;
     __asm__ volatile ("" ::: "memory");
     child->live            = 1;
+    if (child->cpu >= 0 && child->cpu < MAX_CPUS) sc_carved_live[child->cpu]++;
     sc_unlock(fl);
     return 0;
 }
@@ -1155,6 +1225,7 @@ void sched_context_destroyed(uint32_t idx, struct sched_context *sc) {
     uint64_t fl = sc_lock();
     if (!sc->live || (sc->flags & SC_FLAG_ROOT)) { sc_unlock(fl); return; }
     sc->live = 0;
+    if (sc->cpu >= 0 && sc->cpu < MAX_CPUS && sc_carved_live[sc->cpu]) sc_carved_live[sc->cpu]--;
     /* The nearest living ancestor. A chain is at most as long as the table, and
      * a parent index is always an older context, so this ends. */
     struct sched_context *heir = 0;
@@ -2054,12 +2125,79 @@ void irq_policy_totals_uart(const char *when);   /* likewise -- one line, no tab
 #endif
 #endif
 
+/* THE TSC CLOCK (docs/design/scheduler.md 3.4, step 3c). Counting PIT
+ * interrupts lost time whenever the BSP held interrupts off for longer than a
+ * tick: the 8259 holds one pending IRQ 0 and drops the rest, so an Argon2 hash
+ * in a system call, seconds of ring 0 with interrupts masked, left the clock
+ * seconds behind the TSC and every console line stamped from it, for good.
+ * Where the TSC is invariant (kclock_tsc_invariant) the count is the TSC's
+ * instead: each tick sets it to the whole ticks elapsed since the first, by the
+ * TSC, and never moves it back, so a tick that came late finds the time it
+ * missed already counted. Still whole ticks, so ring 3 reads nothing finer than
+ * before (S34). Without an invariant TSC the PIT stays the clock, as the
+ * maintainer decided on 2026-10-20: a TSC whose rate follows the core's
+ * frequency is no clock at all. TSC_CLOCK_OFF=1 counts interrupts everywhere,
+ * for the control arm of smoke-tsc-clock. */
+static int      tick_from_tsc = -1;   /* -1 until the first tick decides */
+static uint64_t tick_tsc_base;        /* kmsg_uptime_ticks() at the first tick */
+
+#ifdef TSC_CLOCK_PROBE
+/* INSTRUMENT, never shipped: the witness for the TSC clock (smoke-tsc-clock).
+ * At 3 s of the clock the BSP holds interrupts off for half a second, inside
+ * its own tick, as a long masked system call does; a second later the clock's
+ * advance is compared with the TSC's over the same stretch. Counting PIT
+ * interrupts loses some 49 ticks of the 50; the TSC clock loses none. One line
+ * through print, read on the kernel console copy, as TICKLESS_PROBE's is. */
+static void tsc_clock_probe(void) {
+    static int st;
+    static uint64_t c0, u0;
+    if (st == 0 && system_ticks >= 300) {
+        st = 1;
+        c0 = get_system_ticks64();
+        u0 = kmsg_uptime_ticks();
+        kclock_delay_us(500000);          /* interrupts are off: this is IRQ 0 */
+    } else if (st == 1 && kmsg_uptime_ticks() >= u0 + 150) {
+        st = 2;
+        uint64_t dc = get_system_ticks64() - c0, du = kmsg_uptime_ticks() - u0;
+        uint64_t lost = du > dc ? du - dc : 0;
+        char line[96];
+        int n = 0;
+        const char *v = lost <= 2 ? "TSCCLOCK: PASS lost=" : "TSCCLOCK: FAIL lost=";
+        for (const char *q = v; *q; q++) line[n++] = *q;
+        char dig[24]; int k = 0;
+        do { dig[k++] = (char)('0' + lost % 10); lost /= 10; } while (lost && k < 20);
+        while (k) line[n++] = dig[--k];
+        const char *m = tick_from_tsc ? " clock=tsc\n" : " clock=pit\n";
+        for (const char *q = m; *q; q++) line[n++] = *q;
+        line[n] = 0;
+        print(line);
+    }
+}
+#endif
+
 void timer_handler(void) {
-    system_ticks++;
+    if (tick_from_tsc < 0) {
+#ifndef TSC_CLOCK_OFF
+        tick_from_tsc = kclock_tsc_invariant();
+#else
+        tick_from_tsc = 0;
+#endif
+        tick_tsc_base = kmsg_uptime_ticks();
 #ifndef CLOCK_EPOCH_FROM_FIRST_TICK
-    /* CLOCK_EPOCH_FROM_FIRST_TICK=1 is the control arm: it leaves the epoch at
-     * zero, which is the pre-2026-09-06 clock. See clock_epoch_ticks above. */
-    if (system_ticks == 1) clock_epoch_ticks = kmsg_uptime_ticks();
+        /* CLOCK_EPOCH_FROM_FIRST_TICK=1 is the control arm: it leaves the
+         * epoch at zero, which is the pre-2026-09-06 clock. See
+         * clock_epoch_ticks above. */
+        clock_epoch_ticks = tick_tsc_base;
+#endif
+    }
+    if (tick_from_tsc) {
+        uint64_t t = kmsg_uptime_ticks() - tick_tsc_base + 1;
+        if (t > system_ticks) system_ticks = t;
+    } else {
+        system_ticks++;
+    }
+#ifdef TSC_CLOCK_PROBE
+    tsc_clock_probe();
 #endif
 #ifdef IRQ_POLICY_AUDIT
     /* Report at two points either side of the init -> fs_server -> console_server
@@ -2107,8 +2245,10 @@ void timer_handler(void) {
     {
         extern volatile unsigned long ap_timer_ticks;
         static unsigned long tp_a0;
-        if (system_ticks == TICKLESS_PROBE_FROM) tp_a0 = ap_timer_ticks;
-        if (system_ticks == TICKLESS_PROBE_FROM + TICKLESS_PROBE_SPAN) {
+        static int tp_state;   /* the count can step by more than one (THE TSC CLOCK) */
+        if (tp_state == 0 && system_ticks >= TICKLESS_PROBE_FROM) { tp_a0 = ap_timer_ticks; tp_state = 1; }
+        if (tp_state == 1 && system_ticks >= TICKLESS_PROBE_FROM + TICKLESS_PROBE_SPAN) {
+            tp_state = 2;
             unsigned long d = ap_timer_ticks - tp_a0;
             char line[160];
             int n = 0;
@@ -3579,6 +3719,54 @@ static inline int sched_selectable(int t)
            ;
 }
 
+#ifdef SMP
+/* When `sc`, out of budget now, next has some: the end of the period that pays
+ * off its debt (sc_projected's rule: one budget per period, debt first). 0 for
+ * a context that never refills. */
+static uint64_t sc_refill_at(const struct sched_context *sc) {
+    int64_t b = (int64_t)sc_budget_us(sc);
+    if (b <= 0 || sc->period_us == 0) return 0;
+    int64_t r = sc->remaining_us;
+    uint64_t n = r < 0 ? (uint64_t)((-r) / b) + 1u : 1u;
+    return sc->period_start_us + n * sc->period_us;
+}
+
+/* The earliest refill on CPU `cpu` that would let a task run that outranks
+ * priority `over` (-1: anything, the CPU being idle or running slack), or 0.
+ * Only a carved context of this CPU refills into budget here, and its tasks
+ * wait on this CPU's list (sc_bind_locked homes them), so that list is all that
+ * is walked, and a CPU with no carved context walks nothing. A task with budget
+ * now is not waiting for a refill and is passed over, as is one running on
+ * another CPU. One claimed by this CPU is the task it is leaving or keeping:
+ * still claimed, since the claim is dropped only once this CPU is off its stack
+ * (sched_release_deferred), and the one whose refill matters most when it has
+ * just run out. It counts if it is runnable and not on its way to blocking.
+ * Caller holds the scheduler lock. */
+static uint64_t sc_next_refill(int cpu, int over, uint64_t now) {
+    if (cpu < 0 || cpu >= MAX_CPUS || !sc_carved_live[cpu] || over >= (int)SCHED_PRIO_MAX)
+        return 0;
+    int h = rq_head[cpu];
+    if (h < 0) return 0;
+    uint64_t best = 0;
+    int t = h;
+    for (int n = 0; n < g_max_tasks; n++) {
+        int waiting = sched_selectable(t) ||
+                      (task_running_cpu[t] == cpu && tasks[t].state == TASK_RUNNABLE &&
+                       tasks[t].pending_block == 0);
+        if ((int)tasks[t].priority > over && waiting) {
+            struct sched_context *sc = task_sc(t);
+            if (sc && sc->cpu == cpu && !(sc->flags & SC_FLAG_ROOT) && !sc_has_budget(sc, now)) {
+                uint64_t at = sc_refill_at(sc);
+                if (at > now && (!best || at < best)) best = at;
+            }
+        }
+        t = tasks[t].rq_next;
+        if (t == h || t < 0) break;
+    }
+    return best;
+}
+#endif
+
 /* ---- PRIORITY (docs/design/scheduler.md 3.2, step 4b) -----------------------
  *
  * Among budgeted work a CPU runs the highest priority, round robin within a
@@ -3659,6 +3847,9 @@ static int sched_pick_scan(int start, int include_start, int want, uint64_t now)
 static int sched_pick_after(int start, int include_start)
 {
     uint64_t now = sched_clock_us();
+#ifndef CHARGE_AFTER_PICK
+    sc_charge(0, now);                  /* judge the running task on what is left */
+#endif
     int t = sched_pick_scan(start, include_start, SC_RUN_BUDGET, now);
     if (start_keeps_cpu(start, t, 0, now)) t = -1;      /* it outranks them all */
     else if (t < 0) t = sched_pick_scan(start, include_start, SC_RUN_SLACK, now);
@@ -3775,6 +3966,11 @@ static int sched_pick_after_list(int start, int include_start, uint64_t now_us);
 static int sched_pick_after(int start, int include_start)
 {
     uint64_t now_us = sched_clock_us();
+#ifndef CHARGE_AFTER_PICK
+    /* Close the last choice first, so the task this CPU is running is judged
+     * on what its budget has left now (sc_charge). */
+    { int c = this_cpu(); if (c >= 0 && c < MAX_CPUS) sc_charge(c, now_us); }
+#endif
     int t = sched_pick_after_list(start, include_start, now_us);
     /* Charge this CPU's last choice and stamp this one (scheduling contexts). */
     sc_account(this_cpu(), t, now_us);

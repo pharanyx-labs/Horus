@@ -2303,6 +2303,19 @@ jobs:
         run: make smoke-sched-budget-prio-control
       - name: Control arm, a budget left to end at the next tick runs in bursts of a tick
         run: make smoke-sched-budget-deadline-control
+      # Step 3c: a refill is noticed when it is due, a run across its period's
+      # end is charged to both periods, and a task is charged before it is
+      # judged; and on one CPU a budget still ends when it runs out.
+      - name: Control arm, a refill left to the next tick halves a nine-tenths budget
+        run: make smoke-sched-budget-refill-control
+      - name: Control arm, a run charged wholly to the period it began in takes the next period's budget too
+        run: make smoke-sched-budget-boundary-control
+      - name: Control arm, a task judged before it is charged keeps its CPU with its budget spent
+        run: make smoke-sched-budget-charge-order-control
+      - name: On one CPU a budget ends when it runs out
+        run: make smoke-sched-budget-up
+      - name: Control arm, one CPU with its LAPIC timer never calibrated ends a budget at the next tick
+        run: make smoke-sched-budget-up-control
       # Eight CPUs on the topologies firmware produces, not only QEMU's default:
       # sparse LAPIC ids, SMT, and more threads than slots (docs/ARCHITECTURE.md
       # section 7). Every schedulable AP must run a task and none may be an SMT
@@ -2328,7 +2341,10 @@ jobs:
   # first KVM run. BASE gates only: under KVM three race control arms stopped
   # reproducing, so their arms stay TCG-only, where they are proven to fail.
   # QEMU_ACCEL=kvm makes the harness refuse to run at all without a usable
-  # /dev/kvm, so this job cannot report a TCG run as a KVM one.
+  # /dev/kvm, so this job cannot report a TCG run as a KVM one. Under KVM the
+  # harness also offers the guest the TSC-deadline mode and an invariant TSC
+  # (2026-10-20), so every gate here runs the kernel's TSC-deadline timers and
+  # TSC clock, the path real hardware takes and TCG cannot reach.
   smoke-smp-kvm:
     name: SMP race gates again under KVM (a second environment, base gates only)
     runs-on: ubuntu-latest
@@ -2375,6 +2391,18 @@ jobs:
         run: make smoke-killed-task-late
       - name: "Control arm: a kill that does not wait leaves the task writing"
         run: make smoke-killed-task-late-control
+      # Step 3c, which only KVM can show: QEMU's TCG offers neither the
+      # TSC-deadline mode nor an invariant TSC, and the harness asks KVM for
+      # both. The budget checks again with every timer in TSC-deadline mode,
+      # and a clock that keeps time while the BSP holds interrupts off.
+      - name: The budget checks with every timer in TSC-deadline mode
+        run: make smoke-sched-budget-tscdl
+      - name: Control arm, timers left in LAPIC one-shot mode
+        run: make smoke-sched-budget-tscdl-control
+      - name: The clock loses no time while the BSP holds interrupts off for half a second
+        run: make smoke-tsc-clock
+      - name: Control arm, a clock that counts PIT interrupts falls behind
+        run: make smoke-tsc-clock-control
 
   smoke-smt:
     name: QEMU SMT sibling-parking self-test (headless, -smp 4 cores=2 threads=2)

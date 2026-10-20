@@ -15,7 +15,8 @@
 
 /// A whole CPU.
 pub const PPM_WHOLE: u32 = 1_000_000;
-/// The shortest period, one tick, until step 3b brings deadline timers.
+/// The shortest period, one tick. Deadline timers (scheduler design 3.4, steps
+/// 3b and 3c) would allow a shorter one; it stays a tick until that is decided.
 pub const MIN_PERIOD_US: u32 = 10_000;
 /// The longest period, 10 s.
 pub const MAX_PERIOD_US: u32 = 10_000_000;

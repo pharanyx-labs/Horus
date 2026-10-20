@@ -184,9 +184,9 @@ request. §6 question 3 decides what happens to it.
 
 Each CPU gets a one-shot timer: the TSC-deadline mode where `CPUID` reports it and the TSC is
 invariant, the LAPIC one-shot mode otherwise. It is armed for the earliest of: the running context's
-budget running out, a refill that would make a higher-priority task runnable, and the next kernel
-timer. A CPU with nothing to run arms nothing and halts. The PIT stops being the clock once a
-TSC-based source is calibrated; `system_ticks` becomes derived from it.
+budget running out, a refill that would make a more urgent task runnable, and the next kernel
+timer. A CPU with nothing to run arms only for a refill, and halts. Where the TSC is invariant
+the PIT stops being the clock: `system_ticks` is derived from the TSC.
 
 **Built first (step 3a): one-shot ticks and tickless idle.** Each AP's LAPIC timer is one-shot
 at the calibrated 10 ms and re-armed after every tick or kick only if the AP then has a task, so a
@@ -209,10 +209,42 @@ kernel and lost the scheduler lock; it is dropped, and the next tick takes the c
 than re-armed into an interrupt every 20 µs. An early interrupt costs one pass through
 `preempt_on_tick`, which charges by the TSC, so nothing is charged twice.
 
-**Still to come (step 3c).** The TSC-deadline mode, a TSC clock, and arming for a refill that
-would make a higher-priority task runnable and for the next kernel timer. Until then a refill
-is noticed at the next tick, and on a machine with one CPU, where the LAPIC timer is never
-calibrated, a budget ends at the next tick too.
+**Built last (step 3c): the TSC-deadline timer, the TSC clock, and refills.**
+
+- **The timer mode.** Where `CPUID` reports the TSC-deadline mode and the TSC is invariant, each
+  CPU arms its timer with the TSC value it is to fire at (`IA32_TSC_DEADLINE`), on the clock the
+  budgets are measured with, rather than a count of LAPIC ticks worked out from a rate calibrated
+  over 10 ms. Each CPU decides from its own `CPUID`, once the BSP has found the TSC invariant;
+  every other CPU keeps the LAPIC one-shot. QEMU's TCG offers neither bit, so the TCG gates run
+  the LAPIC path and the KVM job, given both bits, the TSC-deadline one.
+- **Refills.** At every choice a CPU also arms its timer for the earliest refill of one of its
+  carved contexts that would let a more urgent task run: anything outranks an idle CPU and slack
+  work, and among budgeted work a higher priority outranks a lower. A refill that would bring
+  back only an equal waits for the next tick or yield, as a wake does. Only a carved context can
+  wait for a refill and its tasks wait on its CPU's list, so a CPU with none, which is every CPU
+  of the shipped system, looks for nothing.
+- **Charging comes first.** The selection charges the last choice before it looks at any
+  candidate, so the task a CPU is running is judged on what its budget has left. Charged after,
+  a task whose deadline had just ended its budget still looked budgeted, kept its CPU over the
+  lower priorities waiting there, and the CPU then went idle with that work waiting until its
+  next interrupt.
+- **A run that crosses its period's end is two charges**: the time before the end to that period,
+  the rest to the next. Charged whole to the first, the time after the end was never charged,
+  since the refill that followed gave a whole budget, so a task chosen late in a period with
+  budget left could run up to twice its share in the next. A choice charges what ran since the
+  last, so a tick between had always limited this to the time since the last choice before the
+  end; with deadlines and refills shorter than a tick, nothing did.
+- **One CPU.** The BSP calibrates its LAPIC timer whether or not there are APs to start, so a
+  budget on a one-CPU machine ends when it runs out too.
+- **The TSC clock.** Where the TSC is invariant, `system_ticks` is derived from it: each tick
+  sets it to the whole ticks elapsed since the first, by the TSC, and never moves it back.
+  Counting PIT interrupts lost time whenever the BSP held interrupts off for longer than a tick,
+  since the 8259 holds one pending IRQ 0 and drops the rest. Without an invariant TSC the PIT
+  stays the clock. The BSP's tick interrupt is still the PIT's in both cases.
+- **Kernel timers.** There are none yet. Per-task timers (roadmap 2.2) will be armed at the
+  same point, as a third candidate for the earliest deadline.
+
+The shortest period stays one tick (`SC_MIN_PERIOD_US`), as step 4a set it.
 
 **Ring 3's view does not change.** `SYS_CLOCK_GETTIME` still reports 10 ms resolution and
 `CR4.TSD` stays set (S34). Fine time is the kernel's, not the task's.
@@ -290,7 +322,11 @@ Each gets a `SECURITY.md` row with its S-number when its step merges.
 | Property | Witness | Control arm |
 |---|---|---|
 | A task never runs beyond its context's budget, over many periods (S153) | `smoke-sched-budget`: a spinner bound to a fifth of an AP counts the ticks it saw itself run in | `BUDGET_UNENFORCED=1` |
-| A budget ends when it runs out, not at the next tick (S153, step 3b) | `smoke-sched-budget`: a counter given 1 ms every 100 ms counts the ticks it ran in over 30 periods | `DEADLINE_UNARMED=1` |
+| A budget ends when it runs out, not at the next tick (S153, step 3b) | `smoke-sched-budget`: a counter given 1 ms every 100 ms counts the ticks it ran in over 30 periods; `smoke-sched-budget-up`, the same on one CPU | `DEADLINE_UNARMED=1`, `UP_TIMER_UNCALIBRATED=1` |
+| A refill is noticed when it is due (S153, step 3c) | `smoke-sched-budget`: a counter given 9 ms every 10, alone on its CPU, runs nine tenths of the time | `REFILL_UNARMED=1` |
+| A run across a period's end is charged to both periods, and a task out of budget does not keep its CPU (S153, step 3c) | `smoke-sched-budget`: a counter given 5 ms every 10 at priority 100, delayed in every other period by `schedtest` at 255 on 7 ms every 20, runs four tenths of the time | `BOUNDARY_UNSPLIT=1`, `CHARGE_AFTER_PICK=1` |
+| The timers are TSC-deadline where the CPU offers it (step 3c) | `smoke-sched-budget-tscdl`: the budget checks under KVM, and the boot names the mode | `TSCDL_OFF=1` |
+| The clock keeps time while the BSP holds interrupts off (step 3c) | `smoke-tsc-clock`: the BSP masked for half a second loses the clock no tick | `TSC_CLOCK_OFF=1` |
 | A split never creates time: the children and the parent's remainder sum to the parent's share (S152) | Kani `a_split_never_creates_time` and `reclaim_never_exceeds_a_whole_cpu`; `schedtest`'s refusals | three `kani-arms.yml` arms: the subtraction dropped, the share believed, the reclaim unbounded |
 | No task makes itself or another more urgent than the authority it holds (S155) | `smoke-captest`: a child capped at 250 can neither raise its maximum nor set 255, and a `CAP_TCB` minted without the right is refused | `PRIO_UNCAPPED=1`, `PRIO_RIGHT_UNCHECKED=1` |
 | Among budgeted work the higher priority runs, and a yield lets in only its equals (S154) | `smoke-sched-budget`: `schedtest` at 255 yields beside a counter at 100 on one context, and the counter does not move | `PRIO_IGNORED=1` |
@@ -307,8 +343,9 @@ Each gets a `SECURITY.md` row with its S-number when its step merges.
 **What this does not close.** Tasks that share a context, or a passive server, can each observe
 the other's consumption through when they are descheduled: sharing an account is a channel by
 construction, and a supervisor that keeps two domains apart gives them separate contexts.
-A budget that ends when it runs out (3b) tells a task only that it stopped, which counting its
-own loop already tells it; it reads no clock finer than the tick (S34).
+A budget that ends when it runs out (3b), and a refill that starts it again when due (3c), tell a
+task only that it stopped and started, which counting its own loop already tells it; it reads no
+clock finer than the tick (S34).
 
 ## 5. Steps
 
@@ -321,7 +358,7 @@ own loop already tells it; it reads no clock finer than the tick (S34).
 | 2 ✅ | Per-CPU run lists and stealing; no policy change (§3.5) | 0, 1b, 2a |
 | 3a ✅ | One-shot AP timers and tickless idle, the BSP waking stopped APs (§3.4) | 2 |
 | 3b ✅ | Budget deadlines: each CPU's timer armed for the moment a budget runs out (§3.4, #595) | 3a, 4a |
-| 3c | The TSC-deadline timer, a TSC clock, and arming for refills and kernel timers | 3b |
+| 3c ✅ | The TSC-deadline timer, the TSC clock, and arming for refills (§3.4, #596) | 3b |
 | 4a ✅ | Scheduling contexts, budgets and binding (§3.1, #592) | 3a |
 | 4b ✅ | Priorities and their maximum (§3.2, #594) | 4a |
 | 5 | Passive servers | 4b |

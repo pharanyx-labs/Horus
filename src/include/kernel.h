@@ -992,17 +992,17 @@ struct notification *notification_by_index(uint32_t idx);
  *
  * Time is accounted in microseconds, measured with the TSC between the moment a
  * CPU chooses a task and the moment it chooses again, and charged only by the
- * CPU the context belongs to. Enforcement is at the tick until step 3b brings
- * deadline timers: a task can overrun by up to one tick, and the overrun is
- * carried as debt into the next period, so over many periods a context gets its
- * budget and no more. Sampling at the tick instead would let a task that yields
- * just before each tick run for nothing.
+ * CPU the context belongs to. Enforcement is at the CPU's timer, armed for the
+ * moment the budget runs out (steps 3b and 3c); what a late interrupt lets a
+ * task overrun is carried as debt into the next period, so over many periods a
+ * context gets its budget and no more. Sampling at the tick instead would let a
+ * task that yields just before each tick run for nothing.
  *
  * The roots are `.bss`, one per CPU; every other context is untyped memory,
  * named by an index table like the retyped endpoints. Every field is read and
  * written under the scheduler lock. */
 #define SC_PPM_WHOLE            1000000u      /* a whole CPU */
-#define SC_MIN_PERIOD_US        10000u        /* one tick, until step 3b */
+#define SC_MIN_PERIOD_US        10000u        /* one tick (rust MIN_PERIOD_US) */
 #define SC_MAX_PERIOD_US        10000000u     /* 10 s: keeps every product in 64 bits */
 #define SC_ROOT_PERIOD_US       100000u       /* a root's period: 100 ms, ten ticks */
 #define SC_FLAG_SLACK           0x1u          /* its tasks may run as slack (design 3.1, decision 8) */
@@ -2790,6 +2790,8 @@ uint64_t kmsg_uptime_ticks(void);   /* whole PIT ticks since boot -- quantised, 
 /* Bounded kernel waits in wall time on the calibrated TSC (terminal.c). A
  * deadline to compare against, never the time itself. */
 uint64_t kclock_deadline_us(uint64_t us);
+uint64_t sched_clock_tsc_at(uint64_t us); /* TSC value at sched_clock_us() == us (smp.c timers) */
+int      kclock_tsc_invariant(void);        /* CPUID invariant TSC: the TSC is a clock (step 3c) */
 int kclock_passed(uint64_t deadline);
 void kclock_delay_us(uint64_t us);
 #ifdef CLOCK_TSC_RESOLUTION

@@ -53,6 +53,15 @@ void _start(void) {
             (void)sys_map_frame(SLOT_FRAME, VA, CAP_RIGHT_READ | CAP_RIGHT_WRITE);
             if (f == 0) {
                 volatile unsigned long *c = (volatile unsigned long *)VA;
+                /* A fork that was in flight when schedtest stopped the round
+                 * (word 1 is 3 by then) finishes only once schedtest has bound
+                 * this task again, so its child is the child of a bound task
+                 * and is rightly given time. It must not stay: at 255 on the
+                 * counter's context it starved the counter once schedtest had
+                 * lowered it (3 boots in 42), and made the S154 check pass on
+                 * a starvation that was not schedtest's. A child that runs
+                 * while the round is on (2) is the defect, and counts. */
+                if (c[1] != 2) sys_exit();
                 for (;;) c[2]++;
             }
             if (f > 0) w[4]++;

@@ -2653,6 +2653,10 @@ void smp_kick_cpu(int cpu);
  * stops it and waits to be woken; the BSP's PIT tick wakes stopped APs while
  * tasks are waiting. */
 void smp_timer_after_tick(int fired);
+/* Budget deadlines (step 3b): CPU `cpu`, which must be the caller, runs a task
+ * whose budget runs out at TSC microsecond `dl` (0: none). The CPU's timer then
+ * fires by that moment, not only at its next tick. */
+void smp_timer_deadline(int cpu, uint64_t dl);
 void sched_wake_tickless(void);
 void kfault_task(int t);                 /* "N 'name'", name bounded */
 void kfault_pf_err(uint64_t err);        /* #PF error bits, spelled out */

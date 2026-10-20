@@ -12,7 +12,7 @@ scheduler of high quality, chosen with security first. The decisions below were 
 | CPU time | Scheduling contexts (§3.1, step 4a, #592): every task is bound to one, and runs only on the time it grants. Every task runs on the BSP's root until a holder of a context binds it elsewhere, and nothing in the shipped system does yet |
 | CPUs | `MAX_CPUS` is 8 (`src/include/cpu_limits.h`). Each costs about 104 KiB of `.bss` whether present or not: a 68 KiB idle stack (`ap_idle_stacks`), 24 KiB of IST stacks (`ap_ist`) and 8 KiB of TSS (`ap_tss`) |
 | SMT | Every secondary thread is parked before its timer starts (S101). A parked sibling keeps interrupts on to answer shootdowns and is marked idle, and `preempt_on_tick` refuses to schedule on one whatever interrupts it (#525) |
-| Time | The PIT at 100 Hz drives `system_ticks` on the BSP. Each AP's LAPIC timer is one-shot at the same 10 ms, re-armed only while the AP has a task; an idle AP stops, and the BSP's tick wakes stopped APs while work waits (§3.4). No per-task timer, no IPC timeout. Ring 3 sees 10 ms time and nothing finer (S34) |
+| Time | The PIT at 100 Hz drives `system_ticks` on the BSP. Each AP's LAPIC timer is one-shot at the same 10 ms, re-armed only while the AP has a task; an idle AP stops, and the BSP's tick wakes stopped APs while work waits (§3.4). A CPU running a task on a budget smaller than a root's also arms its LAPIC timer for the moment that budget runs out (§3.4, step 3b). No per-task timer, no IPC timeout. Ring 3 sees 10 ms time and nothing finer (S34) |
 | Wake | A wake sets a task runnable and nothing else; it touches no run list. When the waker blocks straight after (a call, a reply followed by a receive), its own CPU takes the woken task at once, from another CPU's list if need be: 59 of 64 wakes in a two-CPU boot ran within 100 µs (2026-10-09, an instrumented build, before the lists). When the waker keeps running, the woken task waits for the next tick of an idle CPU, up to 10 ms |
 | Isolation on switch | The microarchitectural state is flushed on every switch between tasks; FPU state is saved and restored eagerly (S16) |
 | Stack ownership | One CPU at a time on a task's kernel stack, held by the claim protocol and `sched_release_deferred` (S20) |
@@ -127,8 +127,11 @@ and charges the elapsed time, measured with the TSC, when it next chooses or tic
 cannot run for nothing by yielding just before each tick. A tick that lands while the task is in
 the kernel charges it too, and if the task is then out of budget it is switched away from on its
 way back to ring 3, as if it had yielded. A CPU whose only task is out of budget idles rather
-than run it. Enforcement is at the tick, so a burst can overrun by up to a tick; the overrun is
-debt, carried into the next period, so over many periods a context runs its budget and no more.
+than run it. Since step 3b the CPU's timer is armed for the moment the budget runs out (§3.4), so
+a task in ring 3 is switched away from then, and a task in the kernel on its way back to ring 3;
+on a one-CPU machine, where the LAPIC timer is not calibrated, a budget still ends at the next
+tick. Whatever overrun there is is debt, carried into the next period, so over many periods a
+context runs its budget and no more.
 In the `SMP=0` build, which is compiled in CI and not shipped, a task out of budget keeps the CPU
 when nothing else can run, because that build has no idle frame to switch to; it still yields to
 any other task.
@@ -164,8 +167,8 @@ budgeted work could lose every other tick to it (found by reading the code, not 
 Two consequences are stated rather than hidden. A lower priority runs only when nothing above it
 can, so a task that polls with `SYS_YIELD` keeps everything below it from its CPU unless a budget
 bounds it; this is why a budget comes with every priority. And a task that becomes runnable at a
-higher priority waits for its CPU's next tick, because a wake does not preempt; deadline timers
-(3b) and a reschedule interrupt are where that would change.
+higher priority waits for its CPU's next tick, because a wake does not preempt; a reschedule
+interrupt is where that would change.
 
 ### 3.3 Passive servers
 
@@ -194,9 +197,22 @@ waiting task still gets a CPU within a tick, as when every idle AP polled, and n
 a CPU that makes a task runnable is running, so its own tick follows. One AP, the watcher, never
 stops, because the BSP can sit in ring 0 with interrupts masked for seconds (an Argon2 hash; the SMP
 selftest runs entirely so) and then takes no PIT tick either; without the watcher every CPU could be
-waiting on it. A parked SMT sibling never asks to be woken. The
-deadline arming above, and the TSC clock, are step 3b; until then the next deadline is always
-the next tick, a budget running out included (§3.1).
+waiting on it. A parked SMT sibling never asks to be woken.
+
+**Built next (step 3b): budget deadlines.** At every choice a CPU arms its timer for the moment
+the chosen task's budget runs out, unless that budget is a root's (a whole CPU, so it times
+nothing): an AP for that moment or its next tick, whichever is first, and the BSP its otherwise
+unused LAPIC timer for the deadline alone, its tick staying the PIT's. The CPU whose budget it
+is arms it, at the charge (`sc_account`), so no CPU programs another's timer. A deadline found
+already past when the timer is re-armed means the interrupt that came for it landed in the
+kernel and lost the scheduler lock; it is dropped, and the next tick takes the charge, rather
+than re-armed into an interrupt every 20 µs. An early interrupt costs one pass through
+`preempt_on_tick`, which charges by the TSC, so nothing is charged twice.
+
+**Still to come (step 3c).** The TSC-deadline mode, a TSC clock, and arming for a refill that
+would make a higher-priority task runnable and for the next kernel timer. Until then a refill
+is noticed at the next tick, and on a machine with one CPU, where the LAPIC timer is never
+calibrated, a budget ends at the next tick too.
 
 **Ring 3's view does not change.** `SYS_CLOCK_GETTIME` still reports 10 ms resolution and
 `CR4.TSD` stays set (S34). Fine time is the kernel's, not the task's.
@@ -274,6 +290,7 @@ Each gets a `SECURITY.md` row with its S-number when its step merges.
 | Property | Witness | Control arm |
 |---|---|---|
 | A task never runs beyond its context's budget, over many periods (S153) | `smoke-sched-budget`: a spinner bound to a fifth of an AP counts the ticks it saw itself run in | `BUDGET_UNENFORCED=1` |
+| A budget ends when it runs out, not at the next tick (S153, step 3b) | `smoke-sched-budget`: a counter given 1 ms every 100 ms counts the ticks it ran in over 30 periods | `DEADLINE_UNARMED=1` |
 | A split never creates time: the children and the parent's remainder sum to the parent's share (S152) | Kani `a_split_never_creates_time` and `reclaim_never_exceeds_a_whole_cpu`; `schedtest`'s refusals | three `kani-arms.yml` arms: the subtraction dropped, the share believed, the reclaim unbounded |
 | No task makes itself or another more urgent than the authority it holds (S155) | `smoke-captest`: a child capped at 250 can neither raise its maximum nor set 255, and a `CAP_TCB` minted without the right is refused | `PRIO_UNCAPPED=1`, `PRIO_RIGHT_UNCHECKED=1` |
 | Among budgeted work the higher priority runs, and a yield lets in only its equals (S154) | `smoke-sched-budget`: `schedtest` at 255 yields beside a counter at 100 on one context, and the counter does not move | `PRIO_IGNORED=1` |
@@ -290,7 +307,8 @@ Each gets a `SECURITY.md` row with its S-number when its step merges.
 **What this does not close.** Tasks that share a context, or a passive server, can each observe
 the other's consumption through when they are descheduled: sharing an account is a channel by
 construction, and a supervisor that keeps two domains apart gives them separate contexts.
-Budget exhaustion is no finer a clock than the 10 ms tick a task can already count.
+A budget that ends when it runs out (3b) tells a task only that it stopped, which counting its
+own loop already tells it; it reads no clock finer than the tick (S34).
 
 ## 5. Steps
 
@@ -302,7 +320,8 @@ Budget exhaustion is no finer a clock than the 10 ms tick a task can already cou
 | 2a ✅ | One selection rule for every switch path (#524) | |
 | 2 ✅ | Per-CPU run lists and stealing; no policy change (§3.5) | 0, 1b, 2a |
 | 3a ✅ | One-shot AP timers and tickless idle, the BSP waking stopped APs (§3.4) | 2 |
-| 3b | The TSC-deadline timer, a TSC clock, and arming for the earliest deadline rather than the next tick | 3a |
+| 3b ✅ | Budget deadlines: each CPU's timer armed for the moment a budget runs out (§3.4, #595) | 3a, 4a |
+| 3c | The TSC-deadline timer, a TSC clock, and arming for refills and kernel timers | 3b |
 | 4a ✅ | Scheduling contexts, budgets and binding (§3.1, #592) | 3a |
 | 4b ✅ | Priorities and their maximum (§3.2, #594) | 4a |
 | 5 | Passive servers | 4b |

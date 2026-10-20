@@ -182,6 +182,21 @@ fault_expected_seen() {
         *)     grep -qF "$EXPECT_FAULT" "$LOG" 2>/dev/null ;;
     esac
 }
+# A RING-3 RETURN THE KERNEL HAD TO REPAIR IS A KERNEL DEFECT, in every gate.
+# ring3_cr3_check (S156) loads a task's own page tables when a return to ring 3
+# finds another's loaded, and says so on COM3. The task then runs correctly, so
+# without this nothing on COM1 would show that a kernel path left the wrong CR3
+# behind: the backstop would hide the defect it backs. So the line fails any gate
+# that does not expect it, as a panic does. smoke-cr3-return, which puts such a
+# path back to show the repair, sets CR3_REPAIR_EXPECTED=1; an arm whose defect
+# IS such a path names the line as its EXPECT_FAULT.
+CR3_REPAIR_LINE="ring-3 return on page tables not the task's own"
+cr3_repair_unexpected() {
+    [ "${CR3_REPAIR_EXPECTED:-0}" = 1 ] && return 1
+    grep -qF "$CR3_REPAIR_LINE" "$KDIAG" 2>/dev/null || return 1
+    [ -n "$EXPECT_FAULT" ] && fault_expected_seen && return 1
+    return 0
+}
 fail_seen() {
     grep -qF "$1" "$LOG" 2>/dev/null && return 0
     case "$MARKER_CHANNEL" in
@@ -548,6 +563,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     if [ -n "$EXPECT_FAULT" ] && [ "$EXPECT_FAULT_CHANNEL" != console ] && fault_expected_seen; then
         status="expected_fault"; break
     fi
+    if cr3_repair_unexpected; then status="cr3_repair"; break; fi
     if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then
         # Under EXPECT_FAULT, only the fault we NAMED ends the run. Any other
         # fault must keep going so it is reported as the wrong one at the end
@@ -635,6 +651,11 @@ case "$status" in
             echo "SMOKE FAIL: kernel fault/panic on serial"
             exit 1
         fi
+        if cr3_repair_unexpected; then
+            echo "SMOKE FAIL: the kernel repaired a return to ring 3 on another address space's page tables (COM3)"
+            grep -aF "$CR3_REPAIR_LINE" "$KDIAG" | head -3 | sed 's/^/  /'
+            exit 1
+        fi
         if [ -n "$FAIL_MARKER" ] && fail_seen "$FAIL_MARKER"; then
             echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER'"
             exit 1
@@ -695,6 +716,10 @@ case "$status" in
     marker_fail)
         echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER' on serial"
         grep -nF "$FAIL_MARKER" "$LOG" | head -3 | sed 's/^/  /'
+        exit 1 ;;
+    cr3_repair)
+        echo "SMOKE FAIL: the kernel repaired a return to ring 3 on another address space's page tables (COM3)"
+        grep -aF "$CR3_REPAIR_LINE" "$KDIAG" | head -3 | sed 's/^/  /'
         exit 1 ;;
     qmp_failed)
         echo "SMOKE FAIL: could not ask QEMU to quit over QMP after the marker"

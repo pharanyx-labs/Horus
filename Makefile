@@ -230,7 +230,8 @@ DEFECT_FLAGS = \
 	BUDGET_UNENFORCED BUDGET_CROSS_CPU SC_DESTROY_KEEPS_TASKS SC_UNBOUND_CREATOR_GETS_ROOT \
 	SCHED_BIND_UNLOCKED PRIO_UNCAPPED PRIO_RIGHT_UNCHECKED PRIO_IGNORED \
 	DEADLINE_UNARMED REFILL_UNARMED BOUNDARY_UNSPLIT CHARGE_AFTER_PICK INSTRUMENTS_UNANNOUNCED \
-	TSCDL_OFF TSC_CLOCK_OFF TSC_CLOCK_PROBE UP_TIMER_UNCALIBRATED FORK_NOMEM_KEEPS_KCR3
+	TSCDL_OFF TSC_CLOCK_OFF TSC_CLOCK_PROBE UP_TIMER_UNCALIBRATED FORK_NOMEM_KEEPS_KCR3 \
+	CR3_RETURN_UNCHECKED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2383,6 +2384,12 @@ endif
 FORK_NOMEM_KEEPS_KCR3 ?= 0
 ifeq ($(FORK_NOMEM_KEEPS_KCR3),1)
 CFLAGS += -DFORK_NOMEM_KEEPS_KCR3
+endif
+# CR3_RETURN_UNCHECKED=1 skips ring3_cr3_check, the check on every return to
+# ring 3 that the CR3 loaded is the task's own (smoke-cr3-return-control).
+CR3_RETURN_UNCHECKED ?= 0
+ifeq ($(CR3_RETURN_UNCHECKED),1)
+CFLAGS += -DCR3_RETURN_UNCHECKED
 endif
 
 # The frame table is sized from the arena (roadmap 2.1). FRAME_BUDGET_SELFTEST=1
@@ -8129,15 +8136,48 @@ smoke-captest-pipe-grant-control:
 		REQUIRE_MARKER='CAPTEST: FAIL pipe-end-granted-to-a-child' \
 		tools/smoke_test.sh horus.iso
 
-# Control arm: a fork refused for a spent region leaves the kernel's CR3 loaded,
-# so the child that asked dies on its next instruction fetch and never reports.
+# No task returns to ring 3 on page tables that are not its own, whatever kernel
+# path got it there (ring3_cr3_check). FORK_NOMEM_KEEPS_KCR3 puts back a real
+# instance, the fork refusal that returned on the kernel's pml4: with the check
+# the captest child that hits it is returned on its own tables and lives to say
+# so (captest 16d passes), and COM3 records the repair. Both are required: a pass
+# without the report would mean the slip never happened and the check was never
+# asked.
+.PHONY: smoke-cr3-return
+smoke-cr3-return:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1 horus.iso
+	@set -e; diag=.cr3-return-kdiag.log; \
+	CR3_REPAIR_EXPECTED=1 SMOKE_KDIAG_LOG=$$diag SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: PASS' FAIL_MARKER='CAPTEST: FAIL' tools/smoke_test.sh horus.iso; \
+	if ! grep -qa "ring-3 return on page tables not the task's own" $$diag; then \
+		echo "SMOKE FAIL: captest passed but COM3 has no repair: the check was never asked ($$diag)"; exit 1; \
+	fi; echo "SMOKE PASS: the wrong CR3 was caught at the return and the task's own loaded"
+
+# Control arm: the same slip without the check. The child returns to ring 3 on
+# the kernel's tables, dies on its next instruction fetch, and never reports.
+.PHONY: smoke-cr3-return-control
+smoke-cr3-return-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1 CR3_RETURN_UNCHECKED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1 CR3_RETURN_UNCHECKED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL a-fork-refused-for-memory-killed-its-caller' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: a fork refused for a spent region leaves the kernel's CR3 loaded.
+# Since S156 the return to ring 3 is repaired, so the child lives; the defect is
+# the repair itself, on COM3, which fails smoke-captest like a panic would
+# (tools/smoke_test.sh). Without the check the child dies on its next
+# instruction fetch: smoke-cr3-return-control.
 .PHONY: smoke-captest-fork-nomem-control
 smoke-captest-fork-nomem-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		REQUIRE_MARKER='CAPTEST: FAIL a-fork-refused-for-memory-killed-its-caller' \
+		EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT="ring-3 return on page tables not the task's own" \
 		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest-capenum-control

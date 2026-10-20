@@ -61,6 +61,15 @@ isr_common_stub64:
      * through a boot to ring 3. */
 #endif
 
+    /* No task returns to ring 3 on page tables that are not its own
+     * (ring3_cr3_check, scheduler.c). %rsp still names the frame the iretq
+     * below resumes, so it is the argument; it returns only if the CR3 now
+     * loaded is that task's. Same stack alignment as the call above, and the
+     * same reason the SysV clobbers are harmless: every register is reloaded by
+     * the pops that follow. */
+    movq %rsp, %rdi
+    call ring3_cr3_check
+
     popq %r15
     popq %r14
     popq %r13

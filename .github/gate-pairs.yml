@@ -241,6 +241,7 @@ control_arms:
   smoke-claim-release-control: smoke-claim-release
   smoke-cr3-reclaim-control: smoke-cr3-reclaim
   smoke-defect-flags-control: smoke-defect-flags
+  smoke-defect-flags-instrument-control: smoke-defect-flags-instrument
   smoke-defect-flags-rebuild-control: smoke-defect-flags-rebuild
   smoke-defer-exemption-control: smoke-defer-exemption
   smoke-devcap-irq-control: smoke-devcap
@@ -509,6 +510,7 @@ gates:
   - smoke-storage-noformat
   - smoke-cr3-reclaim
   - smoke-defect-flags
+  - smoke-defect-flags-instrument
   - smoke-defect-flags-rebuild
   - smoke-defer-exemption
   - smoke-devcap

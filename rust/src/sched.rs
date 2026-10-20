@@ -15,8 +15,12 @@
 
 /// A whole CPU.
 pub const PPM_WHOLE: u32 = 1_000_000;
-/// The shortest period, one tick. Deadline timers (scheduler design 3.4, steps
-/// 3b and 3c) would allow a shorter one; it stays a tick until that is decided.
+/// The shortest period, one tick, and it stays one (2026-10-20). Deadline timers
+/// (scheduler design 3.4, steps 3b and 3c) could time a shorter period, but every
+/// period costs its CPU a refill interrupt that no budget is charged for, so a
+/// shorter floor would raise the rate at which a holder of a context can make
+/// its CPU take an interrupt nobody pays for. At one tick a context adds at most
+/// one per tick, and each context costs its creator untyped memory.
 pub const MIN_PERIOD_US: u32 = 10_000;
 /// The longest period, 10 s.
 pub const MAX_PERIOD_US: u32 = 10_000_000;

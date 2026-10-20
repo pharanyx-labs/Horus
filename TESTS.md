@@ -9,7 +9,8 @@ Two rules shape all of them:
   **control arm**: a build flag that puts the defect back, under which the gate itself must go
   red. `.github/gate-pairs.yml` pairs every arm with its gate, the defect-flag table in
   [`docs/BUILDING.md`](docs/BUILDING.md) names each flag, and every kernel prints
-  `DEFECT FLAGS:` at boot so an instrumented build cannot pass for a clean one.
+  `DEFECT FLAGS:` at boot, naming every build switch but the shipped ones, so an instrumented build
+  cannot pass for a clean one.
 
 ## The layers
 
@@ -47,7 +48,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 605 `smoke-*` targets: 253 gates and 352 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 607 `smoke-*` targets: 254 gates and 353 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -120,7 +121,7 @@ There are 605 `smoke-*` targets: 253 gates and 352 control arms. Each row is a g
 | `smoke-kstack-reuse` | A spawn never reuses a slot whose kernel stack a CPU is still on | S20 | `smoke-kstack-reuse-control` |
 | `smoke-percpu` | Each CPU's identity from its TSS selector agrees with its LAPIC |  |  |
 | `smoke-preempt` | The timer time-slices two ring-3 tasks | S80 |  |
-| `smoke-killed-task` | A task killed while it runs on another CPU stops, and stops writing memory it shares | S56 | `smoke-proc-killed-task-control` |
+| `smoke-killed-task` | A task killed while it runs on another CPU writes nothing to the memory it shares once `SYS_KILL` has returned | S56 | `smoke-proc-killed-task-control` |
 | `smoke-killed-task-late` | The same with the kill IPI withheld, under KVM: the task has stopped when `SYS_KILL` returns because teardown waits for its CPU | S56 | `smoke-killed-task-late-control` |
 | `smoke-resume-guard` | A bogus resume stack pointer is caught and reported after the console handover |  | `smoke-resume-guard-legacy`, `smoke-resume-guard-nofloor`, `smoke-resume-guard-preclaim` |
 | `smoke-resume-guard-ist` | The resume guard never fires on a legitimate return to an IST stack |  | `smoke-resume-guard-ist-control` |
@@ -353,6 +354,7 @@ There are 605 `smoke-*` targets: 253 gates and 352 control arms. Each row is a g
 |---|---|---|---|
 | `smoke-ap-trampoline` | The embedded secondary-CPU trampoline is exactly its code, whatever the host assembler emits |  | `smoke-ap-trampoline-control` |
 | `smoke-defect-flags` | Every boot states which defect flags built it |  | `smoke-defect-flags-control` |
+| `smoke-defect-flags-instrument` | A `SCHED_INVARIANTS` build, which no defect-flag row lists, names it in `DEFECT FLAGS:` and never says `none` |  | `smoke-defect-flags-instrument-control` |
 | `smoke-defect-flags-rebuild` | Changing a defect flag rebuilds what it affects |  | `smoke-defect-flags-rebuild-control` |
 | `smoke-repro-iso` | `kernel.elf`, the gates' `horus.iso` and the release's `install.iso` are the same bytes when built in two directories, at two times, serially and in parallel; a difference names the file inside the ISO and keeps both copies | S17 | `smoke-repro-iso-path-control`, `smoke-repro-iso-serial-control` |
 | `smoke-repro-sha` | The build record refuses an incomplete build and names every artifact of a complete one | S17 | `smoke-repro-sha-control` |

@@ -32,6 +32,16 @@ invocation in a smoke-* target (both honour MARKER_CHANNEL):
       (panic_str, kfault_str) writes, which goes to COM3 and never to COM4. A
       marker on the wrong channel never arrives, so such a gate could only
       time out.
+  R6  an EXPECT_FAULT read off the console (EXPECT_FAULT_CHANNEL unset or
+      console) is a string ring 3 prints. Anything else, a kernel line or one
+      this checker cannot place, names the kernel channel it is written on:
+      EXPECT_FAULT_CHANNEL=kdiag (COM3) or kcon (COM4). A control arm that
+      waits for a kernel fault on COM1 can be handed it split, and can be handed
+      it by any task that prints the same words; there is no list of exceptions.
+  R7  EXPECT_FAULT_CHANNEL=kcon names a fault the kernel print()s, and kdiag one
+      its diagnostic reporter writes, wherever the checker can place it. One too
+      short to place is accepted on either: only the kernel writes there, and
+      the wrong one can only time the arm out, red.
   R5  every harness under tools/ that boots the guest itself (it names
       qemu-system, smoke_test.sh or run_with_swtpm.sh) is listed under
       `scripts:`, and every listed one still exists. The checker cannot read
@@ -63,7 +73,10 @@ MIN_PREFIX = 12
 LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 # The kernel's diagnostic reporters: they write COM3 and COM1 directly and never
 # go through print(), so a marker they emit is on COM3 and NOT on COM4.
-DIAG_EMIT = re.compile(r"\b(panic_str|kfault_str|kdiag_str|panic_line)\s*\(\s*$")
+# A literal is the reporter's when it sits inside one of these calls, still
+# open: directly after the parenthesis, or as an arm of a conditional there
+# (`kfault_str(allowed ? "..." : "...")`), so no `;` or `)` comes between.
+DIAG_EMIT = re.compile(r"\b(panic_str|kfault_str|kdiag_str|panic_line|sched_claim_panic|sched_runq_panic)\s*\([^;()]*$")
 
 
 def literals(globs, diag=None):
@@ -80,7 +93,7 @@ def literals(globs, diag=None):
                 s = s.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
                 if not s:
                     continue
-                if diag is not None and DIAG_EMIT.search(t[max(0, m.start() - 40):m.start()]):
+                if diag is not None and DIAG_EMIT.search(t[max(0, m.start() - 160):m.start()]):
                     diag.append(s)
                 else:
                     out.append(s)
@@ -185,6 +198,23 @@ def main():
                                 "diagnostic reporter, so it can never reach COM3" % (tgt, mk))
                 if (k or d) and not u and chan == "console":
                     reading.setdefault(tgt, []).append(mk)
+            fchan = re.search(r"\bEXPECT_FAULT_CHANNEL=(\w+)", cmd)
+            fchan = fchan.group(1) if fchan else "console"
+            for m in re.finditer(r"\bEXPECT_FAULT=(['\"])(.+?)\1", cmd):
+                mk = m.group(2)
+                if "$" in mk:
+                    continue
+                k, d, u = printed_in(mk, kern), printed_in(mk, kdiag), printed_in(mk, user)
+                if fchan == "console" and not u:
+                    errs.append("R6 %s expects the fault %r on the shared console, and it is not a line "
+                                "ring 3 prints. Set EXPECT_FAULT_CHANNEL=kdiag (panic_str, kfault_str) "
+                                "or kcon (print)" % (tgt, mk))
+                if fchan == "kcon" and (d or u) and not k:
+                    errs.append("R7 %s: EXPECT_FAULT_CHANNEL=kcon but %r is not print()ed by the kernel, "
+                                "so it can never reach COM4%s" % (tgt, mk, " (use kdiag)" if d else ""))
+                if fchan == "kdiag" and (k or u) and not d:
+                    errs.append("R7 %s: EXPECT_FAULT_CHANNEL=kdiag but %r is not written by the kernel's "
+                                "diagnostic reporter, so it can never reach COM3%s" % (tgt, mk, " (use kcon)" if k else ""))
 
     for tgt, mks in sorted(reading.items()):
         if tgt not in console:

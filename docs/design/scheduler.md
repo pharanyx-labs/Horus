@@ -244,7 +244,11 @@ than re-armed into an interrupt every 20 µs. An early interrupt costs one pass 
 - **Kernel timers.** There are none yet. Per-task timers (roadmap 2.2) will be armed at the
   same point, as a third candidate for the earliest deadline.
 
-The shortest period stays one tick (`SC_MIN_PERIOD_US`), as step 4a set it.
+The shortest period stays one tick (`SC_MIN_PERIOD_US`), as step 4a set it, by decision
+(2026-10-20). The timers could now time a shorter one, but each period costs its CPU a refill
+interrupt that no budget is charged for, so a shorter floor would raise the rate at which a holder
+of a context can make its CPU take an interrupt nobody pays for. At one tick a context adds at most
+one per tick, and each context costs its creator untyped memory.
 
 **Ring 3's view does not change.** `SYS_CLOCK_GETTIME` still reports 10 ms resolution and
 `CR4.TSD` stays set (S34). Fine time is the kernel's, not the task's.

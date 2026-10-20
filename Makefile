@@ -229,7 +229,7 @@ DEFECT_FLAGS = \
 	RETYPE_RACE_SELFTEST KOBJ_UNPINNED GC_TEARDOWN_UNLOCKED \
 	BUDGET_UNENFORCED BUDGET_CROSS_CPU SC_DESTROY_KEEPS_TASKS SC_UNBOUND_CREATOR_GETS_ROOT \
 	SCHED_BIND_UNLOCKED PRIO_UNCAPPED PRIO_RIGHT_UNCHECKED PRIO_IGNORED \
-	DEADLINE_UNARMED REFILL_UNARMED BOUNDARY_UNSPLIT CHARGE_AFTER_PICK \
+	DEADLINE_UNARMED REFILL_UNARMED BOUNDARY_UNSPLIT CHARGE_AFTER_PICK INSTRUMENTS_UNANNOUNCED \
 	TSCDL_OFF TSC_CLOCK_OFF TSC_CLOCK_PROBE UP_TIMER_UNCALIBRATED FORK_NOMEM_KEEPS_KCR3
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
@@ -242,8 +242,37 @@ DEFECT_FLAGS = \
 DEFECT_ACTIVE = $(strip \
 	$(foreach f,$(DEFECT_FLAGS),$(if $(filter 1,$($(f))),$(f))) \
 	$(if $(filter 1,$(EP_QUEUE_SLOTS)),EP_QUEUE_SLOTS))
-DEFECT_ACTIVE_STR = $(if $(DEFECT_ACTIVE),$(DEFECT_ACTIVE),none)
-CFLAGS += -DDEFECT_FLAGS_STR='"$(DEFECT_ACTIVE_STR)"'
+# EVERY OTHER SWITCH IS ANNOUNCED TOO, by construction (2026-10-20). The list
+# above names the defects and the instruments someone remembered to add, and
+# 97 build switches were not on it: every *_SELFTEST, SCHED_INVARIANTS,
+# HANG_WATCHDOG, IRQ_POLICY_AUDIT, PASSWD_PROBE, DEBUG_SHELL. Each of those
+# kernels announced "DEFECT FLAGS: none", which CLAUDE.md section 6 forbids for
+# any instrumented build: a boot that looks clean while carrying extra code is
+# the trap. So the announcement is now read off what the build was asked for,
+# from two places, after the listed flags:
+#   - every switch on the compile line: a -D macro with no value or the value 1
+#     (one with another value is a parameter, such as TICKLESS_PROBE_SPAN=500);
+#   - every VAR=1 on the make command line (MAKEOVERRIDES, which sub-makes
+#     inherit), since that is how every build switch here is set, and some add
+#     only a parameter (META_CACHE_TINY=1 adds -DMETA_CACHE_LINES=2).
+# Minus the switches a shipped image is built with: SMP (plain `make`) and
+# install.iso's STORAGE_ATA, COREUTILS_MODULES, TCC_MODULE, DOC_MODULES and
+# INSTALL_ESP. A switch added tomorrow is announced without anyone remembering
+# to list it; one that is not a build switch at all is announced too, which errs
+# towards saying too much, never too little. INSTRUMENTS_UNANNOUNCED=1 names only
+# the listed flags, as before, for smoke-defect-flags-instrument-control.
+SHIP_SWITCHES = SMP STORAGE_ATA COREUTILS_MODULES TCC_MODULE DOC_MODULES INSTALL_ESP
+KERNEL_SWITCHES = $(foreach w,$(filter -D%,$(CFLAGS)),$(if $(findstring =,$(w)),$(if $(filter %=1,$(w)),$(patsubst -D%=1,%,$(w))),$(patsubst -D%,%,$(w))))
+CMDLINE_SWITCHES = $(foreach a,$(MAKEOVERRIDES),$(if $(filter %=1,$(a)),$(patsubst %=1,%,$(a))))
+ifneq ($(INSTRUMENTS_UNANNOUNCED),1)
+DEFECT_EXTRA = $(sort $(filter-out $(SHIP_SWITCHES) $(DEFECT_ACTIVE) INSTRUMENTS_UNANNOUNCED,$(KERNEL_SWITCHES) $(CMDLINE_SWITCHES)))
+endif
+DEFECT_ANNOUNCED = $(strip $(DEFECT_ACTIVE) $(DEFECT_EXTRA))
+DEFECT_ACTIVE_STR = $(if $(DEFECT_ANNOUNCED),$(DEFECT_ANNOUNCED),none)
+# Not in CFLAGS: it is computed FROM CFLAGS. Every kernel object gets it on its
+# compile line (the %.o rule below), and .build-flags stamps it beside CFLAGS,
+# so a build asked for differently rebuilds even where CFLAGS did not change.
+KERNEL_ID_CFLAGS = -DDEFECT_FLAGS_STR='"$(DEFECT_ACTIVE_STR)"'
 
 # `all` stays the default goal. This block introduces the first explicit targets
 # in the file, and in make the FIRST target wins by default -- without this,
@@ -273,7 +302,7 @@ print-boot-module-count:
 # Rewritten only when the content differs, so it does not itself force a rebuild
 # on every invocation.
 .build-flags: FORCE
-	@printf '%s\n%s\n' '$(CFLAGS)' '$(ASFLAGS)' > $@.tmp; \
+	@printf '%s\n%s\n%s\n' '$(CFLAGS)' '$(ASFLAGS)' '$(KERNEL_ID_CFLAGS)' > $@.tmp; \
 	 cmp -s $@.tmp $@ || mv $@.tmp $@; \
 	 rm -f $@.tmp
 .PHONY: FORCE
@@ -5403,7 +5432,7 @@ else
 endif
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(KERNEL_ID_CFLAGS) -c $< -o $@
 
 %.o: %.S
 	$(AS) $(ASFLAGS) $< -o $@
@@ -8389,7 +8418,7 @@ smoke-proc-phoff-wrap-control:
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_SPAN_C_PARSE=1
 	@$(MAKE) --no-print-directory PROC_SELFTEST=1 ELF_SPAN_C_PARSE=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
-		EXPECT_FAULT='PAGE FAULT at 0xffffff8180fffff0 err=0x0(not-present,read,supervisor)' \
+		EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT='PAGE FAULT at 0xffffff8180fffff0 err=0x0(not-present,read,supervisor)' \
 		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-auditprobe-abi-control
@@ -8568,7 +8597,7 @@ smoke-enter-user-collide-control:
 	while [ $$n -lt $(ENTER_USER_COLLIDE_CONTROL_BOOTS) ]; do \
 	    n=$$((n+1)); one=$$(mktemp); \
 	    if SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) SMOKE_LOG="$$one" \
-	           EXPECT_FAULT='task 1' tools/smoke_test.sh horus.iso >/dev/null 2>&1; then \
+	           EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT='Rejected by validator - killing task 1' tools/smoke_test.sh horus.iso >/dev/null 2>&1; then \
 	        hit=$$n; echo "  boot $$n/$(ENTER_USER_COLLIDE_CONTROL_BOOTS): HIT, two CPUs on one task"; \
 	        cat "$$one" >> "$$log"; rm -f "$$one"; break; \
 	    fi; \
@@ -8776,6 +8805,31 @@ smoke-defect-flags:
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='DEFECT FLAGS: none' \
 		FAIL_MARKER='DEFECT FLAGS: unknown' tools/smoke_test.sh horus.iso
+
+# An INSTRUMENTED kernel must name what it carries too, though no defect-flag
+# row lists it: SCHED_INVARIANTS (the scheduler's claim checks, never shipped)
+# is one of the 97 switches that announced "none" before 2026-10-20. Read off
+# the console, like the gates above: the line is printed in kernel_main before
+# any ring-3 task exists, and before the kernel's COM4 copy starts.
+.PHONY: smoke-defect-flags-instrument
+smoke-defect-flags-instrument:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEFECT FLAGS: SCHED_INVARIANTS' \
+		FAIL_MARKER='DEFECT FLAGS: none' tools/smoke_test.sh horus.iso
+
+# Control arm: only the listed flags are announced, as before, so the same
+# instrumented kernel says nothing of SCHED_INVARIANTS.
+.PHONY: smoke-defect-flags-instrument-control
+smoke-defect-flags-instrument-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 INSTRUMENTS_UNANNOUNCED=1
+	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 INSTRUMENTS_UNANNOUNCED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='DEFECT FLAGS: INSTRUMENTS_UNANNOUNCED' \
+		FAIL_MARKER='SCHED_INVARIANTS' tools/smoke_test.sh horus.iso
 
 # The same kernel built WITH a defect arm must name it. Without this, the gate
 # above is satisfied by a kernel that prints "none" unconditionally.
@@ -9410,7 +9464,7 @@ smoke-measured-boot-required-control:
 	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1
 	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-		EXPECT_FAULT='PANIC: measured boot required but unavailable (no TPM present)' \
+		EXPECT_FAULT_CHANNEL=kcon EXPECT_FAULT='PANIC: measured boot required but unavailable (no TPM present)' \
 		tools/smoke_test.sh horus.iso
 
 # CONTROL ARM 2: the volume half. A never-sealed volume unlocks on the password
@@ -9425,7 +9479,7 @@ smoke-measured-boot-required-volume-control:
 	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_EXEMPT_NONE=1
 	@$(MAKE) --no-print-directory MEASURED_BOOT_REQUIRED=1 MEASURED_VOLUME_EXEMPT_NONE=1 horus.iso
 	@SWTPM_TIMEOUT=$(SMOKE_TIMEOUT) \
-		EXPECT_FAULT='PANIC: measured boot required but the volume is not sealed' \
+		EXPECT_FAULT_CHANNEL=kcon EXPECT_FAULT='PANIC: measured boot required but the volume is not sealed' \
 		tools/run_with_swtpm.sh horus.iso
 
 # ---- the policy, met by a REAL DISK (docs/LIMITATIONS.md 2.9, S85) ----------
@@ -9841,7 +9895,7 @@ smoke-shootdown-unacked:
 	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1
 	@$(MAKE) --no-print-directory SMP_SELFTEST=1 SHOOTDOWN_DEAF_CPU=1 horus.iso
 	@SMOKE_TIMEOUT=$(SHOOTDOWN_UNACKED_TIMEOUT) MARKER_ONLY=1 SMP_CPUS=$(SMP_CPUS) \
-		EXPECT_FAULT='PANIC: tlb shootdown unacknowledged' \
+		EXPECT_FAULT_CHANNEL=kcon EXPECT_FAULT='PANIC: tlb shootdown unacknowledged' \
 		tools/smoke_test.sh horus.iso
 
 # Control arm: the same deaf CPU with the old fall-through. The shootdown returns
@@ -10892,7 +10946,7 @@ smoke-net-msi-vector-control:
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSI_VECTOR_FROM_USER=1
 	@$(MAKE) --no-print-directory NET_SELFTEST=1 MSI_VECTOR_FROM_USER=1 horus.iso
 	@SMOKE_NET=e1000e SMOKE_IOMMU=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-		EXPECT_FAULT='task 1' tools/smoke_test.sh horus.iso
+		EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT='Rejected by validator - killing task 1' tools/smoke_test.sh horus.iso
 
 # S48's arm. The MSI-X vector table lives in a BAR, so without an explicit
 # refusal a driver maps it like any other register page and writes its own
@@ -13289,7 +13343,7 @@ smoke-resume-guard-ist-control:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 RESUME_GUARD_BSS_ONLY=1
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 RESUME_GUARD_BSS_ONLY=1 horus.iso
-	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_FAULT='$(RESUME_GUARD_IST_RE)' \
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT='$(RESUME_GUARD_IST_RE)' \
 		tools/smoke_test.sh horus.iso
 
 # Two CPUs on one kernel stack -- finding G-8, and the gate that closes it.
@@ -14296,7 +14350,7 @@ smoke-switch-commit-control:
 	while [ $$n -lt $(SWITCH_COMMIT_CONTROL_BOOTS) ]; do \
 	    n=$$((n+1)); \
 	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-	        EXPECT_FAULT='stale scheduler claim' \
+	        EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT='stale scheduler claim' \
 	        tools/smoke_test.sh horus.iso 2>&1); rc=$$?; \
 	    echo "$$out" | tail -2 | sed 's/^/  /'; \
 	    if [ $$rc -eq 0 ]; then hit=$$n; break; fi; \
@@ -14360,7 +14414,7 @@ smoke-claim-release-control:
 	while [ $$n -lt $(CLAIM_RELEASE_CONTROL_BOOTS) ]; do \
 	    n=$$((n+1)); \
 	    out=$$(SMP_CPUS=4 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-	        EXPECT_FAULT='ring 3 reached with a deferred release outstanding' \
+	        EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT='ring 3 reached with a deferred release outstanding' \
 	        tools/smoke_test.sh horus.iso 2>&1); rc=$$?; \
 	    echo "$$out" | tail -2 | sed 's/^/  /'; \
 	    if [ $$rc -eq 0 ]; then hit=$$n; break; fi; \
@@ -15164,7 +15218,7 @@ smoke-retype-race-gc-control:
 	@$(MAKE) --no-print-directory RETYPE_RACE_SELFTEST=1 GC_TEARDOWN_UNLOCKED=1
 	@$(MAKE) --no-print-directory RETYPE_RACE_SELFTEST=1 GC_TEARDOWN_UNLOCKED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
-		EXPECT_FAULT='PANIC: the object collector ran without cap_lock' \
+		EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT='PANIC: the object collector ran without cap_lock' \
 		tools/retype_race_boot.sh horus.iso
 
 # One boot of the checking kernel, scored only if it asked the budget check
@@ -15518,7 +15572,7 @@ smoke-spawn-window-control:
 	@$(MAKE) --no-print-directory SPAWN_WINDOW_WIDEN=1 SPAWN_PUBLISH_EARLY=1
 	@$(MAKE) --no-print-directory SPAWN_WINDOW_WIDEN=1 SPAWN_PUBLISH_EARLY=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=4 MARKER_ONLY=1 \
-		EXPECT_FAULT='PANIC: a spawned child was chosen before its spawn finished' tools/smoke_test.sh horus.iso
+		EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT='PANIC: a spawned child was chosen before its spawn finished' tools/smoke_test.sh horus.iso
 
 # Control arm for the run-list audit (docs/design/scheduler.md 3.5): with
 # RUNQ_UNHOMED=1 create_task puts a new task on no CPU's list, so nothing would
@@ -15530,7 +15584,7 @@ smoke-runq-unhomed-control:
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 RUNQ_UNHOMED=1
 	@$(MAKE) --no-print-directory SCHED_INVARIANTS=1 RUNQ_UNHOMED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=$(SMP_CPUS) MARKER_ONLY=1 \
-		EXPECT_FAULT='PANIC: live task on no run list' tools/smoke_test.sh horus.iso
+		EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT='PANIC: live task on no run list' tools/smoke_test.sh horus.iso
 
 .PHONY: test
 # The local sweep: the Rust unit tests, then a clean full build.
@@ -16254,7 +16308,7 @@ smoke-pool-span-window-control:
 	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 PHYS_WINDOW_FLAT_ONLY=1
 	@$(MAKE) --no-print-directory POOL_SPAN_SELFTEST=1 E820_HOLE_PROBE=1 PHYS_WINDOW_FLAT_ONLY=1 horus.iso
 	@SMOKE_MEM=$(POOLSPAN_MEM) SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
-		EXPECT_FAULT='PAGE FAULT at 0xffffff8' \
+		EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT='PAGE FAULT at 0xffffff8' \
 		tools/smoke_test.sh horus.iso
 smoke-pool-span-ceiling-control:
 	@$(MAKE) --no-print-directory clean

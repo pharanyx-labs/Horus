@@ -115,13 +115,18 @@ static void assert_higher_half(void) {
      * captest's marker was until a second writer joined its image, so it is
      * fixed on the same argument rather than left as the one exception the rule
      * would then need. */
+    /* Every switch the build was asked for is named here (the Makefile's
+     * DEFECT_ANNOUNCED), so the line can be long; one too long for the buffer
+     * says so rather than ending as though the list were complete. */
     {
-        char line[128];
-        unsigned n = 0;
+        char line[512];
+        const char *cut = " (list cut short)";
+        unsigned n = 0, room = sizeof(line) - 18 - 2;
         const char *pfx = "DEFECT FLAGS: ";
         const char *val = DEFECT_FLAGS_STR;
-        while (*pfx && n < sizeof(line) - 2) line[n++] = *pfx++;
-        while (*val && n < sizeof(line) - 2) line[n++] = *val++;
+        while (*pfx && n < room) line[n++] = *pfx++;
+        while (*val && n < room) line[n++] = *val++;
+        if (*val) while (*cut) line[n++] = *cut++;
         line[n++] = '\n';
         line[n]   = 0;
         print(line);

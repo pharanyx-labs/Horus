@@ -193,7 +193,13 @@ an error rather than a skip**, and CI sets it, so a TPM gate cannot pass by meas
 
 Each flag here rebuilds a known defect on purpose, or adds an instrument, so that a gate can be
 shown to fail. None is ever shipped, and every kernel prints `DEFECT FLAGS: ...` at boot, so a
-build carrying one cannot pass for a clean one. **This table is the complete list**:
+build carrying one cannot pass for a clean one. The line names the flags in this table first, then
+every other build switch the build was asked for: each `-D` macro with no value or the value 1 on
+the compile line, and each `VAR=1` on the `make` command line, except the switches a shipped image
+is built with (`SMP`, and `install.iso`'s `STORAGE_ATA`, `COREUTILS_MODULES`, `TCC_MODULE`,
+`DOC_MODULES` and `INSTALL_ESP`). So a `*_SELFTEST`, `SCHED_INVARIANTS` or `DEBUG_SHELL` build
+names itself without a row, and `make print-defect-flags` answers the same. **This table is the
+complete list of the flags that must have a row**:
 `tools/check_defect_flags.py` fails the build if a member of the Makefile's `DEFECT_FLAGS` has no
 row, if a row names a flag that is not a member, or if nothing in the tree reads a flag. The last
 column names the targets that build with the flag; an arm must turn its gate red, and
@@ -361,6 +367,7 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `FORK_PIPE_UNCOUNTED=1` | Restores the pre-2026-10-12 fork, which copied the parent's pipe ends into the child without counting them, so the parent closing its ends freed the pipe under the child ([HORUS-20261012-03]). | `smoke-fork-pipe-control` (arm of `smoke-fork`); `make smoke-fork` must go red under it |
 | `PIPE_GRANT_UNREFUSED=1` | Restores the pre-2026-10-12 `SYS_CAP_GRANT`, which copied a pipe end into a supervised child without counting it, so the granter closing its end freed the pipe under the child ([HORUS-20261012-03]). | `smoke-captest-pipe-grant-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
 | `FORK_NOMEM_KEEPS_KCR3=1` | Restores the pre-2026-10-20 `SYS_FORK`, whose refusal for a spent region returned to ring 3 with the kernel's page tables still loaded, so the caller died on its next instruction fetch ("the pager could not resolve an approved fault (code -2)"). | `smoke-captest-fork-nomem-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
+| `INSTRUMENTS_UNANNOUNCED=1` | Names only this table's flags in `DEFECT FLAGS:`, as before 2026-10-20, so a build with a switch that has no row (every `*_SELFTEST`, `SCHED_INVARIANTS`, `DEBUG_SHELL`) announces `none`. `make smoke-defect-flags-instrument` must go red under it. | `smoke-defect-flags-instrument-control` (arm of `smoke-defect-flags-instrument`) |
 | `PIPE_CHILD_END_UNDERIVED=1` | Restores the pre-2026-10-13 spawn stdio wiring, which installed the child's pipe end as a root rather than a child of the spawner's end, so revoking the spawner's end left the child's working ([HORUS-20260911-04]). | `smoke-pipe-revoke-child-control` (arm of `smoke-pipe-revoke-child`); `make smoke-pipe-revoke-child` must go red under it |
 | `PIPE_REVOKE_UNCOUNTED=1` | Makes a revocation leave the pipe ends it removed counted in the pipe table, so a peer whose last opposite end was revoked never sees EOF ([HORUS-20260911-04]). | `smoke-pipe-revoke-uncounted-control` (arm of `smoke-pipe-revoke-child`); `make smoke-pipe-revoke-child` must go red under it |
 | `SHELLWATCH_PROBE=1` | Instrument, never shipped: `init` reports the rights the kernel records for the watcher's capability to the shell, and the shell gains a command that ends it. | `smoke-shellwatch`, `smoke-shellwatch-control` (arm of `smoke-shellwatch`) |

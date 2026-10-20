@@ -712,7 +712,12 @@
 # paging.c, a read-only walk for the entry it found; idt.c, the call). CI's KVM
 # job killed a task that way once and logged one line with no address, and the
 # fault never reproduced locally. The fault path is core, so its report is.
-core_budget_loc: 13286
+# 2026-10-20: 13286 -> 13288, +2, main.c: the DEFECT FLAGS line now names every
+# build switch the build was asked for (the Makefile's DEFECT_ANNOUNCED), so its
+# buffer is larger and a list too long for it says "(list cut short)" rather
+# than ending as though it were complete. The boot's statement of what it is is
+# core.
+core_budget_loc: 13288
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

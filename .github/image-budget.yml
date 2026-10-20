@@ -89,4 +89,11 @@
 #   and the per-CPU accounting stamps sc_stamp_us 64, sc_stamp_idx 32 and
 #   sc_cpu_up 8, +4,904, which the section's page rounding makes 8 KiB. The
 #   contexts themselves are untyped memory. Measured with nm.
-bss_bytes: 6979584
+# 2026-10-20: 6,983,680 bytes (+4,096), for LIMITATIONS 1.33 (S3): a death gives
+#   its capabilities' children their grandparents. g_reparent_scratch, 4,096
+#   (the dying cspace's serial and parent, 2 x 8 bytes for each of CNODE_SIZE
+#   256 slots), held under cap_lock and shared by every death. Not on the stack,
+#   where teardown already runs deep on a 32 KiB kernel stack, and not dropped
+#   for an unsorted search, which would make every death a pass over every
+#   capability per dying slot. Measured with check_image_budget.
+bss_bytes: 6983680

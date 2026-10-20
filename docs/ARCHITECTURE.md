@@ -255,6 +255,14 @@ from it, and ancestors, siblings and independent capabilities to the same object
 (S3, S4, proved in Kani). The closure marks in place and iterates to a fixpoint, so it is exact at
 any subtree size and needs no allocation.
 
+A death keeps the tree whole. A derived capability names its parent by serial, so emptying a dying
+task's cspace would cut every edge another task's copy names into it, and a revocation above could
+no longer reach that copy. So before the cspace is emptied, `rust_cap_reparent_dying` gives every
+capability derived from one of the dying task's its grandparent instead, following chains inside
+the dying cspace to the first ancestor outside it; a child of a dying root becomes a root, which
+nothing above could revoke before either. Only edges move, never rights or objects (S3, proved in
+Kani).
+
 A pipe end is a capability and a count in the pipe table, so the sweep counts every pipe end it
 removes, by pipe and direction with the generation the ends named, and `cap_revoke` releases
 those ends from the table (`pipe_release_revoked_ends`) before it drops `cap_lock`, only from the

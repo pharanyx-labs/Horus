@@ -48,6 +48,9 @@
 # Run on every pull request by the `kani-bounded` job.
 gating:
   - serial_never_reserved_or_zero                            # 0s
+  # LIMITATIONS 1.33 (S3), added 2026-10-20: a death leaves no edge into the
+  # dead cspace. FALSIFIED by kani-arms.yml's reparent-forgets-the-edge.
+  - a_death_leaves_no_edge_into_the_dead                     # 40s
   # One serial, one slot (rust/src/capability.rs), added 2026-10-11 when the
   # hashed generation table went and serials became 64-bit. FALSIFIED by the
   # arms in .github/kani-arms.yml: a counter that wraps instead of refusing,

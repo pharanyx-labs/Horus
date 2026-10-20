@@ -231,7 +231,7 @@ DEFECT_FLAGS = \
 	SCHED_BIND_UNLOCKED PRIO_UNCAPPED PRIO_RIGHT_UNCHECKED PRIO_IGNORED \
 	DEADLINE_UNARMED REFILL_UNARMED BOUNDARY_UNSPLIT CHARGE_AFTER_PICK INSTRUMENTS_UNANNOUNCED \
 	TSCDL_OFF TSC_CLOCK_OFF TSC_CLOCK_PROBE UP_TIMER_UNCALIBRATED FORK_NOMEM_KEEPS_KCR3 \
-	CR3_RETURN_UNCHECKED
+	CR3_RETURN_UNCHECKED CAP_REPARENT_SKIPPED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2390,6 +2390,14 @@ endif
 CR3_RETURN_UNCHECKED ?= 0
 ifeq ($(CR3_RETURN_UNCHECKED),1)
 CFLAGS += -DCR3_RETURN_UNCHECKED
+endif
+# CAP_REPARENT_SKIPPED=1 empties a dying task's cspace without giving its
+# capabilities' children their grandparents, as before 2026-10-20, so a copy
+# derived through the dead task survives a revocation above it (LIMITATIONS 1.33;
+# smoke-captest-reparent-control).
+CAP_REPARENT_SKIPPED ?= 0
+ifeq ($(CAP_REPARENT_SKIPPED),1)
+CFLAGS += -DCAP_REPARENT_SKIPPED
 endif
 
 # The frame table is sized from the arena (roadmap 2.1). FRAME_BUDGET_SELFTEST=1
@@ -8178,6 +8186,18 @@ smoke-captest-fork-nomem-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		EXPECT_FAULT_CHANNEL=kdiag EXPECT_FAULT="ring-3 return on page tables not the task's own" \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: a dying task's capabilities' children keep their cut edges, so
+# the grandchild's copy, derived through the dead child, survives the revocation
+# above it (LIMITATIONS 1.33).
+.PHONY: smoke-captest-reparent-control
+smoke-captest-reparent-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_REPARENT_SKIPPED=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 CAP_REPARENT_SKIPPED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL a-capability-derived-through-a-dead-task-survived-the-revocation-above-it' \
 		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest-capenum-control

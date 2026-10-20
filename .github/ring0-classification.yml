@@ -721,7 +721,12 @@
 # call in the ISR epilogue (lowlevel64.S), which checks on every return to ring 3
 # that the loaded CR3 is the task's own and loads it if not. Which address space
 # a task runs in is the kernel's isolation itself, so core.
-core_budget_loc: 13330
+# 2026-10-20: 13330 -> 13354, +24, LIMITATIONS 1.33 (S3): capability.c's
+# reparent_dying_locked, which gives a dying task's capabilities' children their
+# grandparents before its cspace is emptied (the edge-moving itself is in the
+# Rust core, rust_cap_reparent_dying), and the CAP_REPARENT_SKIPPED arm. What a
+# revocation can reach is the capability model, so core.
+core_budget_loc: 13354
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

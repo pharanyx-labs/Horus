@@ -1313,10 +1313,234 @@ pub unsafe extern "C" fn rust_cap_revoke_global(
     true
 }
 
+/// A TASK'S DEATH PASSES ITS CAPABILITIES' CHILDREN TO THEIR GRANDPARENTS
+/// (LIMITATIONS 1.33, closed here; S3).
+///
+/// A capability names its parent by serial (`badge`), and a revocation finds a
+/// capability's descendants by following those names down from the one revoked
+/// (`revoke_subtree`). When a task died its cspace was emptied, and with it every
+/// capability that other tasks' copies named as their parent, so a copy derived
+/// through the dead task was out of reach of any revocation above it. The case
+/// that made it concrete: the shell lends a program the keyboard, the shell dies,
+/// `init` takes back the shell's copy, and the program's copy, derived through
+/// the dead shell, was not taken back with it, so the program could read what was
+/// typed at the next shell's prompt.
+///
+/// So before the dying cspace is emptied, every capability in `spaces` whose
+/// badge names a live capability of `dying` gets that capability's own badge
+/// instead, followed through chains inside `dying` to the first ancestor outside
+/// it: a revocation of that ancestor then reaches it, as it reached the copy that
+/// died. A chain that ends at a root inside `dying` leaves the child a root, which
+/// is no weaker than before: nothing above could revoke it then either. Rights,
+/// objects and serials are untouched; only edges move, and only to an ancestor
+/// the capability already had.
+///
+/// The walk up a chain is bounded by the number of dying capabilities. A parent's
+/// serial is always older than its child's, so a chain cannot loop; if one ever
+/// did, the badge is left where the bound found it, which is where it was.
+///
+/// Returns how many capabilities were given a new parent.
+///
+/// # Safety
+/// `dying` must point to `dying_size` valid capabilities (the dying task's
+/// cspace, a length trusted like every cspace size here). `spaces` must be null
+/// or point to `space_count` valid `CSpaceDesc`s whose `caps`/`size` pairs each
+/// describe a live array with a truthful length; the dying cspace may be among
+/// them and is skipped. `scratch` must point to `scratch_len` writable `u64`s,
+/// which this overwrites; at least `2 * min(dying_size, 256)` are needed for
+/// every dying capability to be considered, and with fewer only the first that
+/// fit are. `cap_lock` must be held for the whole call, as for a revocation.
+/// This function does not check that the capabilities' types or rights are
+/// meaningful; it moves edges only.
+#[no_mangle]
+pub unsafe extern "C" fn rust_cap_reparent_dying(
+    dying: *const Capability,
+    dying_size: u32,
+    spaces: *const CSpaceDesc,
+    space_count: u32,
+    scratch: *mut u64,
+    scratch_len: u32,
+) -> u32 {
+    if dying.is_null() || scratch.is_null() || spaces.is_null() {
+        return 0;
+    }
+    let size = if dying_size > CNODE_SIZE { CNODE_SIZE } else { dying_size };
+    let cap_pairs = (scratch_len / 2) as usize;
+    // scratch[2k] = a dying capability's serial, scratch[2k + 1] = its badge.
+    let mut n: usize = 0;
+    for i in 0..size {
+        if n >= cap_pairs {
+            break;
+        }
+        let c = &*dying.add(i as usize);
+        if c.typ == CAP_NULL || c.serial == 0 {
+            continue;
+        }
+        *scratch.add(2 * n) = c.serial;
+        *scratch.add(2 * n + 1) = c.badge;
+        n += 1;
+    }
+    if n == 0 {
+        return 0;
+    }
+    // Sorted by serial, so each lookup below is a binary search: a death costs
+    // a pass over every cspace, not a pass per dying capability.
+    let mut i = 1;
+    while i < n {
+        let (ks, kb) = (*scratch.add(2 * i), *scratch.add(2 * i + 1));
+        let mut j = i;
+        while j > 0 && *scratch.add(2 * (j - 1)) > ks {
+            *scratch.add(2 * j) = *scratch.add(2 * (j - 1));
+            *scratch.add(2 * j + 1) = *scratch.add(2 * (j - 1) + 1);
+            j -= 1;
+        }
+        *scratch.add(2 * j) = ks;
+        *scratch.add(2 * j + 1) = kb;
+        i += 1;
+    }
+    let find = |serial: u64| -> Option<usize> {
+        let (mut lo, mut hi) = (0usize, n);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let v = *scratch.add(2 * mid);
+            if v == serial {
+                return Some(mid);
+            }
+            if v < serial { lo = mid + 1; } else { hi = mid; }
+        }
+        None
+    };
+    let mut moved = 0u32;
+    for s in 0..space_count {
+        let d = &*spaces.add(s as usize);
+        if d.caps.is_null() || core::ptr::eq(d.caps as *const Capability, dying) {
+            continue;
+        }
+        let limit = if d.size > CNODE_SIZE { CNODE_SIZE } else { d.size };
+        for k in 0..limit {
+            let c = &mut *d.caps.add(k as usize);
+            if c.typ == CAP_NULL || c.badge == 0 {
+                continue;
+            }
+            let mut idx = match find(c.badge) {
+                Some(x) => x,
+                None => continue,
+            };
+            let mut parent = *scratch.add(2 * idx + 1);
+            let mut steps = 1;
+            while parent != 0 && steps <= n {
+                match find(parent) {
+                    Some(x) => { idx = x; parent = *scratch.add(2 * idx + 1); }
+                    None => break,
+                }
+                steps += 1;
+            }
+            if steps > n {
+                continue;      // a loop, which serials cannot make: leave it be
+            }
+            c.badge = parent;
+            moved += 1;
+        }
+    }
+    moved
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::ptr::addr_of_mut;
+
+    /// LIMITATIONS 1.33: a copy derived through a task that died is reached by a
+    /// revocation of the ancestor above the dead link, once the death has passed
+    /// it to that ancestor; and without the pass (the old death) it is not.
+    #[test]
+    fn a_death_passes_children_to_their_grandparent() {
+        for reparent in [true, false] {
+            let mut a = [cap(0, 0, 0, 0, 0); 8];   // init: the original
+            let mut b = [cap(0, 0, 0, 0, 0); 8];   // the shell, which dies
+            let mut c = [cap(0, 0, 0, 0, 0); 8];   // the program
+            a[1] = cap(2, 0x3, 0x77, 0, 10);
+            b[2] = cap(2, 0x3, 0x77, 10, 20);
+            c[3] = cap(2, 0x1, 0x77, 20, 30);
+            c[4] = cap(2, 0x1, 0x99, 5, 31);       // unrelated: its parent is not b's
+            let mut scratch = [0u64; 16];
+            // One raw pointer per array, taken once and used for everything
+            // below, so no later borrow invalidates it (Miri's stacked borrows).
+            let (pa, pb, pc) = (a.as_mut_ptr(), b.as_mut_ptr(), c.as_mut_ptr());
+            unsafe {
+                let spaces = [
+                    CSpaceDesc { caps: pa, size: 8, caps_in_use: core::ptr::null_mut() },
+                    CSpaceDesc { caps: pb, size: 8, caps_in_use: core::ptr::null_mut() },
+                    CSpaceDesc { caps: pc, size: 8, caps_in_use: core::ptr::null_mut() },
+                ];
+                if reparent {
+                    let moved = rust_cap_reparent_dying(pb, 8, spaces.as_ptr(), 3,
+                                                        scratch.as_mut_ptr(), 16);
+                    assert_eq!(moved, 1);
+                    assert_eq!((*pc.add(3)).badge, 10);
+                    assert_eq!((*pc.add(4)).badge, 5);
+                    assert_eq!((*pb.add(2)).badge, 10, "the dying cspace itself is not rewritten");
+                }
+                for k in 0..8 { nullify(&mut *pb.add(k)); }   // the death empties b
+                let spaces2 = [
+                    CSpaceDesc { caps: pa, size: 8, caps_in_use: core::ptr::null_mut() },
+                    CSpaceDesc { caps: pc, size: 8, caps_in_use: core::ptr::null_mut() },
+                ];
+                assert!(rust_cap_revoke_global(pa, 8, 1, core::ptr::null_mut(),
+                                               spaces2.as_ptr(), 2, core::ptr::null_mut(),
+                                               core::ptr::null_mut(), 0));
+                assert_eq!((*pc.add(3)).typ == CAP_NULL, reparent,
+                           "derived through the dead task: revoked only if the death passed it on");
+                assert_eq!((*pc.add(4)).typ, 2, "an unrelated capability survives");
+            }
+        }
+    }
+
+    /// A chain of dying capabilities is followed to the first ancestor outside
+    /// it, and one that ends at a dying root leaves its child a root.
+    #[test]
+    fn a_death_follows_chains_and_roots() {
+        let mut a = [cap(0, 0, 0, 0, 0); 4];
+        let mut b = [cap(0, 0, 0, 0, 0); 4];
+        let mut c = [cap(0, 0, 0, 0, 0); 4];
+        a[0] = cap(2, 0x3, 0x1, 0, 10);
+        b[0] = cap(2, 0x3, 0x1, 10, 20);   // from a
+        b[1] = cap(2, 0x3, 0x1, 20, 25);   // from b[0], also dying
+        b[2] = cap(2, 0x3, 0x2, 0, 26);    // a root in the dying task
+        c[0] = cap(2, 0x1, 0x1, 25, 30);
+        c[1] = cap(2, 0x1, 0x2, 26, 31);
+        let mut scratch = [0u64; 8];
+        let (pa, pb, pc) = (a.as_mut_ptr(), b.as_mut_ptr(), c.as_mut_ptr());
+        unsafe {
+            let spaces = [
+                CSpaceDesc { caps: pa, size: 4, caps_in_use: core::ptr::null_mut() },
+                CSpaceDesc { caps: pb, size: 4, caps_in_use: core::ptr::null_mut() },
+                CSpaceDesc { caps: pc, size: 4, caps_in_use: core::ptr::null_mut() },
+            ];
+            let moved = rust_cap_reparent_dying(pb, 4, spaces.as_ptr(), 3,
+                                                scratch.as_mut_ptr(), 8);
+            assert_eq!(moved, 2);
+            assert_eq!((*pc.add(0)).badge, 10);
+            assert_eq!((*pc.add(1)).badge, 0);
+            assert_eq!((*pa.add(0)).badge, 0);
+        }
+    }
+
+    /// Null pointers and an empty cspace move nothing.
+    #[test]
+    fn a_death_with_nothing_to_pass_moves_nothing() {
+        let mut scratch = [0u64; 4];
+        let empty = [cap(0, 0, 0, 0, 0); 4];
+        unsafe {
+            assert_eq!(rust_cap_reparent_dying(core::ptr::null(), 4, core::ptr::null(), 0,
+                                               scratch.as_mut_ptr(), 4), 0);
+            let mut other = [cap(2, 1, 1, 7, 8); 2];
+            let spaces = [CSpaceDesc { caps: other.as_mut_ptr(), size: 2, caps_in_use: core::ptr::null_mut() }];
+            assert_eq!(rust_cap_reparent_dying(empty.as_ptr(), 4, spaces.as_ptr(), 1,
+                                               scratch.as_mut_ptr(), 4), 0);
+            assert_eq!(other[0].badge, 7);
+        }
+    }
 
     fn cap(typ: u32, rights: u32, object: u64, badge: u64, serial: u64) -> Capability {
         Capability { typ, rights, object, badge, serial, token: 0 }
@@ -2463,6 +2687,73 @@ mod tests {
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
+
+    fn kcap(typ: u32, rights: u32, object: u64, badge: u64, serial: u64) -> Capability {
+        Capability { typ, rights, object, badge, serial, token: 0 }
+    }
+
+    /// LIMITATIONS 1.33 (S3): after a death's re-parenting, no capability outside
+    /// the dying cspace has an edge into it, so no derived copy is left where a
+    /// revocation above cannot reach it; an edge that did not name a dying
+    /// capability is untouched; and one that did now names the first ancestor
+    /// outside the dying cspace (0 at a root). Two dying capabilities, which may
+    /// chain, and two others with any edges, under the one assumption the kernel
+    /// keeps: a parent is older than its child.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn a_death_leaves_no_edge_into_the_dead() {
+        let mut dying = [kcap(0, 0, 0, 0, 0); 2];
+        let mut other = [kcap(0, 0, 0, 0, 0); 2];
+        for i in 0..2 {
+            let live: bool = kani::any();
+            let serial: u64 = kani::any();
+            let badge: u64 = kani::any();
+            kani::assume(serial != 0 && badge < serial);
+            dying[i] = kcap(if live { 2 } else { CAP_NULL }, 1, 7, badge, serial);
+        }
+        kani::assume(dying[0].serial != dying[1].serial);
+        for i in 0..2 {
+            let live: bool = kani::any();
+            let serial: u64 = kani::any();
+            let badge: u64 = kani::any();
+            kani::assume(serial != 0 && serial != dying[0].serial && serial != dying[1].serial);
+            other[i] = kcap(if live { 2 } else { CAP_NULL }, 1, 7, badge, serial);
+        }
+        let before = other;
+        let dsnap = dying;
+        let live_dying = |b: u64| -> Option<u64> {
+            for d in dsnap.iter() {
+                if d.typ != CAP_NULL && d.serial == b { return Some(d.badge); }
+            }
+            None
+        };
+        let mut scratch = [0u64; 4];
+        let pd = dying.as_mut_ptr();
+        let po = other.as_mut_ptr();
+        unsafe {
+            let spaces = [
+                CSpaceDesc { caps: pd, size: 2, caps_in_use: core::ptr::null_mut() },
+                CSpaceDesc { caps: po, size: 2, caps_in_use: core::ptr::null_mut() },
+            ];
+            rust_cap_reparent_dying(pd, 2, spaces.as_ptr(), 2, scratch.as_mut_ptr(), 4);
+        }
+        for i in 0..2 {
+            let (b0, b1) = (before[i].badge, other[i].badge);
+            if before[i].typ == CAP_NULL || b0 == 0 {
+                assert!(b1 == b0, "an empty slot or a root is untouched");
+                continue;
+            }
+            match live_dying(b0) {
+                None => assert!(b1 == b0, "an edge that names no dying capability is untouched"),
+                Some(p) => {
+                    assert!(live_dying(b1).is_none() || b1 == 0, "an edge into the dead survived");
+                    // The first ancestor outside the dying cspace, followed at most twice.
+                    let want = match live_dying(p) { Some(pp) if p != 0 => pp, _ => p };
+                    assert!(b1 == want, "the new parent is not the nearest living ancestor");
+                }
+            }
+        }
+    }
 
     /// A freshly allocated derived serial is NEVER in the reserved primordial
     /// range and NEVER 0 — for every possible value of the kernel's monotonic

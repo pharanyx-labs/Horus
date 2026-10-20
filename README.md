@@ -48,9 +48,8 @@ Horus is a research system, and nobody independent has reviewed it.
   sets direction and decides anything that touches the security model.
 - **The checks are extensive, but they are not review.** Every gate is built to fail when the
   defect it guards against is put back; that is evidence, not a second pair of eyes.
-- **Some security limitations are open.** A revocation cannot reach a copy derived through a task
-  that has died (1.33), measured boot is opt-in on a machine without a TPM (2.9), and the
-  cryptography is unaudited (5.4).
+- **Some security limitations are open.** Measured boot is opt-in on a machine without a TPM
+  (2.9), and the cryptography is unaudited (5.4).
 
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) is the single authoritative status of every known
 finding, and the numbers above are its entries. Read it before drawing conclusions.
@@ -271,9 +270,9 @@ test does not exist or does not run.
 | Layer | What it covers |
 |---|---|
 | Security properties | 158 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 609 `smoke-*` targets: 255 base gates and 354 control arms |
+| QEMU integration tests | 610 `smoke-*` targets: 255 base gates and 355 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
-| Kani | 43 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
+| Kani | 44 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |
 | Fuzzing | The FFI predicates under cargo-fuzz, ten minutes per target, nightly |
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |

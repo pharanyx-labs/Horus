@@ -3523,6 +3523,11 @@ bool rust_cap_revoke_global(capability_t *target_cspace, uint32_t target_cspace_
                             const cspace_desc_t *spaces, uint32_t space_count,
                             uint64_t *next_serial,
                             uint32_t *pipe_tally, uint32_t pipe_tally_len);
+/* LIMITATIONS 1.33: a dying task's capabilities' children are given their
+ * grandparents, so a revocation above still reaches them (rust/src/capability.rs). */
+uint32_t rust_cap_reparent_dying(const capability_t *dying, uint32_t dying_size,
+                                 const cspace_desc_t *spaces, uint32_t space_count,
+                                 uint64_t *scratch, uint32_t scratch_len);
 
 /* Is fault address `a` a legitimate part of the faulting task's user address
  * space? Region-aware: the caller passes the task's image and heap bounds; the

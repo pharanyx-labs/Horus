@@ -900,6 +900,45 @@ bool cap_install_child_pipe_end(int child, uint32_t dest_slot, int spawner,
  * `SECURITY.md` **S56**. */
 /* Empty task `id`'s cspace and, with `collect`, sweep for objects nothing names
  * any more, all in ONE cap_lock section. */
+static cspace_desc_t *g_revoke_spaces;   /* allocated by cap_tables_init, below */
+
+/* The dying task's capabilities' (serial, parent) pairs while their children
+ * are given new parents. Under cap_lock, so one buffer serves every death. */
+static uint64_t g_reparent_scratch[2 * CNODE_SIZE];
+
+/* A DEATH PASSES ITS CAPABILITIES' CHILDREN TO THEIR GRANDPARENTS (LIMITATIONS
+ * 1.33, S3). Every capability anywhere that was derived from one of the dying
+ * task's is made a child of that capability's own parent, before the cspace is
+ * emptied below, so a revocation of an ancestor still reaches it. Until
+ * 2026-10-20 the emptying cut those edges: a program lent the keyboard by a shell
+ * that then died kept it when init took back the shell's copy, and could read
+ * what was typed at the next prompt. Every live cspace is passed, as for a
+ * revocation, and the kernel's root cnode. CAP_REPARENT_SKIPPED=1 leaves the
+ * edges cut, for the control arm of smoke-captest. Caller holds cap_lock. */
+static void reparent_dying_locked(int id, struct capability *cs, uint32_t sz)
+{
+#ifndef CAP_REPARENT_SKIPPED
+    if (!g_revoke_spaces) return;
+    uint32_t n = 0;
+    for (int t = 0; t < g_max_tasks; t++) {
+        if (t == id || tasks[t].state == 0 || !tasks[t].cspace) continue;
+        g_revoke_spaces[n].caps = tasks[t].cspace;
+        g_revoke_spaces[n].size = tasks[t].cspace_size ? tasks[t].cspace_size : CNODE_SIZE;
+        g_revoke_spaces[n].caps_in_use = &tasks[t].caps_in_use;
+        n++;
+    }
+    g_revoke_spaces[n].caps = root_cnode;
+    g_revoke_spaces[n].size = CNODE_SIZE;
+    g_revoke_spaces[n].caps_in_use = NULL;
+    n++;
+    (void)rust_cap_reparent_dying(cs, sz, g_revoke_spaces, n, g_reparent_scratch,
+                                  (uint32_t)(sizeof g_reparent_scratch / sizeof g_reparent_scratch[0]));
+#else
+    /* CONTROL ARM, never ship: the edges into the dying cspace are cut. */
+    (void)id; (void)cs; (void)sz;
+#endif
+}
+
 static void release_cspace(int id, int collect)
 {
     int valid = (id > 0 && id < g_max_tasks);
@@ -908,6 +947,7 @@ static void release_cspace(int id, int collect)
     if (cs) {
         uint32_t sz = tasks[id].cspace_size ? tasks[id].cspace_size : CNODE_SIZE;
         if (sz > CNODE_SIZE) sz = CNODE_SIZE;
+        reparent_dying_locked(id, cs, sz);
         for (uint32_t s = 0; s < sz; s++) {
             cs[s].type       = CAP_NULL;
             cs[s].rights     = 0;
@@ -937,10 +977,10 @@ void cap_release_cspace(int id) { release_cspace(id, 0); }
  * in which the lock is free. */
 void cap_release_cspace_and_collect(int id) { release_cspace(id, 1); }
 
-/* Descriptor buffer for the revocation sweep (see rust_cap_revoke_global's use).
- * Allocated by cap_tables_init() from the kernel reserve, g_max_tasks + 1 long.
- * Shared rather than per-call because the sweep holds cap_lock throughout. */
-static cspace_desc_t *g_revoke_spaces;
+/* Descriptor buffer for the revocation sweep (see rust_cap_revoke_global's use),
+ * declared above with the death's re-parenting, which shares it. Allocated by
+ * cap_tables_init() from the kernel reserve, g_max_tasks + 1 long. Shared rather
+ * than per-call because every sweep holds cap_lock throughout. */
 
 /* Allocate the capability layer's per-boot tables. Called from tasks_init(),
  * immediately after the task count is known and before any task exists. Halts on

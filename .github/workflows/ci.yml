@@ -1458,6 +1458,11 @@ jobs:
       # captest 16d forks with a one-page region and must hear back.
       - name: "Control arm: a fork refused for memory leaves its caller on the kernel's page tables"
         run: make smoke-captest-fork-nomem-control
+      # LIMITATIONS 1.33 / S3: a death gives its capabilities' children their
+      # grandparents. captest 16e revokes above a dead link and must reach the
+      # grandchild's copy.
+      - name: "Control arm: a death cuts its children's edges, and a copy derived through it survives"
+        run: make smoke-captest-reparent-control
       # S156: every return to ring 3 is checked for the task's own page tables,
       # so the slip above, put back, is repaired at the return.
       - name: A task returned to ring 3 on the wrong page tables gets its own instead

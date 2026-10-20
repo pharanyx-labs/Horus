@@ -1663,6 +1663,76 @@ void _start(void) {
         (void)sys_pipe_close(res_r); (void)sys_pipe_close(res_w);
     }
 
+    /* ---- 16e. A REVOCATION REACHES THROUGH A TASK THAT HAS DIED ---------
+     *
+     * LIMITATIONS 1.33, closed: a death gives the dying task's capabilities'
+     * children their grandparents (S3). This task retypes a notification; a
+     * forked child inherits a copy derived from it and forks a
+     * grandchild, whose copy is derived from the child's; the child dies. When
+     * this task revokes its own, the grandchild's must go with it, though the
+     * link between them died. The grandchild polls the notification before
+     * and after, over pipes: present it answers IPC_AGAIN, revoked
+     * SYS_ERR_PERM. CAP_REPARENT_SKIPPED=1 leaves the dead link cut, and the
+     * grandchild keeps its copy. */
+    out("CAPTEST: revoke-through-a-dead-task\n");
+    {
+        enum { SLOT_LENT = 236, GO_ROUNDS = 200000 };
+        /* A notification of its own, retyped from this task's region: the one
+         * captest was given carries no MINT right, and a root of its own means
+         * the revoke below empties nothing else this suite relies on. */
+        check(sys_retype(CAPSLOT_UNTYPED, KOBJ_NOTIFICATION, 1, SLOT_LENT) == 1,
+              "retype-for-the-dead-link-probe-refused");
+        int go_rw = sys_pipe(), res_rw = sys_pipe();
+        check(go_rw >= 0 && res_rw >= 0, "pipes-for-the-dead-link-probe-refused");
+        uint32_t go_r  = ((uint32_t)go_rw >> 16) & 0xFFFFu,  go_w  = (uint32_t)go_rw & 0xFFFFu;
+        uint32_t res_r = ((uint32_t)res_rw >> 16) & 0xFFFFu, res_w = (uint32_t)res_rw & 0xFFFFu;
+        int kid = sys_fork();
+        check(kid >= 0, "fork-for-the-dead-link-probe-refused");
+        if (kid == 0) {
+            int g = sys_fork();
+            if (g == 0) {
+                uint32_t pb = 0;
+                char before = sys_poll_notify(SLOT_LENT, &pb) == IPC_AGAIN ? 'h' : 'x';
+                (void)sys_pipe_write(res_w, &before, 1);
+                char go = 0;
+                int got = SYS_ERR_AGAIN;
+                for (int i = 0; i < GO_ROUNDS && got == SYS_ERR_AGAIN; i++) {
+                    got = sys_pipe_read(go_r, &go, 1);
+                    if (got == SYS_ERR_AGAIN) sys_yield();
+                }
+                int rc = sys_poll_notify(SLOT_LENT, &pb);
+                char after = rc == SYS_ERR_PERM ? 'r' : rc == IPC_AGAIN ? 'k' : 'e';
+                (void)sys_pipe_write(res_w, &after, 1);
+                sys_exit();
+                for (;;) { }
+            }
+            sys_exit();                       /* the middle link dies */
+            for (;;) { }
+        }
+        char before = 0;
+        int got = SYS_ERR_AGAIN;
+        for (int i = 0; i < GO_ROUNDS && got == SYS_ERR_AGAIN; i++) {
+            got = sys_pipe_read(res_r, &before, 1);
+            if (got == SYS_ERR_AGAIN) sys_yield();
+        }
+        check(got == 1 && before == 'h', "the-grandchild-did-not-hold-the-lent-copy");
+        check(sys_wait(kid) == 0, "wait-for-the-dead-link");
+        check(sys_cap_revoke(SLOT_LENT) == 0, "revoke-of-the-lent-copy-refused");
+        char go = 'g';
+        check(sys_pipe_write(go_w, &go, 1) == 1, "go-for-the-dead-link-probe-refused");
+        char after = 0;
+        got = SYS_ERR_AGAIN;
+        for (int i = 0; i < GO_ROUNDS && got == SYS_ERR_AGAIN; i++) {
+            got = sys_pipe_read(res_r, &after, 1);
+            if (got == SYS_ERR_AGAIN) sys_yield();
+        }
+        check(got == 1, "the-grandchild-never-reported");
+        check(got != 1 || after == 'r',
+              "a-capability-derived-through-a-dead-task-survived-the-revocation-above-it");
+        (void)sys_pipe_close(go_r); (void)sys_pipe_close(go_w);
+        (void)sys_pipe_close(res_r); (void)sys_pipe_close(res_w);
+    }
+
     /* ---- 16b. PRIORITY IS CAPPED BY AUTHORITY (step 4b, S155) ---------
      *
      * Setting a priority needs a CAP_TCB to the task carrying PRIORITY, and

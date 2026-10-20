@@ -1435,6 +1435,13 @@ jobs:
       # including captest, which holds no CAP_DEBUG.
       - name: Control arm — an ungated cspace readout is readable by anyone
         run: make smoke-captest-capenum-control
+      # Priorities (docs/design/scheduler.md 3.2, step 4b, S155): no task sets a
+      # priority or maximum above its own maximum, and only through a CAP_TCB
+      # carrying PRIORITY.
+      - name: Control arm, a task raises its own maximum
+        run: make smoke-captest-prio-uncapped-control
+      - name: Control arm, a CAP_TCB without the priority right sets a priority
+        run: make smoke-captest-prio-right-control
       # LIMITATIONS 2.23 / S5. Revocation recorded again in a lossy 4096-cell table
       # indexed by a hash of the serial: captest 16b keeps one capability live
       # through 40,000 unrelated revokes, and must report that one of them made
@@ -2292,6 +2299,8 @@ jobs:
         run: make smoke-sched-budget-fork-control
       - name: Control arm, a bind made outside the spawn lock is refused
         run: make smoke-sched-budget-bind-unlocked-control
+      - name: Control arm, priority ignored lets a lower task run beside a higher one
+        run: make smoke-sched-budget-prio-control
       # Eight CPUs on the topologies firmware produces, not only QEMU's default:
       # sparse LAPIC ids, SMT, and more threads than slots (docs/ARCHITECTURE.md
       # section 7). Every schedulable AP must run a task and none may be an SMT

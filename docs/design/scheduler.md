@@ -1,6 +1,6 @@
 # Scheduling and SMP
 
-**Decided; steps 0, 1, 1b, 2a, 2, 3a and 4a are built (section 5).** The maintainer asked on 2026-10-09 for a more robust SMP kernel and a
+**Decided; steps 0, 1, 1b, 2a, 2, 3a, 4a and 4b are built (section 5).** The maintainer asked on 2026-10-09 for a more robust SMP kernel and a
 scheduler of high quality, chosen with security first. The decisions below were taken the same day.
 
 ## 1. What exists
@@ -8,7 +8,7 @@ scheduler of high quality, chosen with security first. The decisions below were 
 | Piece | State |
 |---|---|
 | Run lists | Every live task is homed on one CPU's circular list (`tasks[].rq_home`, `rq_next`, `rq_prev`). Every switch path chooses through one rule, `sched_selectable` and `sched_pick_after` (#524), which looks at its own CPU's list before any other, under the one global `scheduler_lock` (§3.5) |
-| Policy | Round robin within each CPU's budgeted work, then within its slack (§3.1). `tasks[].priority` is written (1 at init, copied on spawn) and never read until step 4b |
+| Policy | Within each CPU's budgeted work the highest priority, round robin within a level, then its slack in round robin (§3.1, §3.2). Every shipped task is at 255 |
 | CPU time | Scheduling contexts (§3.1, step 4a, #592): every task is bound to one, and runs only on the time it grants. Every task runs on the BSP's root until a holder of a context binds it elsewhere, and nothing in the shipped system does yet |
 | CPUs | `MAX_CPUS` is 8 (`src/include/cpu_limits.h`). Each costs about 104 KiB of `.bss` whether present or not: a 68 KiB idle stack (`ap_idle_stacks`), 24 KiB of IST stacks (`ap_ist`) and 8 KiB of TSS (`ap_tss`) |
 | SMT | Every secondary thread is parked before its timer starts (S101). A parked sibling keeps interrupts on to answer shootdowns and is marked idle, and `preempt_on_tick` refuses to schedule on one whatever interrupts it (#525) |
@@ -145,6 +145,28 @@ Priority decides who runs among tasks whose contexts have budget left; the budge
 Priority without a budget would let a high-priority spinner starve everything below it, which is
 why the two arrive together (§5, step 4).
 
+**As built in step 4b (#594).** `CAP_RIGHT_PRIORITY` is bit 7 of a capability's rights, and means
+something only on a `CAP_TCB`. `SYS_SCHED_SET_PRIORITY` (126) sets a task's priority and maximum;
+each must be at most the caller's own maximum, read under the scheduler lock because a holder of a
+`CAP_TCB` to the caller could be lowering it at the same moment. A task's own priority may stand
+above its own maximum, as in seL4: the maximum bounds what a task hands out, so a supervisor can
+keep a server urgent and still cap what the server can make urgent. `SYS_SCHED_GET_PRIORITY` (127)
+reads both, with READ. A spawner's `CAP_TCB` to its child carries the right, and a child starts at
+its creator's priority and maximum (set in `create_task`, for spawn and fork alike).
+
+Selection keeps every source in the order step 4a used, and a later candidate replaces the one
+found only when it is strictly more urgent, so at equal priorities nothing changes; a search stops
+at the first candidate at 255. The task a CPU is running keeps the CPU over every budgeted
+candidate it outranks, and over slack work, which is below every priority. Before 4b a tick or a
+yield on a CPU with no other budgeted work gave the CPU to any slack work waiting there, so
+budgeted work could lose every other tick to it (found by reading the code, not measured).
+
+Two consequences are stated rather than hidden. A lower priority runs only when nothing above it
+can, so a task that polls with `SYS_YIELD` keeps everything below it from its CPU unless a budget
+bounds it; this is why a budget comes with every priority. And a task that becomes runnable at a
+higher priority waits for its CPU's next tick, because a wake does not preempt; deadline timers
+(3b) and a reschedule interrupt are where that would change.
+
 ### 3.3 Passive servers
 
 A server bound to no context is **passive**. When it takes a message from a client blocked in
@@ -213,8 +235,8 @@ would refuse.
   against the new code unchanged.
 - **Not built yet, and why.** A list of its own lock: every pick still holds the global
   `scheduler_lock`, so a second lock would protect nothing the first does not; it comes when
-  selection stops holding the global one. A priority bitmap for constant-time choice: there is one
-  priority until step 4. A reschedule interrupt to the woken task's CPU: built when a workload shows
+  selection stops holding the global one. A priority bitmap for constant-time choice: the walk is
+  bounded by the table, and stops at the first task at 255, where every shipped task is. A reschedule interrupt to the woken task's CPU: built when a workload shows
   the wait for a tick mattering, which the two-CPU boot above does not.
 
 ### 3.6 Affinity
@@ -253,7 +275,8 @@ Each gets a `SECURITY.md` row with its S-number when its step merges.
 |---|---|---|
 | A task never runs beyond its context's budget, over many periods (S153) | `smoke-sched-budget`: a spinner bound to a fifth of an AP counts the ticks it saw itself run in | `BUDGET_UNENFORCED=1` |
 | A split never creates time: the children and the parent's remainder sum to the parent's share (S152) | Kani `a_split_never_creates_time` and `reclaim_never_exceeds_a_whole_cpu`; `schedtest`'s refusals | three `kani-arms.yml` arms: the subtraction dropped, the share believed, the reclaim unbounded |
-| No task raises a priority above its own maximum | `smoke-captest` cases | `PRIO_UNCAPPED=1` |
+| No task makes itself or another more urgent than the authority it holds (S155) | `smoke-captest`: a child capped at 250 can neither raise its maximum nor set 255, and a `CAP_TCB` minted without the right is refused | `PRIO_UNCAPPED=1`, `PRIO_RIGHT_UNCHECKED=1` |
+| Among budgeted work the higher priority runs, and a yield lets in only its equals (S154) | `smoke-sched-budget`: `schedtest` at 255 yields beside a counter at 100 on one context, and the counter does not move | `PRIO_IGNORED=1` |
 | A passive server runs only on the time of the client it is serving | two clients, one starved of budget, one server | `DONATE_ANY_CALLER=1` |
 | A context's CPU mask only narrows | `smoke-captest` cases | `AFFINITY_WIDEN=1` |
 | Budgeted work never runs off its context's CPU, and slack work never off its mask | a pinned task reports its CPU every tick, under stealing | `AFFINITY_IGNORED=1` |
@@ -281,7 +304,7 @@ Budget exhaustion is no finer a clock than the 10 ms tick a task can already cou
 | 3a ✅ | One-shot AP timers and tickless idle, the BSP waking stopped APs (§3.4) | 2 |
 | 3b | The TSC-deadline timer, a TSC clock, and arming for the earliest deadline rather than the next tick | 3a |
 | 4a ✅ | Scheduling contexts, budgets and binding (§3.1, #592) | 3a |
-| 4b | Priorities and their maximum (§3.2) | 4a |
+| 4b ✅ | Priorities and their maximum (§3.2, #594) | 4a |
 | 5 | Passive servers | 4b |
 | 6 | Affinity | 4a |
 | 7 | More than eight CPUs | 2 |

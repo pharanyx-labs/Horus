@@ -1057,6 +1057,8 @@ int  sched_split(uint32_t parent_slot, uint32_t untyped_slot, uint32_t dest_slot
 int  sched_carve(uint32_t parent_idx, struct sched_context *child,
                  uint32_t budget_us, uint32_t period_us, uint32_t flags);
 int  sched_bind(int target, uint32_t idx);
+int  sched_set_priority(int caller, int target, uint32_t prio, uint32_t max);
+int  sched_get_priority(int target);
 int  sched_info_index(uint32_t idx, struct sched_info *out);
 uint32_t sched_root_index(int cpu);
 int  sched_cpu_schedules(int cpu);
@@ -1505,6 +1507,10 @@ void users_init(void);
 #define SYS_SCHED_SPLIT      123   /* (parent_slot, untyped_slot, dest_slot, budget_us, period_us, flags) -> 0; carve a child context from the parent's share, its memory from the untyped (parent WRITE, untyped WRITE). The child's capability is derived from the parent's, so revoking the parent revokes it. */
 #define SYS_SCHED_BIND       124   /* (tid, ctx_slot) -> 0; run task tid on the context (CAP_TCB to tid with WRITE, context WRITE). */
 #define SYS_SCHED_INFO       125   /* (ctx_slot, struct sched_info *) -> 0; what the context holds and has left (context READ). */
+/* Priorities (docs/design/scheduler.md 3.2, step 4b). Authority is a CAP_TCB to
+ * the task, checked under the spawn lock like every CAP_TCB-authorised call. */
+#define SYS_SCHED_SET_PRIORITY 126 /* (tid, priority, max) -> 0; set task tid's priority and maximum, each at most the caller's own maximum (CAP_TCB to tid with PRIORITY). */
+#define SYS_SCHED_GET_PRIORITY 127 /* (tid) -> (max << 8) | priority; task tid's priority and maximum (CAP_TCB to tid with READ). */
 #define SYS_MEM_SEAL         121   /* (addr, len) -> 0; make pages of the caller's own image read-only for good: WRITE and copy-on-write cleared, the page marked sealed so no break, fork or device mapping can make it writable again. Only drops rights, so no capability gates it; bounded to [image_base, image_end), page-aligned, all or nothing. For the ring-3 linker's RELRO (docs/design/shared-libc.md §9). */
 #define SYS_IPC_REPLY_CAP    120   /* (req_slot, msg, len, rights, token) -> 0; SYS_IPC_REPLY_TO that also mints ONE capability into the caller's named slot, derived from the capability its request came through, rights intersected with that capability's. Refused = nothing delivered, reply right kept. */
 #define SYS_STORAGE_DEVICE   113   /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ at CAPSLOT_STORAGE_FORMAT). An index past the end is REFUSED rather than clamped: a survey that answered about a different disk would be read as a description of the disk about to be erased. */
@@ -1835,6 +1841,11 @@ struct boot_module_info {
 #define CAP_RIGHT_MINT          (1u << 4)
 #define CAP_RIGHT_REVOKE        (1u << 5)
 #define CAP_RIGHT_AUDIT_WRITE   (1u << 6)
+/* On a CAP_TCB only: SYS_SCHED_SET_PRIORITY may set the task's priority and
+ * maximum (docs/design/scheduler.md 3.2, step 4b). A right of its own rather
+ * than WRITE, so a supervisor can hand on the power to kill or bind a task
+ * without the power to make it more urgent, and the reverse. */
+#define CAP_RIGHT_PRIORITY      (1u << 7)
 #define CAP_RIGHT_ALL           (0xFFFFFFFFu)
 
 #define AUDIT_AUTH          1
@@ -2214,7 +2225,19 @@ typedef struct tcb {
      * destroyed: a task bound to nothing is never chosen. Read and written
      * under the scheduler lock. */
     uint32_t sc_index;
+    /* The highest priority, and the highest maximum, this task may set on itself
+     * or on any task it holds a CAP_TCB with PRIORITY to (docs/design/scheduler.md
+     * 3.2, step 4b). Its own priority may stand above it, as in seL4: what it
+     * bounds is what the task can hand out. Inherited with `priority` from the
+     * creating task by create_task; the kernel's own tasks, init among them,
+     * start at SCHED_PRIO_MAX. Changed only by SYS_SCHED_SET_PRIORITY, never
+     * above the caller's own. Written under the scheduler lock. */
+    uint32_t max_priority;
 } tcb_t;
+
+/* Priorities run 0..SCHED_PRIO_MAX, higher first (design 3.2). Matches the
+ * ring-3 definition in include/syscall.h. */
+#define SCHED_PRIO_MAX 255u
 
 /* The task table is carved from the kernel's untyped reserve, and the reserve is
  * sized at compile time from TCB_BYTES_RESERVED because POOL_RESERVE_PAGES must

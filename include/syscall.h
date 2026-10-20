@@ -209,6 +209,8 @@ struct task_info {
 #define SYS_SCHED_SPLIT       123   /* (parent_slot, untyped_slot, dest_slot, budget_us, period_us, flags) -> 0; carve a scheduling context from the parent's share (parent WRITE, untyped WRITE). */
 #define SYS_SCHED_BIND        124   /* (tid, ctx_slot) -> 0; run task tid on the context (CAP_TCB to tid with WRITE, context WRITE). */
 #define SYS_SCHED_INFO        125   /* (ctx_slot, struct sched_info *) -> 0; what the context holds and has left (context READ). */
+#define SYS_SCHED_SET_PRIORITY 126  /* (tid, priority, max) -> 0; set task tid's priority and maximum, each at most the caller's own maximum (CAP_TCB to tid with PRIORITY). */
+#define SYS_SCHED_GET_PRIORITY 127  /* (tid) -> (max << 8) | priority; task tid's priority and maximum (CAP_TCB to tid with READ). */
 #define SYS_MEM_SEAL          121   /* (addr, len) -> 0; make pages of the caller's own image read-only for good (RELRO). Only drops rights; bounded to the caller's image window, page-aligned, all or nothing. */
 #define SYS_STORAGE_DEVICE   113  /* (index, struct storage_info*) -> 0; the survey for ONE enumerated persistent device (CAP_STORAGE_FORMAT + READ). Refuses an index past the end rather than clamping. */
 #define SYS_IRQ_POLICY_INFO    92   /* (struct irq_policy_info*) -> 0; roadmap 1.1 audit counters. IRQ_POLICY_AUDIT builds only; NOSYS otherwise. CAP_KERNEL_LOG (READ). */
@@ -545,6 +547,7 @@ static inline int sys_console_owned(void) {
 #define CAP_RIGHT_MINT          (1u << 4)
 #define CAP_RIGHT_REVOKE        (1u << 5)
 #define CAP_RIGHT_AUDIT_WRITE   (1u << 6)
+#define CAP_RIGHT_PRIORITY      (1u << 7)   /* CAP_TCB: set the task's priority and maximum */
 
 #define CAPSLOT_TCB         0    /* CAP_TCB on self                            */
 #define CAPSLOT_FRAME       3    /* CAP_FRAME for the task's image window      */
@@ -881,6 +884,26 @@ static inline int sys_sched_bind(int tid, uint32_t ctx_slot) {
 }
 static inline int sys_sched_info(uint32_t ctx_slot, struct sched_info *out) {
     return (int)syscall6(SYS_SCHED_INFO, ctx_slot, (uint64_t)(uintptr_t)out, 0, 0, 0, 0);
+}
+
+/* Priorities (docs/design/scheduler.md 3.2): 0 to SCHED_PRIO_MAX, higher runs
+ * first among tasks whose contexts have budget left, round robin within a
+ * level. Each task also has a maximum, and nothing can set a priority or a
+ * maximum above the CALLER's own maximum, so no task can make itself or another
+ * more urgent than the authority it was given. A task's own priority may stand
+ * above its maximum (the maximum bounds what it hands out). A child starts with
+ * its creator's priority and maximum. */
+#define SCHED_PRIO_MAX 255u
+/* Set task `tid`'s priority and maximum. Needs a CAP_TCB to `tid` with
+ * CAP_RIGHT_PRIORITY. SYS_ERR_INVAL when either is above SCHED_PRIO_MAX;
+ * SYS_ERR_PERM when either is above the caller's maximum. */
+static inline int sys_sched_set_priority(int tid, uint32_t priority, uint32_t max) {
+    return (int)syscall6(SYS_SCHED_SET_PRIORITY, (uint32_t)tid, priority, max, 0, 0, 0);
+}
+/* Task `tid`'s priority (low 8 bits) and maximum (next 8 bits), or a negative
+ * SYS_ERR_*. Needs a CAP_TCB to `tid` with READ. */
+static inline int sys_sched_get_priority(int tid) {
+    return (int)syscall6(SYS_SCHED_GET_PRIORITY, (uint32_t)tid, 0, 0, 0, 0, 0);
 }
 
 /* Carve `count` objects of `kobj_type` out of the untyped region named by the

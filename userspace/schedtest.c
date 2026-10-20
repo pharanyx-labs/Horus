@@ -228,6 +228,29 @@ void _start(void) {
     wait_ticks(30);
     unsigned long c1 = *ctr;
     expect(c1 > 0, "the-counter-runs-again-once-bound", (long)c1);
+
+    /* S154 (step 4b): among budgeted work the higher priority runs, and a yield
+     * lets in only its equals. The counter is lowered to 100 and this task, at
+     * the top, binds itself beside it on the counter's context. Once this task
+     * has yielded it can be running only on that context's CPU, so from then on
+     * the counter runs only if this task gives way to it, which it must not.
+     * PRIO_IGNORED=1 takes the first candidate whatever its priority, and the
+     * counter counts. Then this task goes back to the BSP's root. */
+    rc = sys_sched_set_priority(count, 100, 100);
+    expect(rc == 0, "lower-the-counter", rc);
+    rc = sys_sched_get_priority(count);
+    expect(rc == ((100 << 8) | 100), "the-counter-was-lowered", rc);
+    rc = sys_sched_bind(sys_getpid(), SLOT_CTX2);
+    expect(rc == 0, "bind-this-task-beside-the-counter", rc);
+    wait_ticks(5);                        /* now on the counter's CPU */
+    unsigned long p1 = *ctr;
+    wait_ticks(30);
+    unsigned long p2 = *ctr;
+    rc = sys_sched_bind(sys_getpid(), CAPSLOT_SCHED_ROOT_FIRST);
+    expect(rc == 0, "bind-this-task-back-to-the-bsp-root", rc);
+    expect(p2 == p1, "a-lower-priority-task-ran-while-a-higher-one-could", (long)(p2 - p1));
+    wait_ticks(30);
+    expect(*ctr > p2, "the-lowered-counter-runs-again-once-alone", (long)(*ctr - p2));
     rc = sys_cap_revoke(SLOT_CTX2);
     expect(rc == 0, "revoke-the-counter-context", rc);
     wait_ticks(5);                       /* its CPU's next tick takes it off */

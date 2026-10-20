@@ -1611,6 +1611,58 @@ void _start(void) {
               "pipe-close-after-copy-probe");
     }
 
+    /* ---- 16d. A FORK REFUSED FOR MEMORY RETURNS TO ITS CALLER -----------
+     *
+     * A fork runs on the kernel's page tables and puts the caller's back on
+     * the way out. The refusal for a spent region (create_task leaves the
+     * slot dead) did not, so the caller went back to ring 3 on tables with
+     * none of its memory in them and was killed by its next instruction
+     * fetch. A child forked here is given a region of one page, too small to
+     * hold a task, and forks: the fork must be refused with SYS_ERR_NOMEM,
+     * and the child must live to say so over a pipe.
+     * FORK_NOMEM_KEEPS_KCR3=1 drops the restore, and the child dies silent. */
+    out("CAPTEST: fork-refused-for-memory\n");
+    {
+        enum { SLOT_TINY = 235, GO_ROUNDS = 200000 };
+        int go_rw = sys_pipe(), res_rw = sys_pipe();
+        check(go_rw >= 0 && res_rw >= 0, "pipes-for-fork-nomem-probe-refused");
+        uint32_t go_r  = ((uint32_t)go_rw >> 16) & 0xFFFFu,  go_w  = (uint32_t)go_rw & 0xFFFFu;
+        uint32_t res_r = ((uint32_t)res_rw >> 16) & 0xFFFFu, res_w = (uint32_t)res_rw & 0xFFFFu;
+        int kid = sys_fork();
+        check(kid >= 0, "fork-for-fork-nomem-probe-refused");
+        if (kid == 0) {
+            char go = 0;
+            int got = SYS_ERR_AGAIN;
+            for (int i = 0; i < GO_ROUNDS && got == SYS_ERR_AGAIN; i++) {
+                got = sys_pipe_read(go_r, &go, 1);
+                if (got == SYS_ERR_AGAIN) sys_yield();
+            }
+            int f = sys_fork();
+            if (f == 0) sys_exit();           /* a grandchild: not expected */
+            char res = f == SYS_ERR_NOMEM ? 'N' : f > 0 ? 'Y' : 'E';
+            (void)sys_pipe_write(res_w, &res, 1);
+            sys_exit();
+            for (;;) { }
+        }
+        check(sys_untyped_split(SLOT_UNTYPED, SLOT_TINY, 4096) == 0,
+              "one-page-region-for-fork-nomem-refused");
+        check(sys_cap_grant(kid, SLOT_TINY, CAPSLOT_UNTYPED) == 0,
+              "one-page-region-grant-refused");
+        char go = 'g';
+        check(sys_pipe_write(go_w, &go, 1) == 1, "go-for-fork-nomem-refused");
+        char res = 0;
+        int got = SYS_ERR_AGAIN;
+        for (int i = 0; i < GO_ROUNDS && got == SYS_ERR_AGAIN; i++) {
+            got = sys_pipe_read(res_r, &res, 1);
+            if (got == SYS_ERR_AGAIN) sys_yield();
+        }
+        check(got == 1, "a-fork-refused-for-memory-killed-its-caller");
+        check(got != 1 || res == 'N', "a-fork-with-a-one-page-region-was-not-refused-for-memory");
+        (void)sys_wait(kid);
+        (void)sys_pipe_close(go_r); (void)sys_pipe_close(go_w);
+        (void)sys_pipe_close(res_r); (void)sys_pipe_close(res_w);
+    }
+
     /* ---- 16b. PRIORITY IS CAPPED BY AUTHORITY (step 4b, S155) ---------
      *
      * Setting a priority needs a CAP_TCB to the task carrying PRIORITY, and

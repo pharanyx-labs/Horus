@@ -62,6 +62,7 @@ here.
 
 ### Fixed
 
+- A fork refused because the caller's untyped region was spent returned to ring 3 with the kernel's page tables still loaded, so the caller was killed by its next instruction fetch ("the pager could not resolve an approved fault (code -2)"); the refusal now puts the caller's own page tables back, as every other refusal on that path did. Found by CI's KVM job, which `make smoke-captest` now witnesses deterministically. A page fault the pager cannot resolve is now reported in full on the kernel's diagnostic port, COM3, and a failed gate prints COM3. (#596)
 - Two control arms went red on changes they do not measure. `smoke-defer-exemption-control` held its race window open with a spin count, which on a newer CI runner image no longer spanned two claim audits, and went 0 of 46; it now holds the window until audits have run, and hit on 20 boots of 20. `smoke-console-handover-lines` and its arm gave up after 3 inconclusive boots, about one CI run in 80 at CI's measured rate; they now allow 8. (#593)
 
 - The boot harness could score a previous boot's lines as the current one's: QEMU truncates its log only when it opens it, after the harness has begun polling, so a log kept at a fixed path still held the last boot's output for that moment, and a planted `PANIC:` line made a clean boot fail. `tools/smoke_test.sh` now empties its three logs before QEMU starts (#591).

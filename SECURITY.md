@@ -137,7 +137,7 @@ has none.
 
 | # | Claim | Mechanism | Witness |
 |---|---|---|---|
-| S1 | A task cannot exercise authority it holds no capability for | The dispatch table states the capability each syscall needs and checks it centrally; where the caller names the capability, one shared resolver (`ipc_ep_from_slot`, `ipc_notif_from_slot`, `iodev_from_slot`) does the `cap_lookup` | `make smoke-captest` (253 checks) |
+| S1 | A task cannot exercise authority it holds no capability for | The dispatch table states the capability each syscall needs and checks it centrally; where the caller names the capability, one shared resolver (`ipc_ep_from_slot`, `ipc_notif_from_slot`, `iodev_from_slot`) does the `cap_lookup` | `make smoke-captest` (260 checks) |
 | S2 | Delegation cannot widen authority | Mint, grant and transfer compute `requested & src->rights` | CI job `rust`; `cargo test --manifest-path rust/Cargo.toml --release`; CI job `kani-bounded` (`mint_never_escalates_rights`, `grant_never_escalates_rights`) |
 | S3 | Revoking a capability revokes its entire derivation subtree, system-wide | `rust_cap_revoke_global` walks every live cspace and removes the whole derivation subtree. Every copy the kernel hands on is derived, the pipe end a spawned child is given included (`cap_install_child_pipe_end`) | CI job `rust`; CI job `kani-bounded`; `make smoke-pipe-revoke-child`; arm: `smoke-pipe-revoke-child-control` (`PIPE_CHILD_END_UNDERIVED=1`) |
 | S4 | Revoking a capability does *not* revoke ancestors, siblings, or independent peers | The revocation closure follows descendants only | CI job `rust`; CI job `kani-bounded`; `make smoke-pipe-revoke-child` (a forked child revokes its copy of a pipe end) |

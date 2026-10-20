@@ -230,7 +230,7 @@ DEFECT_FLAGS = \
 	BUDGET_UNENFORCED BUDGET_CROSS_CPU SC_DESTROY_KEEPS_TASKS SC_UNBOUND_CREATOR_GETS_ROOT \
 	SCHED_BIND_UNLOCKED PRIO_UNCAPPED PRIO_RIGHT_UNCHECKED PRIO_IGNORED \
 	DEADLINE_UNARMED REFILL_UNARMED BOUNDARY_UNSPLIT CHARGE_AFTER_PICK \
-	TSCDL_OFF TSC_CLOCK_OFF TSC_CLOCK_PROBE UP_TIMER_UNCALIBRATED
+	TSCDL_OFF TSC_CLOCK_OFF TSC_CLOCK_PROBE UP_TIMER_UNCALIBRATED FORK_NOMEM_KEEPS_KCR3
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2347,6 +2347,13 @@ endif
 UP_TIMER_UNCALIBRATED ?= 0
 ifeq ($(UP_TIMER_UNCALIBRATED),1)
 CFLAGS += -DUP_TIMER_UNCALIBRATED
+endif
+# FORK_NOMEM_KEEPS_KCR3=1 returns a fork refused for a spent region without
+# putting the caller's CR3 back, as before 2026-10-20, so the caller dies on its
+# next instruction fetch (smoke-captest-fork-nomem-control).
+FORK_NOMEM_KEEPS_KCR3 ?= 0
+ifeq ($(FORK_NOMEM_KEEPS_KCR3),1)
+CFLAGS += -DFORK_NOMEM_KEEPS_KCR3
 endif
 
 # The frame table is sized from the arena (roadmap 2.1). FRAME_BUDGET_SELFTEST=1
@@ -8091,6 +8098,17 @@ smoke-captest-pipe-grant-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 PIPE_GRANT_UNREFUSED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL pipe-end-granted-to-a-child' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: a fork refused for a spent region leaves the kernel's CR3 loaded,
+# so the child that asked dies on its next instruction fetch and never reports.
+.PHONY: smoke-captest-fork-nomem-control
+smoke-captest-fork-nomem-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL a-fork-refused-for-memory-killed-its-caller' \
 		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest-capenum-control

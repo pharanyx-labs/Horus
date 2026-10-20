@@ -360,6 +360,7 @@ column names the targets that build with the flag; an arm must turn its gate red
 | `FORK_CSPACE_FLAT_COPY=1` | Copies the parent's capabilities into the forked child verbatim (same serial, badge and generation) instead of deriving them. | `smoke-fork-cspace-flat-control` (arm of `smoke-fork`); `make smoke-fork` must go red under it |
 | `FORK_PIPE_UNCOUNTED=1` | Restores the pre-2026-10-12 fork, which copied the parent's pipe ends into the child without counting them, so the parent closing its ends freed the pipe under the child ([HORUS-20261012-03]). | `smoke-fork-pipe-control` (arm of `smoke-fork`); `make smoke-fork` must go red under it |
 | `PIPE_GRANT_UNREFUSED=1` | Restores the pre-2026-10-12 `SYS_CAP_GRANT`, which copied a pipe end into a supervised child without counting it, so the granter closing its end freed the pipe under the child ([HORUS-20261012-03]). | `smoke-captest-pipe-grant-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
+| `FORK_NOMEM_KEEPS_KCR3=1` | Restores the pre-2026-10-20 `SYS_FORK`, whose refusal for a spent region returned to ring 3 with the kernel's page tables still loaded, so the caller died on its next instruction fetch ("the pager could not resolve an approved fault (code -2)"). | `smoke-captest-fork-nomem-control` (arm of `smoke-captest`); `make smoke-captest` must go red under it |
 | `PIPE_CHILD_END_UNDERIVED=1` | Restores the pre-2026-10-13 spawn stdio wiring, which installed the child's pipe end as a root rather than a child of the spawner's end, so revoking the spawner's end left the child's working ([HORUS-20260911-04]). | `smoke-pipe-revoke-child-control` (arm of `smoke-pipe-revoke-child`); `make smoke-pipe-revoke-child` must go red under it |
 | `PIPE_REVOKE_UNCOUNTED=1` | Makes a revocation leave the pipe ends it removed counted in the pipe table, so a peer whose last opposite end was revoked never sees EOF ([HORUS-20260911-04]). | `smoke-pipe-revoke-uncounted-control` (arm of `smoke-pipe-revoke-child`); `make smoke-pipe-revoke-child` must go red under it |
 | `SHELLWATCH_PROBE=1` | Instrument, never shipped: `init` reports the rights the kernel records for the watcher's capability to the shell, and the shell gains a command that ends it. | `smoke-shellwatch`, `smoke-shellwatch-control` (arm of `smoke-shellwatch`) |
@@ -645,7 +646,7 @@ of the most important:
 
 | Target | Asserts |
 |---|---|
-| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (253 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
+| `smoke-captest` | Unheld capabilities, post-revoke use, and bad input are all refused (260 checks, printed by the suite as `CAPTEST: PASS <n> checks`) |
 | `smoke-wx` | No kernel page is both writable and executable |
 | `smoke-modules-tamper` | A corrupted boot module is refused |
 | `smoke-tpm-seal` | A changed PCR leaves the volume locked |

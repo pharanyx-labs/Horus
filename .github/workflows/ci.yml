@@ -1453,6 +1453,11 @@ jobs:
       # child. captest 16c grants one to a forked child and must see it accepted.
       - name: "Control arm: a pipe end granted to a child is accepted, uncounted"
         run: make smoke-captest-pipe-grant-control
+      # A fork refused for a spent region returned to ring 3 on the kernel's
+      # page tables, and its caller died on its next instruction fetch.
+      # captest 16d forks with a one-page region and must hear back.
+      - name: "Control arm: a fork refused for memory leaves its caller on the kernel's page tables"
+        run: make smoke-captest-fork-nomem-control
       # Roadmap 2.7 / S43. The four device syscalls have NO dispatch-table slot:
       # the lookup moved into the handler when a device capability started naming
       # a device, so this file is the whole gate. An arm that only bypasses the

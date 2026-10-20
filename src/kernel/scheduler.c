@@ -890,8 +890,7 @@ static int sc_runnable_somewhere(int t, uint64_t now) {
  * the current task. That task is the one stamped, or a task that has only ever
  * been alone on its CPU would be charged once and then run for nothing. A task
  * that is blocking or has died is no longer runnable here, and is not. */
-static void sc_account(int cpu, int chosen, uint64_t now) {
-    if (cpu < 0 || cpu >= MAX_CPUS) return;
+static void sc_account_stamp(int cpu, int chosen, uint64_t now) {
     struct sched_context *sc = sc_by_index(sc_stamp_idx[cpu]);
 #ifdef SCHED_INVARIANTS
     if (sc_xslack[cpu]) {
@@ -945,6 +944,26 @@ static void sc_account(int cpu, int chosen, uint64_t now) {
     sc_refresh(sc, cpu, now);
     if (sc->remaining_us > 0)            /* slack at home after its budget: free */
         sc_stamp_idx[cpu] = tasks[chosen].sc_index;
+}
+
+/* Every charge is followed by arming this CPU's timer for the moment the budget
+ * just stamped runs out (step 3b, smp.c BUDGET DEADLINES), or by disarming it
+ * when the choice runs on no budget. A root's budget is a whole CPU's for a
+ * whole period, so work on a root times nothing and keeps the tick it had.
+ * DEADLINE_UNARMED=1 arms nothing, for the control arm of smoke-sched-budget:
+ * a budget then ends at the next tick, as it did in step 4a. Without SMP there
+ * is no LAPIC timer and the tick remains the deadline. */
+static void sc_account(int cpu, int chosen, uint64_t now) {
+    if (cpu < 0 || cpu >= MAX_CPUS) return;
+    sc_account_stamp(cpu, chosen, now);
+#if defined(SMP) && !defined(DEADLINE_UNARMED)
+    uint64_t dl = 0;
+    struct sched_context *sc = sc_by_index(sc_stamp_idx[cpu]);
+    if (sc && sc->live && sc->cpu == cpu && !(sc->flags & SC_FLAG_ROOT) &&
+        sc->remaining_us > 0)
+        dl = now + (uint64_t)sc->remaining_us;
+    smp_timer_deadline(cpu, dl);
+#endif
 }
 
 /* Set by a tick that found the task on this CPU out of budget while it was in

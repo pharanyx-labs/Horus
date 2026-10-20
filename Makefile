@@ -228,7 +228,8 @@ DEFECT_FLAGS = \
 	FRAME_TABLE_FIXED \
 	RETYPE_RACE_SELFTEST KOBJ_UNPINNED GC_TEARDOWN_UNLOCKED \
 	BUDGET_UNENFORCED BUDGET_CROSS_CPU SC_DESTROY_KEEPS_TASKS SC_UNBOUND_CREATOR_GETS_ROOT \
-	SCHED_BIND_UNLOCKED PRIO_UNCAPPED PRIO_RIGHT_UNCHECKED PRIO_IGNORED
+	SCHED_BIND_UNLOCKED PRIO_UNCAPPED PRIO_RIGHT_UNCHECKED PRIO_IGNORED \
+	DEADLINE_UNARMED
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2294,6 +2295,13 @@ endif
 PRIO_IGNORED ?= 0
 ifeq ($(PRIO_IGNORED),1)
 CFLAGS += -DPRIO_IGNORED
+endif
+# Budget deadlines (docs/design/scheduler.md 3.4, step 3b): DEADLINE_UNARMED=1
+# arms no CPU's timer for the moment a budget runs out, so a budget ends at the
+# next tick as in step 4a (smoke-sched-budget-deadline-control).
+DEADLINE_UNARMED ?= 0
+ifeq ($(DEADLINE_UNARMED),1)
+CFLAGS += -DDEADLINE_UNARMED
 endif
 
 # The frame table is sized from the arena (roadmap 2.1). FRAME_BUDGET_SELFTEST=1
@@ -15243,6 +15251,18 @@ smoke-sched-budget-prio-control:
 	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 PRIO_IGNORED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
 		REQUIRE_MARKER='SCHEDTEST: FAIL a-lower-priority-task-ran-while-a-higher-one-could' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: no timer is armed for a budget's end, so the counter, given 1 ms
+# every 100 ms, runs to the next tick and repays the debt in the periods after,
+# and runs in far fewer periods than its own.
+.PHONY: smoke-sched-budget-deadline-control
+smoke-sched-budget-deadline-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 DEADLINE_UNARMED=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 DEADLINE_UNARMED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL a-small-budget-ran-in-bursts-of-a-tick' \
 		tools/smoke_test.sh horus.iso
 
 # An idle AP takes no ticks (docs/design/scheduler.md 3.4, step 3). Eight CPUs

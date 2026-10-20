@@ -310,9 +310,11 @@ that budget; raising `MAX_TASKS` spends pool memory instead.
 Each CPU has a run list, and a CPU with nothing of its own takes another's waiting task (#584);
 an idle AP stops its timer until another CPU's tick wakes it (#585). CPU time is a capability
 (#592, S152, S153), but `init` binds no task to a budget yet, so every task still runs on the BSP's
-whole root and a task that never blocks takes its share of every CPU. A budget is enforced at the
-10 ms tick, so a burst can overrun it by up to a tick (repaid from the next period), and in the
-`SMP=0` build, which is not shipped, a task out of budget keeps its CPU when nothing else can run.
+whole root and a task that never blocks takes its share of every CPU. A budget ends when it runs
+out (#595), but a refill is noticed at the next 10 ms tick, and on a machine with one CPU a budget
+ends at the next tick too, so a burst there can overrun by up to a tick (repaid from the next
+period); in the `SMP=0` build, which is not shipped, a task out of budget keeps its CPU when
+nothing else can run.
 Priorities exist (#594, S154, S155), but every shipped task is at 255, so none outranks another. A
 lower priority runs only when nothing above it can, so a task that polls with `SYS_YIELD` keeps
 everything below it from its CPU unless a budget bounds it, and a task that becomes runnable at a

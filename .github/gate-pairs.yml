@@ -365,6 +365,7 @@ control_arms:
   smoke-sched-budget-fork-control: smoke-sched-budget
   smoke-sched-budget-bind-unlocked-control: smoke-sched-budget
   smoke-sched-budget-prio-control: smoke-sched-budget
+  smoke-sched-budget-deadline-control: smoke-sched-budget
   smoke-sched-invariants-cross-cpu-control: smoke-sched-invariants
   smoke-runq-unhomed-control: smoke-sched-invariants
   smoke-shootdown-unacked-control: smoke-shootdown-unacked

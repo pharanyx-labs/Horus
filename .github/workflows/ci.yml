@@ -2301,6 +2301,8 @@ jobs:
         run: make smoke-sched-budget-bind-unlocked-control
       - name: Control arm, priority ignored lets a lower task run beside a higher one
         run: make smoke-sched-budget-prio-control
+      - name: Control arm, a budget left to end at the next tick runs in bursts of a tick
+        run: make smoke-sched-budget-deadline-control
       # Eight CPUs on the topologies firmware produces, not only QEMU's default:
       # sparse LAPIC ids, SMT, and more threads than slots (docs/ARCHITECTURE.md
       # section 7). Every schedulable AP must run a task and none may be an SMT

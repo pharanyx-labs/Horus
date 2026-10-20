@@ -426,9 +426,10 @@ reentrancy hazard.
 bound to a scheduling context, a share of one CPU spent as a budget every period, and is chosen
 only on the time it grants: a CPU runs its own budgeted work first and slack work (a context with
 the slack right, out of budget or on another CPU) after it. The time a task runs is measured with
-the TSC between one choice and the next and charged by the context's own CPU; a tick that finds
-the running task out of budget switches it away, or, if the tick landed in a system call, marks it
-to be switched away on its way back to ring 3. `init` holds the per-CPU roots, `SYS_SCHED_SPLIT`
+the TSC between one choice and the next and charged by the context's own CPU, which arms its
+LAPIC timer at each choice for the moment the chosen budget runs out (§3.4, step 3b). The
+interrupt, or the tick, that finds the running task out of budget switches it away, or, if it
+landed in a system call, marks it to be switched away on its way back to ring 3. `init` holds the per-CPU roots, `SYS_SCHED_SPLIT`
 divides a context and `SYS_SCHED_BIND` binds a task to one (S152, S153). Until something binds a
 task elsewhere every task runs on the BSP's root, budgeted on the BSP and slack on every AP.
 

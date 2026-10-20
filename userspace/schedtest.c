@@ -20,6 +20,7 @@
 #define SLOT_CTX2             45
 #define SLOT_CTX3             46
 #define SLOT_UT_COUNT         47
+#define SLOT_CTX_FINE         48
 #define COUNT_VA              0x0000000030000000UL
 #define SLOT_CHILD            40
 #define SLOT_CHILD_RO         41
@@ -264,6 +265,31 @@ void _start(void) {
     unsigned long c4 = *ctr;
     expect(c4 == c3, "a-revoked-context-task-stays-stopped-when-its-index-is-reused",
            (long)(c4 - c3));
+
+    /* Step 3b: a budget ends when it runs out, not at the next tick. The
+     * counter, still on this CPU, is given 1 ms every 100 ms and counts the
+     * distinct ticks it runs in over 300 (30 periods). Ended at its deadline it
+     * runs in every period, a millisecond each, in about one tick or two. Ended
+     * at the next tick, each run takes up to 10 ms and the debt is repaid by
+     * about nine periods with none, so it runs in some three periods of the 30
+     * and sees about six ticks: DEADLINE_UNARMED=1. Here last, so the index-
+     * reuse check above sees no context but its own come and go. */
+    rc = sys_sched_split(root, CAPSLOT_UNTYPED, SLOT_CTX_FINE, 1000, 100000, 0);
+    expect(rc == 0, "split-a-millisecond", rc);
+    ctr[7] = 0;
+    ctr[1] = 4;
+    rc = sys_sched_bind(count, SLOT_CTX_FINE);
+    expect(rc == 0, "bind-the-counter-to-a-millisecond", rc);
+    wait_ticks(300);
+    unsigned long fine = ctr[7];
+    ctr[1] = 3;
+    report("SCHEDTEST: a millisecond every 100 ms ran in ");
+    report_num((long)fine);
+    report(" of 300 ticks\n");
+    expect(fine >= 15, "a-small-budget-ran-in-bursts-of-a-tick", (long)fine);
+    expect(fine <= 90, "a-small-budget-ran-beyond-its-share", (long)fine);
+    rc = sys_cap_revoke(SLOT_CTX_FINE);
+    expect(rc == 0, "revoke-the-millisecond", rc);
 
     report("SCHEDTEST: PASS ");
     report_num(checks);

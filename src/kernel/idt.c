@@ -676,6 +676,13 @@ static uint64_t interrupt_handler64_inner(struct interrupt_frame64 *frame)
          * PIC IRQ0 only reaches the BSP). EOI to the local APIC, then let the
          * preemptive scheduler decide whether to switch this CPU's task. */
         lapic_eoi();
+        if (this_cpu() == 0) {
+            /* The BSP's LAPIC timer is armed only for a budget deadline (step
+             * 3b, smp.c BUDGET DEADLINES); its tick is the PIT's. So it is not
+             * an AP tick, re-arms nothing, and wakes nobody: the choice it
+             * makes arms the next deadline, if there is one. */
+            return preempt_on_tick((uint64_t)frame, frame->cs);
+        }
         __sync_fetch_and_add(&ap_timer_ticks, 1ul);
 #ifdef HANDOVER_PROBE
         /* The handover instrument's writer: any AP but the one running the

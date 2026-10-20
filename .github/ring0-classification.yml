@@ -688,7 +688,14 @@
 # scheduler lock, and the PRIO_IGNORED and PRIO_UNCAPPED arms), syscall.c +32
 # (two handlers under the spawn lock, the PRIO_RIGHT_UNCHECKED arm). Choosing
 # what a CPU runs is the scheduler's alone, so core.
-core_budget_loc: 12995
+# 2026-10-20: 12995 -> 13048, +53, ROADMAP 1.8 step 3b, budget deadlines (S153):
+# smp.c (each CPU's LAPIC timer armed for the moment its running budget runs
+# out, the count from microseconds, a deadline already past dropped rather than
+# re-armed, no timer write when nothing is armed), scheduler.c (sc_account
+# arms it after every charge, and the DEADLINE_UNARMED arm), idt.c (the BSP's
+# deadline interrupt, which is not an AP tick). When a CPU stops a task is the
+# scheduler's alone, so core.
+core_budget_loc: 13048
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

@@ -385,15 +385,89 @@ static void lapic_timer_calibrate(void) {
     if (lapic_timer_count < 1000) lapic_timer_count = 1000000;  /* sane fallback */
 }
 
-/* Arm this CPU's LAPIC timer for ONE tick at the calibrated rate (LVT bit 17
- * clear: one-shot). It counts down once, fires vector 0x40 and stops; nothing
- * fires again until something arms it again (docs/design/scheduler.md 3.4,
- * step 3). The count is the same ~10 ms the periodic mode used, so a busy CPU
- * is preempted exactly as often as before. */
-static void lapic_timer_arm(void) {
+/* Arm this CPU's LAPIC timer once for `count` (LVT bit 17 clear: one-shot). It
+ * counts down once, fires vector 0x40 and stops; nothing fires again until
+ * something arms it again (docs/design/scheduler.md 3.4, step 3). A tick is the
+ * same ~10 ms the periodic mode used, so a busy CPU is preempted exactly as
+ * often as before. */
+static void lapic_timer_oneshot(uint32_t count) {
     lapic_write(LAPIC_TIMER_DIV, 0x3);                              /* divide by 16 */
     lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_VECTOR);               /* one-shot */
-    lapic_write(LAPIC_TIMER_INIT, lapic_timer_count ? lapic_timer_count : 1000000);
+    lapic_write(LAPIC_TIMER_INIT, count);
+}
+
+/* ---- BUDGET DEADLINES (docs/design/scheduler.md 3.4, step 3b) --------------
+ *
+ * percpu_deadline_us[c] is the TSC microsecond at which the budget of the task
+ * CPU c is running runs out, or 0 when that task runs on no budget (slack, or
+ * the root's whole CPU). Written by CPU c only, at every choice it makes
+ * (sc_account), so the timer that ends a budget is programmed by the CPU whose
+ * budget it is. Before this a budget ended at the next 10 ms tick, so a task
+ * given 1 ms ran up to 10 and repaid the rest as debt over the periods after:
+ * the right share over a second, in bursts ten times the size it was given.
+ *
+ * An AP's tick is armed for whichever comes first, the tick or the deadline.
+ * The BSP's tick is the PIT, so its LAPIC timer is armed for the deadline alone
+ * and stopped when there is none (vector 0x40 on the BSP, idt.c). An early
+ * tick costs one pass through preempt_on_tick, which charges by the TSC and
+ * not by counting ticks, so nothing is charged twice. Not calibrated (one CPU,
+ * where smp_start_aps never runs), the tick remains the deadline. */
+static volatile uint64_t percpu_deadline_us[MAX_CPUS];
+
+/* The shortest deadline armed, so a deadline already past (a charge that ran
+ * late) is one prompt interrupt and not a storm of them. */
+#define DEADLINE_MIN_US 20u
+
+/* LAPIC counts from now until `dl`, at most a tick's. */
+static uint32_t lapic_count_until(uint64_t dl) {
+    extern uint64_t sched_clock_us(void);
+    uint64_t now = sched_clock_us();
+    uint64_t us = dl > now ? dl - now : 0;
+    if (us < DEADLINE_MIN_US) us = DEADLINE_MIN_US;
+    if (us >= 10000u) return lapic_timer_count;
+    uint64_t c = (uint64_t)lapic_timer_count * us / 10000u;
+    return c ? (uint32_t)c : 1u;
+}
+
+/* Arm this CPU's next tick, or its deadline if that is sooner. A deadline
+ * already past here was not taken: the tick that fired for it landed in ring 0
+ * and lost the scheduler lock to another CPU (sc_tick_in_kernel only tries it).
+ * It is dropped, and the next tick takes the charge, as every charge was taken
+ * before this step; re-arming it would interrupt this CPU every
+ * DEADLINE_MIN_US for as long as the lock was held. */
+static void lapic_timer_arm(void) {
+    extern uint64_t sched_clock_us(void);
+    uint32_t n = lapic_timer_count ? lapic_timer_count : 1000000;
+    int cpu = this_cpu();
+    if (lapic_timer_count && cpu >= 0 && cpu < MAX_CPUS && percpu_deadline_us[cpu]) {
+        if (percpu_deadline_us[cpu] <= sched_clock_us()) {
+            percpu_deadline_us[cpu] = 0;
+        } else {
+            uint32_t d = lapic_count_until(percpu_deadline_us[cpu]);
+            if (d < n) n = d;
+        }
+    }
+    lapic_timer_oneshot(n);
+}
+
+void smp_timer_deadline(int cpu, uint64_t dl) {
+    if (cpu < 0 || cpu >= MAX_CPUS || cpu != this_cpu() || !lapic_timer_count) return;
+    if (cpu_is_smt_sibling(cpu)) return;     /* runs nothing; never times anything */
+    /* Nothing armed and nothing to arm: the shipped system, where every task
+     * runs on a root, always takes this, so a choice costs no timer write. */
+    if (!dl && !percpu_deadline_us[cpu]) return;
+    percpu_deadline_us[cpu] = dl;
+    if (cpu == 0) {
+        /* The BSP: the deadline is its LAPIC timer's only use. */
+        if (dl) lapic_timer_oneshot(lapic_count_until(dl));
+        else    lapic_write(LAPIC_TIMER_INIT, 0);
+        return;
+    }
+    if (!dl) return;   /* an AP's tick is already armed or about to be */
+    /* Sooner than the tick already counting, or no tick counting: arm it now.
+     * Otherwise leave the tick, which ends first. */
+    uint32_t d = lapic_count_until(dl), cur = lapic_read(LAPIC_TIMER_CUR);
+    if (cur == 0 || d < cur) lapic_timer_oneshot(d);
 }
 
 /* ---- TICKLESS IDLE (docs/design/scheduler.md 3.4, step 3) ------------------

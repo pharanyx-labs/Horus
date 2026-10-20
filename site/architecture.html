@@ -346,7 +346,8 @@
       between tasks that do not trust each other. SMT siblings are parked in software.
       CPU time is a capability: each task is bound to a scheduling context, a share of one
       CPU spent as a budget every period, and runs only on the time it grants. A split
-      only divides what its parent holds, and each CPU charges only its own contexts.
+      only divides what its parent holds, each CPU charges only its own contexts, and a
+      budget ends when it runs out, not at the next tick.
       Among budgeted work the higher priority runs, and no task can set a priority above
       its own maximum.
     </p>

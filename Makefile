@@ -229,7 +229,8 @@ DEFECT_FLAGS = \
 	RETYPE_RACE_SELFTEST KOBJ_UNPINNED GC_TEARDOWN_UNLOCKED \
 	BUDGET_UNENFORCED BUDGET_CROSS_CPU SC_DESTROY_KEEPS_TASKS SC_UNBOUND_CREATOR_GETS_ROOT \
 	SCHED_BIND_UNLOCKED PRIO_UNCAPPED PRIO_RIGHT_UNCHECKED PRIO_IGNORED \
-	DEADLINE_UNARMED
+	DEADLINE_UNARMED REFILL_UNARMED BOUNDARY_UNSPLIT CHARGE_AFTER_PICK \
+	TSCDL_OFF TSC_CLOCK_OFF TSC_CLOCK_PROBE UP_TIMER_UNCALIBRATED FORK_NOMEM_KEEPS_KCR3
 
 # Active = set to 1. EP_QUEUE_SLOTS is a DEPTH rather than a boolean and is
 # listed separately: its defect arm is the value 1 (a single-slot endpoint, the
@@ -2302,6 +2303,57 @@ endif
 DEADLINE_UNARMED ?= 0
 ifeq ($(DEADLINE_UNARMED),1)
 CFLAGS += -DDEADLINE_UNARMED
+endif
+# Refills and period ends (step 3c): REFILL_UNARMED=1 arms no timer for a
+# refill, so one is noticed at the CPU's next tick
+# (smoke-sched-budget-refill-control); BOUNDARY_UNSPLIT=1 charges a run that
+# crossed its period's end wholly to the period it began in
+# (smoke-sched-budget-boundary-control).
+REFILL_UNARMED ?= 0
+ifeq ($(REFILL_UNARMED),1)
+CFLAGS += -DREFILL_UNARMED
+endif
+BOUNDARY_UNSPLIT ?= 0
+ifeq ($(BOUNDARY_UNSPLIT),1)
+CFLAGS += -DBOUNDARY_UNSPLIT
+endif
+# CHARGE_AFTER_PICK=1 charges the last choice only after the next is made, so
+# a task whose budget has just ended keeps its CPU over lower priorities
+# (smoke-sched-budget-charge-order-control).
+CHARGE_AFTER_PICK ?= 0
+ifeq ($(CHARGE_AFTER_PICK),1)
+CFLAGS += -DCHARGE_AFTER_PICK
+endif
+# The TSC-deadline timer and the TSC clock (step 3c), both used only where the
+# TSC is invariant. TSCDL_OFF=1 keeps every CPU's timer in LAPIC one-shot mode
+# (smoke-sched-budget-tscdl-control); TSC_CLOCK_OFF=1 counts PIT interrupts for
+# the clock everywhere (smoke-tsc-clock-control); TSC_CLOCK_PROBE=1 (instrument)
+# masks the BSP for half a second at 3 s and reports the ticks the clock lost.
+TSCDL_OFF ?= 0
+ifeq ($(TSCDL_OFF),1)
+CFLAGS += -DTSCDL_OFF
+endif
+TSC_CLOCK_OFF ?= 0
+ifeq ($(TSC_CLOCK_OFF),1)
+CFLAGS += -DTSC_CLOCK_OFF
+endif
+TSC_CLOCK_PROBE ?= 0
+ifeq ($(TSC_CLOCK_PROBE),1)
+CFLAGS += -DTSC_CLOCK_PROBE
+endif
+# UP_TIMER_UNCALIBRATED=1 calibrates the LAPIC timer only when there are APs to
+# start, as before step 3c, so on one CPU a budget ends at the next tick
+# (smoke-sched-budget-up-control).
+UP_TIMER_UNCALIBRATED ?= 0
+ifeq ($(UP_TIMER_UNCALIBRATED),1)
+CFLAGS += -DUP_TIMER_UNCALIBRATED
+endif
+# FORK_NOMEM_KEEPS_KCR3=1 returns a fork refused for a spent region without
+# putting the caller's CR3 back, as before 2026-10-20, so the caller dies on its
+# next instruction fetch (smoke-captest-fork-nomem-control).
+FORK_NOMEM_KEEPS_KCR3 ?= 0
+ifeq ($(FORK_NOMEM_KEEPS_KCR3),1)
+CFLAGS += -DFORK_NOMEM_KEEPS_KCR3
 endif
 
 # The frame table is sized from the arena (roadmap 2.1). FRAME_BUDGET_SELFTEST=1
@@ -8046,6 +8098,17 @@ smoke-captest-pipe-grant-control:
 	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 PIPE_GRANT_UNREFUSED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
 		REQUIRE_MARKER='CAPTEST: FAIL pipe-end-granted-to-a-child' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: a fork refused for a spent region leaves the kernel's CR3 loaded,
+# so the child that asked dies on its next instruction fetch and never reports.
+.PHONY: smoke-captest-fork-nomem-control
+smoke-captest-fork-nomem-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1
+	@$(MAKE) --no-print-directory CAPTEST_SELFTEST=1 FORK_NOMEM_KEEPS_KCR3=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_ONLY=1 \
+		REQUIRE_MARKER='CAPTEST: FAIL a-fork-refused-for-memory-killed-its-caller' \
 		tools/smoke_test.sh horus.iso
 
 .PHONY: smoke-captest-capenum-control
@@ -15263,6 +15326,119 @@ smoke-sched-budget-deadline-control:
 	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 DEADLINE_UNARMED=1 horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
 		REQUIRE_MARKER='SCHEDTEST: FAIL a-small-budget-ran-in-bursts-of-a-tick' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: no timer is armed for a refill, so the counter, given 9 ms of
+# every 10 on a CPU with nothing else to run, waits for the CPU's next tick
+# after each and runs about half the time.
+.PHONY: smoke-sched-budget-refill-control
+smoke-sched-budget-refill-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 REFILL_UNARMED=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 REFILL_UNARMED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL a-refill-waited-for-the-next-tick' \
+		tools/smoke_test.sh horus.iso
+
+# The same checks on one CPU, where the refill phases have no second CPU to move
+# to and are skipped: the BSP's own LAPIC timer ends the counter's 1 ms budget,
+# so it runs in some 30 of 300 ticks.
+.PHONY: smoke-sched-budget-up
+smoke-sched-budget-up:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=1 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: PASS' FAIL_MARKER='SCHEDTEST: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: one CPU never calibrates its LAPIC timer, so no deadline is
+# armed and the 1 ms budget runs to the next tick.
+.PHONY: smoke-sched-budget-up-control
+smoke-sched-budget-up-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 UP_TIMER_UNCALIBRATED=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 UP_TIMER_UNCALIBRATED=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=1 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL a-small-budget-ran-in-bursts-of-a-tick' \
+		tools/smoke_test.sh horus.iso
+
+# The same checks under KVM, on a CPU that offers the TSC-deadline mode and an
+# invariant TSC (the harness's KVM default since step 3c), so the deadlines,
+# refills and period ends above are timed by IA32_TSC_DEADLINE rather than a
+# LAPIC count. KVM only: QEMU's TCG offers neither. The kernel names its timer
+# mode at boot, and its console copy (COM4, which no ring-3 task writes) must
+# say TSC-deadline, or this gate would pass on the LAPIC path it already covers.
+.PHONY: smoke-sched-budget-tscdl
+smoke-sched-budget-tscdl:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 horus.iso
+	@set -e; log=.sched-tscdl-kcon.log; \
+	QEMU_ACCEL=kvm SMOKE_KCON_LOG=$$log SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: PASS' FAIL_MARKER='SCHEDTEST: FAIL' \
+		tools/smoke_test.sh horus.iso; \
+	if ! grep -qa 'smp: timers: TSC-deadline' $$log; then \
+		echo "SMOKE FAIL: the timers were not in TSC-deadline mode ($$log)"; exit 1; \
+	fi; echo "SMOKE PASS: the timers were in TSC-deadline mode"
+
+# Control arm: every timer stays in LAPIC one-shot mode, and the boot says so.
+.PHONY: smoke-sched-budget-tscdl-control
+smoke-sched-budget-tscdl-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 TSCDL_OFF=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 TSCDL_OFF=1 horus.iso
+	@QEMU_ACCEL=kvm SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='smp: timers: LAPIC one-shot' tools/smoke_test.sh horus.iso
+
+# The clock keeps time while the BSP holds interrupts off (step 3c, THE TSC
+# CLOCK). TSC_CLOCK_PROBE masks the BSP for half a second at 3 s and reports how
+# many ticks the clock fell behind the TSC; at most 2 may be lost. KVM only, on
+# a CPU with an invariant TSC: under TCG the PIT stays the clock, by design. The
+# PIT drops the ticks it misses, as real hardware does (SMOKE_PIT_DISCARD).
+.PHONY: smoke-tsc-clock
+smoke-tsc-clock:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TSC_CLOCK_PROBE=1
+	@$(MAKE) --no-print-directory TSC_CLOCK_PROBE=1 horus.iso
+	@QEMU_ACCEL=kvm SMOKE_PIT_DISCARD=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		MARKER_CHANNEL=kcon REQUIRE_MARKER='TSCCLOCK: PASS' FAIL_MARKER='TSCCLOCK: FAIL' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: the clock counts PIT interrupts, and loses most of the half
+# second.
+.PHONY: smoke-tsc-clock-control
+smoke-tsc-clock-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory TSC_CLOCK_PROBE=1 TSC_CLOCK_OFF=1
+	@$(MAKE) --no-print-directory TSC_CLOCK_PROBE=1 TSC_CLOCK_OFF=1 horus.iso
+	@QEMU_ACCEL=kvm SMOKE_PIT_DISCARD=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		MARKER_CHANNEL=kcon REQUIRE_MARKER='TSCCLOCK: FAIL' tools/smoke_test.sh horus.iso
+
+# Control arm: the last choice is charged only after the next is made, so the
+# task whose budget has just ended still looks budgeted, keeps the CPU over the
+# counter waiting at a lower priority, and the counter waits for the CPU's next
+# interrupt: under three tenths where it should have four.
+.PHONY: smoke-sched-budget-charge-order-control
+smoke-sched-budget-charge-order-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 CHARGE_AFTER_PICK=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 CHARGE_AFTER_PICK=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL a-task-out-of-budget-kept-its-cpu-over-a-lower-priority' \
+		tools/smoke_test.sh horus.iso
+
+# Control arm: a run that crosses its period's end is charged wholly to the
+# period it began in, so the counter, started late in every other period with
+# its whole budget, also has the next period's and runs half the time where
+# four tenths are its share.
+.PHONY: smoke-sched-budget-boundary-control
+smoke-sched-budget-boundary-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 BOUNDARY_UNSPLIT=1
+	@$(MAKE) --no-print-directory SCHED_BUDGET_SELFTEST=1 BOUNDARY_UNSPLIT=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) SMP_CPUS=2 MARKER_ONLY=1 \
+		REQUIRE_MARKER='SCHEDTEST: FAIL a-run-across-a-period-end-was-charged-to-one-period' \
 		tools/smoke_test.sh horus.iso
 
 # An idle AP takes no ticks (docs/design/scheduler.md 3.4, step 3). Eight CPUs

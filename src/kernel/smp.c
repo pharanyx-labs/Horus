@@ -396,6 +396,73 @@ static void lapic_timer_oneshot(uint32_t count) {
     lapic_write(LAPIC_TIMER_INIT, count);
 }
 
+/* ---- THE TSC-DEADLINE TIMER (docs/design/scheduler.md 3.4, step 3c) ---------
+ *
+ * Where CPUID reports the mode (leaf 1 ECX bit 24) and the TSC is invariant, a
+ * CPU's timer is armed with the TSC value it is to fire at (IA32_TSC_DEADLINE)
+ * rather than a count of LAPIC ticks from now. The count had to be worked out
+ * from a rate calibrated once against the PIT over 10 ms, so every deadline
+ * carried that measurement's error, and a count is relative, so a deadline was
+ * only as good as the moment it was written. A TSC value is the deadline itself,
+ * on the clock the budget is measured with (sched_clock_us). Writing 0 disarms
+ * it; the MSR reads 0 once it has fired, which is how a stopped timer is told
+ * apart from a counting one. An invariant TSC is required as well because a TSC
+ * whose rate follows the core's frequency is no clock to set a deadline on.
+ *
+ * Each CPU decides for itself, from its own CPUID, and only once the BSP has
+ * found the TSC invariant (timer_tscdl_ok): the mode is per-LAPIC, and writing
+ * the MSR on a CPU without it would fault. Every other CPU, every CPU under
+ * QEMU's TCG (which offers neither bit), and every CPU when TSCDL_OFF=1 (the
+ * control arm of smoke-sched-budget-tscdl), keeps the LAPIC one-shot as before. */
+/* The shortest deadline armed, so a deadline already past (a charge that ran
+ * late) is one prompt interrupt and not a storm of them. */
+#define DEADLINE_MIN_US 20u
+#define MSR_IA32_TSC_DEADLINE 0x6E0u
+#define LAPIC_LVT_TSC_DEADLINE (2u << 17)
+static int timer_tscdl_ok;
+static volatile uint8_t percpu_tscdl[MAX_CPUS];
+
+static inline void tscdl_write(uint64_t v) {
+    __asm__ volatile ("wrmsr" :: "c"(MSR_IA32_TSC_DEADLINE), "a"((uint32_t)v),
+                      "d"((uint32_t)(v >> 32)) : "memory");
+}
+static inline uint64_t tscdl_read(void) {
+    uint32_t lo, hi;
+    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(MSR_IA32_TSC_DEADLINE));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* Put this CPU's timer in TSC-deadline mode if it can be, before its first arm.
+ * The SDM asks for a fence between the LVT write that selects the mode and the
+ * first write of the MSR, which a CPU may otherwise reorder ahead of it and
+ * drop; the mode is written once, here, so the fence is paid once. */
+static void timer_mode_init(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) return;
+#ifndef TSCDL_OFF
+    uint32_t a, b, c, d;
+    __asm__ volatile ("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1u), "c"(0));
+    if (timer_tscdl_ok && ((c >> 24) & 1u)) {
+        lapic_write(LAPIC_TIMER_LVT, LAPIC_LVT_TSC_DEADLINE | LAPIC_TIMER_VECTOR);
+        __asm__ volatile ("mfence; lfence" ::: "memory");
+        percpu_tscdl[cpu] = 1;
+    }
+#endif
+}
+
+/* Arm this CPU's TSC-deadline timer for microsecond `at`, never sooner than
+ * DEADLINE_MIN_US from now. */
+static void tscdl_arm_at(uint64_t at) {
+    extern uint64_t sched_clock_us(void);
+    uint64_t soonest = sched_clock_us() + DEADLINE_MIN_US;
+    tscdl_write(sched_clock_tsc_at(at > soonest ? at : soonest));
+}
+
+/* Whether this CPU's timer has stopped: fired and not re-armed, or never armed. */
+static int timer_stopped(int cpu) {
+    if (cpu >= 0 && cpu < MAX_CPUS && percpu_tscdl[cpu]) return tscdl_read() == 0;
+    return lapic_read(LAPIC_TIMER_CUR) == 0;
+}
+
 /* ---- BUDGET DEADLINES (docs/design/scheduler.md 3.4, step 3b) --------------
  *
  * percpu_deadline_us[c] is the TSC microsecond at which the budget of the task
@@ -413,10 +480,6 @@ static void lapic_timer_oneshot(uint32_t count) {
  * not by counting ticks, so nothing is charged twice. Not calibrated (one CPU,
  * where smp_start_aps never runs), the tick remains the deadline. */
 static volatile uint64_t percpu_deadline_us[MAX_CPUS];
-
-/* The shortest deadline armed, so a deadline already past (a charge that ran
- * late) is one prompt interrupt and not a storm of them. */
-#define DEADLINE_MIN_US 20u
 
 /* LAPIC counts from now until `dl`, at most a tick's. */
 static uint32_t lapic_count_until(uint64_t dl) {
@@ -439,6 +502,14 @@ static void lapic_timer_arm(void) {
     extern uint64_t sched_clock_us(void);
     uint32_t n = lapic_timer_count ? lapic_timer_count : 1000000;
     int cpu = this_cpu();
+    if (cpu >= 0 && cpu < MAX_CPUS && percpu_tscdl[cpu]) {
+        /* The same rule on the TSC: the tick is 10 ms of it from now. */
+        uint64_t now = sched_clock_us(), at = now + 10000u, dl = percpu_deadline_us[cpu];
+        if (dl && dl <= now) percpu_deadline_us[cpu] = 0;
+        else if (dl && dl < at) at = dl;
+        tscdl_arm_at(at);
+        return;
+    }
     if (lapic_timer_count && cpu >= 0 && cpu < MAX_CPUS && percpu_deadline_us[cpu]) {
         if (percpu_deadline_us[cpu] <= sched_clock_us()) {
             percpu_deadline_us[cpu] = 0;
@@ -457,6 +528,19 @@ void smp_timer_deadline(int cpu, uint64_t dl) {
      * runs on a root, always takes this, so a choice costs no timer write. */
     if (!dl && !percpu_deadline_us[cpu]) return;
     percpu_deadline_us[cpu] = dl;
+    if (percpu_tscdl[cpu]) {
+        if (cpu == 0) {
+            if (dl) tscdl_arm_at(dl);
+            else    tscdl_write(0);
+            return;
+        }
+        if (!dl) return;
+        /* The deadline is a TSC value, so "sooner than what is armed" is a
+         * comparison of two of them; 0 is nothing armed. */
+        uint64_t cur = tscdl_read();
+        if (cur == 0 || sched_clock_tsc_at(dl) < cur) tscdl_arm_at(dl);
+        return;
+    }
     if (cpu == 0) {
         /* The BSP: the deadline is its LAPIC timer's only use. */
         if (dl) lapic_timer_oneshot(lapic_count_until(dl));
@@ -534,7 +618,7 @@ void smp_timer_after_tick(int fired) {
     /* Re-arm only a stopped timer. After its own tick it has stopped; after a
      * kick it may still be counting, and re-arming then would push this CPU's
      * next preemption out by up to a tick. */
-    if (fired || lapic_read(LAPIC_TIMER_CUR) == 0) lapic_timer_arm();
+    if (fired || timer_stopped(cpu)) lapic_timer_arm();
 }
 
 /* The AP idle context: sit with interrupts enabled until a tick or a kick
@@ -650,6 +734,7 @@ void ap_entry64(void) {
 
     percpu_idle[cpu] = 1;
 
+    timer_mode_init(cpu);         /* TSC-deadline where it can be (step 3c) */
     lapic_timer_arm();            /* the first tick; smp_timer_after_tick decides the rest */
 
     ap_idle_loop();               /* timer ticks now schedule tasks onto this CPU */
@@ -674,10 +759,6 @@ static void lapic_broadcast_init_sipi(uint8_t vector) {
  * soon as the real cores are online instead of stalling for a fixed MAX_CPUS that
  * may never appear. Only called when expected_cpus > 1. */
 static void smp_start_aps(int expected_cpus) {
-    /* Calibrate the LAPIC timer once (on the BSP, using the PIT) so every AP can
-     * arm its one-shot timer for a known ~10 ms tick. */
-    lapic_timer_calibrate();
-
     /* Stage the trampoline at its real-mode SIPI load address. AP_TRAMP_PHYS is
      * a PHYSICAL address — an AP starts in real mode and can only be pointed at
      * low memory — so write it through the higher-half alias rather than treating
@@ -788,6 +869,25 @@ void smp_bringup(void) {
     /* `ncpu` is how many CPUs the map numbered above, the BSP included: we wake
      * and wait for exactly that many; a uniprocessor skips AP bringup entirely
      * (no trampoline staging, no INIT-SIPI, no wait). */
+    /* Calibrate the LAPIC timer once (on the BSP, using the PIT) so every AP can
+     * arm its one-shot timer for a known ~10 ms tick, and choose the timer mode.
+     * Before every AP, and on a machine with one CPU too: the BSP's own LAPIC
+     * timer ends its budgets (step 3b), and before step 3c a uniprocessor never
+     * calibrated it, so there a budget ended at the next tick.
+     * UP_TIMER_UNCALIBRATED=1 calibrates only when there are APs, as before,
+     * for the control arm of smoke-sched-budget-up. */
+#ifdef UP_TIMER_UNCALIBRATED
+    if (ncpu > 1)
+#endif
+    {
+        lapic_timer_calibrate();
+        extern int kclock_tsc_invariant(void);
+        timer_tscdl_ok = kclock_tsc_invariant();
+        timer_mode_init(0);
+        println(percpu_tscdl[0] ? "smp: timers: TSC-deadline, invariant TSC"
+                                : "smp: timers: LAPIC one-shot");
+    }
+
     if (ncpu > 1) {
         smp_start_aps(ncpu);
     } else {

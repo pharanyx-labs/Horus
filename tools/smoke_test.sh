@@ -200,11 +200,18 @@ trap cleanup EXIT
 #   refused, and kvm without a usable /dev/kvm fails here rather than letting
 #   QEMU or a fallback quietly run the gate under TCG while the job says KVM.
 QEMU_ACCEL="${QEMU_ACCEL:-tcg}"
+# -cpu: the same model everywhere, and under KVM the TSC-deadline timer and an
+#   invariant TSC as well (the maintainer's decision of 2026-10-20), so the KVM
+#   gates run the kernel's TSC-deadline timers and TSC clock (scheduler design
+#   3.4, step 3c), which real hardware has and TCG cannot offer: QEMU refuses
+#   both bits under TCG. QEMU_CPU overrides it.
+CPU_DEFAULT="qemu64,+aes,+rdrand,+smep,+smap,+umip"
 case "$QEMU_ACCEL" in
     tcg) ;;
     kvm) if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
              echo "SMOKE FAIL: QEMU_ACCEL=kvm but /dev/kvm is not usable" >&2; exit 1
-         fi ;;
+         fi
+         CPU_DEFAULT="$CPU_DEFAULT,+tsc-deadline,+invtsc" ;;
     *)   echo "SMOKE FAIL: QEMU_ACCEL must be tcg or kvm, not '$QEMU_ACCEL'" >&2; exit 1 ;;
 esac
 # -no-reboot: a triple fault halts QEMU instead of looping, so we detect it.
@@ -348,6 +355,18 @@ MACHINE_ARG=""
 if [ "${SMOKE_IOMMU:-0}" = 1 ]; then
     MACHINE_ARG="-machine q35,kernel-irqchip=split -device intel-iommu,intremap=off"
 fi
+# SMOKE_PIT_DISCARD=1 (KVM only) drops the PIT ticks a guest misses while its
+# interrupts are masked, as a real 8254 and 8259 do: the 8259 holds one pending
+# IRQ 0 and the rest are gone. KVM's own default re-injects every missed tick
+# afterwards, so a guest that counts ticks keeps time there and on no real
+# machine, and smoke-tsc-clock's control arm (a clock that counts PIT ticks)
+# lost nothing (2026-10-20). Refused under TCG, which has no kvm-pit device.
+if [ "${SMOKE_PIT_DISCARD:-0}" = 1 ]; then
+    if [ "$QEMU_ACCEL" != kvm ]; then
+        echo "SMOKE FAIL: SMOKE_PIT_DISCARD=1 needs QEMU_ACCEL=kvm" >&2; exit 1
+    fi
+    MACHINE_ARG="$MACHINE_ARG -global kvm-pit.lost_tick_policy=discard"
+fi
 
 NET_ARG="-net none"
 if [ "${SMOKE_NET:-0}" = 1 ]; then
@@ -446,7 +465,7 @@ BOOT_ARG=""
 : > "$LOG"; : > "$KDIAG"; : > "$KCON"
 
 qemu-system-x86_64 \
-    -m "${SMOKE_MEM:-512M}" -cpu "${QEMU_CPU:-qemu64,+aes,+rdrand,+smep,+smap,+umip}" -accel "$QEMU_ACCEL" \
+    -m "${SMOKE_MEM:-512M}" -cpu "${QEMU_CPU:-$CPU_DEFAULT}" -accel "$QEMU_ACCEL" \
     -display none -no-reboot -no-shutdown \
     -device isa-debug-exit,iobase=0x604,iosize=0x04 \
     -serial file:"$LOG" -serial none -serial file:"$KDIAG" -serial file:"$KCON" $NET_ARG \
@@ -568,6 +587,20 @@ echo "------------------- serial log -------------------"
 cat "$LOG" 2>/dev/null || true
 echo ""
 echo "--------------------------------------------------"
+# A RUN THAT FAILED SHOWS COM3 TOO. The kernel writes its diagnostics there (a
+# task killed by a trap, an approved fault the pager could not resolve), and
+# only the kernel writes it, so nothing on it is ring-3 output. CI keeps no log
+# file, so a red run that printed only COM1 left the kernel's own account of it
+# behind: on 2026-10-20 a fault that never reproduced locally reached CI's log
+# as one line with no address. Printed on a failure only, and only if non-empty.
+case "$status" in
+    ok|expected_fault) ;;
+    *)  if [ -s "$KDIAG" ]; then
+            echo "----------- kernel diagnostic channel (COM3) -----------"
+            tail -n 60 "$KDIAG" 2>/dev/null || true
+            echo "--------------------------------------------------"
+        fi ;;
+esac
 
 case "$status" in
     ok)

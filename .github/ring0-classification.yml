@@ -695,7 +695,24 @@
 # arms it after every charge, and the DEADLINE_UNARMED arm), idt.c (the BSP's
 # deadline interrupt, which is not an AP tick). When a CPU stops a task is the
 # scheduler's alone, so core.
-core_budget_loc: 13048
+# 2026-10-20: 13048 -> 13237, +189, ROADMAP 1.8 step 3c, the TSC-deadline timer,
+# the TSC clock and refills (S153, S34): smp.c (the TSC-deadline mode chosen per
+# CPU, its arm, stop and stopped test beside the LAPIC count's, calibration on
+# one CPU too, the TSCDL_OFF and UP_TIMER_UNCALIBRATED arms), scheduler.c (the
+# charge split from the stamp and made before every pick, a run across its
+# period's end charged to both periods, the walk for the earliest refill that
+# lets a more urgent task run, the count of carved contexts that keeps the
+# shipped system from walking, the tick derived from the TSC, the TSC_CLOCK_PROBE
+# instrument, and the BOUNDARY_UNSPLIT, CHARGE_AFTER_PICK, REFILL_UNARMED and
+# TSC_CLOCK_OFF arms), terminal.c (the TSC value at a microsecond, and the
+# invariant-TSC test). When a CPU stops and starts a task, and what the clock
+# says, are the scheduler's and the clock's alone, so core.
+# 2026-10-20: 13237 -> 13286, +49, the same PR: an approved page fault the pager
+# could not resolve is now reported in full on COM3 (scheduler.c, the report;
+# paging.c, a read-only walk for the entry it found; idt.c, the call). CI's KVM
+# job killed a task that way once and logged one line with no address, and the
+# fault never reproduced locally. The fault path is core, so its report is.
+core_budget_loc: 13286
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

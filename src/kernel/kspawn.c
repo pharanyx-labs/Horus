@@ -782,8 +782,20 @@ void h_fork(struct interrupt_frame64 *r) {
                 tasks[parent].image_premap_pages, untyped_index);
     /* As do_spawn_inner: a parent that has spent its region cannot fork.
      * create_task leaves state 0 in that case, and the staging lock is held --
-     * release it on the way out, exactly as the clone failure below does. */
+     * release it on the way out, exactly as the clone failure below does, and
+     * put the caller's CR3 back as it does too. Until 2026-10-20 this path left
+     * the kernel's pml4 loaded, so the caller went back to ring 3 on page tables
+     * with none of its memory in them: its next instruction fetch faulted, the
+     * pager walked the task's own tables, found the page present (code -2) and
+     * killed it. Found by CI's KVM job, which was the first to run
+     * smoke-sched-budget's forking counter fast enough to spend its region; the
+     * fault report on COM3 named cr3=0x20D000 against the task's own.
+     * FORK_NOMEM_KEEPS_KCR3=1 drops the restore, for the control arm of
+     * smoke-captest. */
     if (tasks[child].state == 0) {
+#ifndef FORK_NOMEM_KEEPS_KCR3
+        if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
+#endif
         spawn_stage_release();
         r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;
         return;

@@ -50,6 +50,7 @@ control_arms:
   smoke-captest-prio-right-control: smoke-captest
   smoke-captest-hashed-revoke-control: smoke-captest
   smoke-captest-pipe-grant-control: smoke-captest
+  smoke-captest-fork-nomem-control: smoke-captest
   smoke-captest-clock-control: smoke-captest
   smoke-captest-devcap-control: smoke-captest
   smoke-captest-getline-control: smoke-captest
@@ -366,6 +367,12 @@ control_arms:
   smoke-sched-budget-bind-unlocked-control: smoke-sched-budget
   smoke-sched-budget-prio-control: smoke-sched-budget
   smoke-sched-budget-deadline-control: smoke-sched-budget
+  smoke-sched-budget-refill-control: smoke-sched-budget
+  smoke-sched-budget-boundary-control: smoke-sched-budget
+  smoke-sched-budget-charge-order-control: smoke-sched-budget
+  smoke-sched-budget-up-control: smoke-sched-budget-up
+  smoke-sched-budget-tscdl-control: smoke-sched-budget-tscdl
+  smoke-tsc-clock-control: smoke-tsc-clock
   smoke-sched-invariants-cross-cpu-control: smoke-sched-invariants
   smoke-runq-unhomed-control: smoke-sched-invariants
   smoke-shootdown-unacked-control: smoke-shootdown-unacked
@@ -610,6 +617,9 @@ gates:
   - smoke-frame-budget
   - smoke-retype-race
   - smoke-sched-budget
+  - smoke-sched-budget-up
+  - smoke-sched-budget-tscdl
+  - smoke-tsc-clock
   - smoke-smp-ap-late
   - smoke-smp-ap-closed
   - smoke-smp-kvm

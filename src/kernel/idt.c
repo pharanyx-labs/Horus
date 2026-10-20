@@ -1576,6 +1576,7 @@ uint64_t page_fault_handler(struct interrupt_frame64 *f64) {
         kl[k++] = '\n';
         kl[k] = 0;
         print(kl);
+        kdiag_pager_unresolved(killed, fault_addr, err, f64->rip, f64->rsp, prc);
     }
     if (killed > 0) {
         /* The banner above is printed only for a ring-0 / task-0 fault, so a

@@ -312,7 +312,8 @@ an idle AP stops its timer until another CPU's tick wakes it (#585). CPU time is
 (#592, S152, S153), but `init` binds no task to a budget yet, so every task still runs on the BSP's
 whole root and a task that never blocks takes its share of every CPU. A budget ends when it runs
 out (#595) and a refill is noticed when it is due (#596), but the shortest period is still a
-10 ms tick; in the `SMP=0` build, which is not shipped, there is no deadline timer, so a budget
+10 ms tick, on purpose: the refill interrupt is charged to no budget, so the floor is what bounds
+it, to one per context per tick; in the `SMP=0` build, which is not shipped, there is no deadline timer, so a budget
 ends at the next tick and a task out of budget keeps its CPU when nothing else can run. The
 TSC-deadline timer and the TSC clock (#596) are used only where the TSC is invariant; elsewhere
 the timers are LAPIC counts calibrated against the PIT over 10 ms, and the clock counts PIT

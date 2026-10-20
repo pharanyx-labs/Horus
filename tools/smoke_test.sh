@@ -162,6 +162,26 @@ req_seen() {
         *)     grep -qF "$1" "$LOG" 2>/dev/null ;;
     esac
 }
+# EXPECT_FAULT_CHANNEL is the same choice for EXPECT_FAULT: a control arm's
+# expected fault is nearly always a line only the kernel writes, and on COM1 it
+# is neither unsplittable (another writer can land inside it) nor unforgeable
+# (any task can print the same words). kdiag reads COM3, where the diagnostic
+# reporter (panic_str, kfault_str) writes as the only writer; kcon reads COM4,
+# the kernel's own copy of what it print()s. console stays the default for an
+# expected "fault" that a ring-3 task reports itself. tools/check_kernel_markers.py
+# requires the kernel's channel for every expected fault only the kernel writes.
+EXPECT_FAULT_CHANNEL="${EXPECT_FAULT_CHANNEL:-console}"
+case "$EXPECT_FAULT_CHANNEL" in
+    console|kcon|kdiag) ;;
+    *) echo "SMOKE FAIL: EXPECT_FAULT_CHANNEL must be console, kcon or kdiag, not '$EXPECT_FAULT_CHANNEL'"; exit 2 ;;
+esac
+fault_expected_seen() {
+    case "$EXPECT_FAULT_CHANNEL" in
+        kcon)  grep -qF "$EXPECT_FAULT" "$KCON" 2>/dev/null ;;
+        kdiag) grep -qF "$EXPECT_FAULT" "$KDIAG" 2>/dev/null ;;
+        *)     grep -qF "$EXPECT_FAULT" "$LOG" 2>/dev/null ;;
+    esac
+}
 fail_seen() {
     grep -qF "$1" "$LOG" 2>/dev/null && return 0
     case "$MARKER_CHANNEL" in
@@ -522,12 +542,18 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     if [ -z "$EXPECT_FAULT" ] && [ -n "$FAIL_MARKER" ] && fail_seen "$FAIL_MARKER"; then
         status="marker_fail"; break
     fi
+    # On a kernel channel the named line is itself the evidence of the fault:
+    # only the kernel writes there, and there it cannot be split. Waiting for
+    # FAULT_RE on COM1 as well would let a split COM1 copy time the arm out.
+    if [ -n "$EXPECT_FAULT" ] && [ "$EXPECT_FAULT_CHANNEL" != console ] && fault_expected_seen; then
+        status="expected_fault"; break
+    fi
     if grep -qE "$FAULT_RE" "$LOG" 2>/dev/null; then
         # Under EXPECT_FAULT, only the fault we NAMED ends the run. Any other
         # fault must keep going so it is reported as the wrong one at the end
         # rather than being accepted as the expected detection.
         if [ -n "$EXPECT_FAULT" ]; then
-            if grep -qF "$EXPECT_FAULT" "$LOG" 2>/dev/null; then
+            if fault_expected_seen; then
                 status="expected_fault"; break
             fi
         else
@@ -644,7 +670,7 @@ case "$status" in
         # with no positive counterpart, and the resume guard shipped a bound
         # rejecting the IST stacks. Checked here, over the COMPLETE log, for the
         # same reason ABSENT_MARKER is checked here rather than in the poll loop.
-        if [ -n "$EXPECT_FAULT" ] && ! grep -qF "$EXPECT_FAULT" "$LOG" 2>/dev/null; then
+        if [ -n "$EXPECT_FAULT" ] && ! fault_expected_seen; then
             echo "SMOKE FAIL: expected fault '$EXPECT_FAULT' never appeared, and the run completed"
             echo "  The build reached the banner without the fault this arm exists to observe."
             echo "  For a control arm that means the reintroduced defect did NOT reproduce."
@@ -664,7 +690,7 @@ case "$status" in
         exit 0
         ;;
     expected_fault)
-        echo "SMOKE PASS: expected fault '$EXPECT_FAULT' observed on serial"
+        echo "SMOKE PASS: expected fault '$EXPECT_FAULT' observed on serial$(case "$EXPECT_FAULT_CHANNEL" in kcon) echo ' (the kernel console copy, COM4)';; kdiag) echo ' (the kernel diagnostic channel, COM3)';; esac)"
         exit 0 ;;
     marker_fail)
         echo "SMOKE FAIL: saw fail marker '$FAIL_MARKER' on serial"

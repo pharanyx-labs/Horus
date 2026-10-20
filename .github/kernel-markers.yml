@@ -17,6 +17,11 @@
 #                            interleave with it on COM1.
 #   console-is-the-point: <why>  the gate exists to show the line reaches the console.
 #
+# EXPECT_FAULT is held to more (R6, R7): a control arm's expected fault read off the
+# console must be a line ring 3 prints, and anything else names the kernel channel
+# it is written on, EXPECT_FAULT_CHANNEL=kdiag (COM3) or kcon (COM4). No list of
+# exceptions: a kernel fault on COM1 can be split, and forged by any task.
+#
 # `scripts:` names every harness under tools/ that boots the guest itself or
 # drives tools/smoke_test.sh with markers of its own. The checker cannot read
 # their markers, so each says here what it reads, and a new one fails the check
@@ -26,6 +31,8 @@
 console:
   smoke-defect-flags: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
   smoke-defect-flags-control: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
+  smoke-defect-flags-instrument: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
+  smoke-defect-flags-instrument-control: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
   smoke-defect-flags-rebuild: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
   smoke-defect-flags-rebuild-control: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"
   smoke-boot-pin-control: "early: the DEFECT FLAGS line is printed in kernel_main before init exists"

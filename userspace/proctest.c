@@ -649,9 +649,15 @@ void _start(void) {
      *
      * killspin increments a counter in a frame we share with it, with no system
      * call, so only an interrupt can take its CPU back. We watch the counter
-     * rise, which proves it is running now, kill it, allow a short grace for
-     * the kill to land, then sample the counter twice, far apart. Any change
-     * between the two samples is a dead task writing live memory. --- */
+     * rise, which proves it is running now, kill it, and read the counter as
+     * sys_kill returns, then twice more, after a short wait and a long one.
+     * Any change after the return is a dead task writing live memory: S56 is
+     * that the task has STOPPED by the time sys_kill returns, so no grace is
+     * allowed. Until 2026-10-20 the first wait was a grace, and only a change
+     * after it failed: written when a kill was asynchronous, it let the kill
+     * take up to the grace to land, which S56 does not, and it made the arm
+     * smoke-killed-task-late-control miss (1 in 15 locally, three guests at
+     * once) whenever the grace outlasted the dead task's last tick. --- */
     {
         const int slot_frame = 40;
         volatile unsigned long *ctr = (volatile unsigned long *)0x0000000030000000ULL;
@@ -675,18 +681,18 @@ void _start(void) {
         if (!running) { report("PROC_SELFTEST: FAIL killed-task-never-ran\n"); sys_exit(); }
         if (sys_kill(k) != 0) { report("PROC_SELFTEST: FAIL killed-task-kill\n"); sys_exit(); }
         unsigned long at_ret = *ctr;
-        for (int i = 0; i < 200; i++) settle();            /* grace: the kill lands */
+        for (int i = 0; i < 200; i++) settle();            /* a short wait */
         unsigned long a = *ctr;
         for (int i = 0; i < 5000; i++) settle();           /* many ticks' worth */
         unsigned long b = *ctr;
-        if (b != a) {
+        if (a != at_ret || b != at_ret) {
             /* THE NUMBERS ARE THE EVIDENCE. On 2026-10-14 this failed in CI with
              * only its name, twice in 31 runs and never locally, and which of
              * "the dead task ran on" (the counter climbed from sys_kill's return
              * and then froze) or "something else wrote the frame" (a jump, or a
              * reset) it was could not be told. */
             report("PROC_SELFTEST: killed-task counter at sys_kill's return ");
-            report_u(at_ret); report(", after the grace "); report_u(a);
+            report_u(at_ret); report(", after a short wait "); report_u(a);
             report(", after the wait "); report_u(b); report("\n");
             report("PROC_SELFTEST: FAIL killed-task-still-writes\n"); sys_exit();
         }

@@ -3163,6 +3163,12 @@ jobs:
       # unconditionally.
       - name: An injected build names the flag it carries
         run: make smoke-defect-flags-control
+      # And so does an instrumented one, though no row lists it: every build
+      # switch is named but the ones a shipped image is built with.
+      - name: An instrumented build names what it carries
+        run: make smoke-defect-flags-instrument
+      - name: Control arm, only the listed flags are named
+        run: make smoke-defect-flags-instrument-control
       # THE FOOTGUN: build with an injection, rebuild WITHOUT clean and without
       # the flag. On 2026-08-20 that sequence produced a kernel still carrying
       # KSP_GUARD_INJECT and a false [G-9] "reproduction" at 2 boots in 3.

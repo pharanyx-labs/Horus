@@ -58,6 +58,34 @@ echo "R5 -- a listed harness that is gone must be CAUGHT"
 try "a stale scripts: entry" 1 R5 \
  "sed -i 's#^scripts:\$#scripts:\n  tools/zz_gone.sh: \"unmoved: nothing\"#' .github/kernel-markers.yml"
 
+echo "R6 -- a control arm moved back to expecting a kernel fault on the console must be CAUGHT"
+try "smoke-spawn-window-control without EXPECT_FAULT_CHANNEL" 1 R6 \
+ "python3 -c \"
+p='Makefile';s=open(p).read()
+i=s.index('\nsmoke-spawn-window-control:');j=s.index('\n\n',i)
+s=s[:i]+s[i:j].replace('EXPECT_FAULT_CHANNEL=kdiag ','')+s[j:];open(p,'w').write(s)\""
+
+echo "R6 -- a short kernel string the checker cannot place, on the console, must be CAUGHT"
+try "an expected fault of 'task 1' on the console" 1 R6 \
+ "python3 -c \"
+p='Makefile';s=open(p).read()
+s=s.replace('\nsmoke-cpu:','\nsmoke-zz-kmk:\n\t@EXPECT_FAULT=\'task 1\' tools/smoke_test.sh horus.iso\n\nsmoke-cpu:',1)
+open(p,'w').write(s)\""
+
+echo "R7 -- a print()ed fault read from COM3 must be CAUGHT"
+try "kdiag on the shootdown panic print() writes" 1 R7 \
+ "python3 -c \"
+p='Makefile';s=open(p).read()
+i=s.index('\nsmoke-shootdown-unacked:');j=s.index('\n\n',i)
+s=s[:i]+s[i:j].replace('EXPECT_FAULT_CHANNEL=kcon','EXPECT_FAULT_CHANNEL=kdiag')+s[j:];open(p,'w').write(s)\""
+
+echo "R7 -- a reporter's fault read from COM4 must be CAUGHT"
+try "kcon on a panic_str fault" 1 R7 \
+ "python3 -c \"
+p='Makefile';s=open(p).read()
+i=s.index('\nsmoke-spawn-window-control:');j=s.index('\n\n',i)
+s=s[:i]+s[i:j].replace('EXPECT_FAULT_CHANNEL=kdiag','EXPECT_FAULT_CHANNEL=kcon')+s[j:];open(p,'w').write(s)\""
+
 echo "clean -- the unmutated tree must PASS (a checker that rejects everything satisfies every arm above)"
 try "clean tree" 0 none "true"
 

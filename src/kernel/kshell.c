@@ -370,6 +370,9 @@ void spawn_initial_userspace_init(void) {
     extern uint8_t embedded_init_bin_start[];
     extern uint8_t embedded_init_bin_end[];
     extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
+    /* The two symbols bracket one image the linker placed. They are not two
+     * objects, which is what cppcheck's subtractPointers check assumes. */
+    /* cppcheck-suppress subtractPointers */
     uint32_t full_sz = (uint32_t)(embedded_init_bin_end - embedded_init_bin_start);
     if (full_sz < HORUS_IMAGE_HDR_BYTES) return;
     const uint8_t *bin = embedded_init_bin_start;
@@ -517,6 +520,9 @@ void spawn_initial_userspace_init(void) {
 void spawn_initial_userspace_shell(void) {
     extern uint8_t embedded_shell_bin_start[];
     extern uint8_t embedded_shell_bin_end[];
+    /* The two symbols bracket one image the linker placed. They are not two
+     * objects, which is what cppcheck's subtractPointers check assumes. */
+    /* cppcheck-suppress subtractPointers */
     uint32_t full_sz = (uint32_t)(embedded_shell_bin_end - embedded_shell_bin_start);
     if (full_sz < HORUS_IMAGE_HDR_BYTES) return;
     const uint8_t *bin = embedded_shell_bin_start;

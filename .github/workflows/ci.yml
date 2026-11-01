@@ -5530,14 +5530,14 @@ jobs:
           path: .repro-iso-control.log
           include-hidden-files: true
           retention-days: 14
-  # This job IS a required status check in the ruleset. What is advisory is its
-  # FINDINGS, not the job: `make security` is advisory by design (four of its six
-  # scanners already swallow failures), and it scans the workflow files and host
-  # tooling with rulesets (incl. semgrep --config=auto) whose findings — e.g.
-  # mutable action tags, curl|sh installs — are CI hygiene rather than kernel
-  # defects, and whose registry-fetched rules can change with no code change. So
-  # exactly one step carries continue-on-error (the scan itself), and the step
-  # before it asserts every scanner is actually installed and fails if one is not.
+  # This job IS a required status check in the ruleset. What is advisory is one
+  # step, `make security`: semgrep --config=auto and trivy. The registry rules
+  # are not this tree's and can change with no commit here, and trivy exits 0
+  # on findings. gitleaks, cargo-audit, cppcheck, flawfinder and the vendored
+  # Semgrep rules each have their own step, and a finding there fails the job.
+  # Exactly one step carries continue-on-error (the advisory scan), and the
+  # step before the scans asserts every scanner is installed and fails if one
+  # is not.
   #
   # This comment used to read "Advisory job ... does NOT gate merges. The hard
   # gates are the other four jobs (rust, kernel, smoke, reproducible)", which was
@@ -5665,13 +5665,13 @@ jobs:
       #                which scans workflow files and host tooling for CI hygiene
       #                (mutable action tags, curl|sh) rather than kernel defects
       #   trivy        exits 0 on findings (no --exit-code)
-      #   cppcheck     `| head -80 || true` -- the pipe discards the status anyway
-      #   flawfinder   `| head -60 || true` -- likewise
       #
-      # Gating these on findings would redden the pipeline on upstream rule drift
-      # while adding no real coverage -- the exact press-re-run reflex that let
-      # the smoke-console-smp deadlock survive months of CI (docs/LIMITATIONS.md
-      # 5.2c). Pinning the rulesets is what unlocks gating on their content.
+      # cppcheck, flawfinder and the vendored Semgrep rules are no longer in
+      # that list (roadmap 4.16). They run in their own step below. The pipe
+      # through head, and the `|| true`, are gone. Gating --config=auto would
+      # redden the pipeline on upstream rule drift while adding no real
+      # coverage: the press-re-run reflex that let the smoke-console-smp
+      # deadlock survive months of CI (docs/LIMITATIONS.md 5.2c).
       #
       # gitleaks and cargo-audit are NO LONGER in that list (roadmap 4.3). Both
       # are reproducible: gitleaks matches fixed patterns against this repository
@@ -5693,6 +5693,20 @@ jobs:
       # what the old `|| echo "not installed or no advisories found"` did.
       - name: Falsify both promoted scanners
         run: ./tools/test_security_gates.sh
+
+      # Roadmap 4.16. Same shape as the step above: the scan of the unmutated
+      # tree, then the harness that plants each defect. A finding here fails
+      # the job. The advisory step below no longer runs these three.
+      - name: Trusted-userspace scanners must fail the build (roadmap 4.16)
+        run: |
+          set -euo pipefail
+          make cppcheck flawfinder semgrep-horus
+          python3 tools/check_codeql_scope.py
+      - name: Falsify the trusted-userspace scanners
+        run: |
+          set -euo pipefail
+          ./tools/test_scanner_gates.sh
+          ./tools/test_check_codeql_scope.sh
 
       - name: Run remaining security checks (findings advisory -- see note above)
         continue-on-error: true

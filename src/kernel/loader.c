@@ -993,9 +993,11 @@ int try_elf_load(uint64_t load_base, uint64_t *out_entry, uint64_t *out_img_end)
     }
 
     /* seg_va/seg_memsz/seg_flags feed the relocation pass and the W^X pass below,
-     * exactly as the old in-loop recording did. */
-    uint64_t seg_va[8], seg_memsz[8];
-    uint32_t seg_flags[8];
+     * exactly as the old in-loop recording did. Zeroed first: a segment count
+     * of zero still passes the arrays, and the callee must not read an
+     * uninitialised entry. The loop writes every index it is allowed to read. */
+    uint64_t seg_va[8] = {0}, seg_memsz[8] = {0};
+    uint32_t seg_flags[8] = {0};
 
     static const uint8_t elf_zero_fill[4096] = {0};
     for (int i = 0; i < nseg; i++) {

@@ -432,7 +432,7 @@ The jobs that are not boot tests:
 | `lock-order` | The kernel's lock order is declared, and no path violates it |
 | `syscall-abi` | Every user pointer reaches the kernel full-width (issue #176) |
 | `reproducible` | Verify reproducible kernel build |
-| `security` | Security scans + SBOM generation (Semgrep, Trivy, gitleaks, etc.) |
+| `security` | Security scans + SBOM generation. gitleaks, cargo-audit, cppcheck, flawfinder and the vendored Semgrep rules fail the job. Semgrep's registry ruleset and Trivy stay advisory |
 | `fuzz` | Nightly fuzzing of each FFI target for ten minutes, in `fuzz.yml` (a crash fails it) |
 | `miri` | Undefined-behaviour check of the security core (Miri) |
 | `kani-bounded` | Formal verification of the capability algebra (every Kani proof) |

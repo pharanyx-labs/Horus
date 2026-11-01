@@ -1,12 +1,23 @@
 name: CodeQL
 
 # GitHub-native static analysis (SARIF -> the repository Security tab), added per
-# the July 2026 audit (finding P3: no code scanning). Advisory by design — it
-# surfaces findings for review but is NOT one of the merge hard-gates (those stay
-# rust / kernel / smoke / reproducible in ci.yml). Scans the C kernel with the
-# security-extended query suite (see the note on `queries:` below for why not
-# security-and-quality); the Rust security core is already covered by
-# `cargo test` + `clippy -D warnings` and the fuzz/Kani jobs.
+# the July 2026 audit (finding P3: no code scanning). This job is a required
+# check. The header used to call it advisory and not a merge gate. That was
+# false: the ruleset requires `CodeQL analyse (c-cpp)`, and a required job
+# described as advisory is how a reader learns to scroll past it.
+#
+# The build step is `make`. That links kernel.elf, which does not link until
+# userspace/init.bin, fs_server.bin and console_server.bin exist, and those
+# three are compiled from their .c files with $(CC). CodeQL's tracer therefore
+# sees the trusted userspace. tools/check_codeql_scope.py fails if this step
+# stops being that `make`, or if the Makefile drops one of the three.
+# The rest of the ISO is outside the trusted computing base and is not given
+# a second build here.
+#
+# The C sources are scanned with the security-extended query suite (see the
+# note on `queries:` below for why not security-and-quality). The Rust
+# security core is already covered by `cargo test` + `clippy -D warnings`
+# and the fuzz/Kani jobs.
 
 on:
   push:

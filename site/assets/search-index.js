@@ -7,93 +7,81 @@ window.HORUS_SEARCH = [
 "k": 1
 },
 {
-"t": "Why Horus",
-"p": "Why Horus",
+"t": "What an install is, today",
+"p": "Horus, a capability-based microkernel",
+"u": "index.html#install",
+"k": 2
+},
+{
+"t": "Where to go next",
+"p": "Horus, a capability-based microkernel",
+"u": "index.html#read",
+"k": 2
+},
+{
+"t": "Why Horus exists",
+"p": "Why Horus exists",
 "u": "why.html",
 "k": 1
 },
 {
-"t": "The problem",
-"p": "Why Horus",
+"t": "The rule",
+"p": "Why Horus exists",
 "u": "why.html#what",
 "k": 2
 },
 {
-"t": "Capabilities",
-"p": "Why Horus",
+"t": "What a capability is",
+"p": "Why Horus exists",
 "u": "why.html#capability",
 "k": 2
 },
 {
-"t": "Architecture",
-"p": "Architecture",
+"t": "The cspace",
+"p": "Why Horus exists",
+"u": "why.html#cspace",
+"k": 3
+},
+{
+"t": "How the kernel is built",
+"p": "How the kernel is built",
 "u": "architecture.html",
 "k": 1
 },
 {
-"t": "One choke point",
-"p": "Architecture",
+"t": "The syscall path",
+"p": "How the kernel is built",
 "u": "architecture.html#anatomy",
 "k": 2
 },
 {
-"t": "The servers get a matching guarantee on the other side",
-"p": "Architecture",
-"u": "architecture.html#the-servers-get-a-matching-guarantee-on-the-other-side",
-"k": 3
-},
-{
-"t": "Inside the kernel",
-"p": "Architecture",
+"t": "The trusted computing base",
+"p": "How the kernel is built",
 "u": "architecture.html#architecture",
 "k": 2
 },
 {
-"t": "What the kernel gives you, in one list",
-"p": "Architecture",
-"u": "architecture.html#what-the-kernel-gives-you-in-one-list",
-"k": 3
-},
-{
 "t": "Isolation",
-"p": "Architecture",
+"p": "How the kernel is built",
 "u": "architecture.html#isolation",
 "k": 3
 },
 {
 "t": "Message passing",
-"p": "Architecture",
+"p": "How the kernel is built",
 "u": "architecture.html#message-passing",
 "k": 3
 },
 {
-"t": "Memory as an authority",
-"p": "Architecture",
-"u": "architecture.html#memory-as-an-authority",
+"t": "Memory",
+"p": "How the kernel is built",
+"u": "architecture.html#memory",
 "k": 3
 },
 {
-"t": "Multiprocessing",
-"p": "Architecture",
-"u": "architecture.html#multiprocessing",
-"k": 3
-},
-{
-"t": "Storage the kernel keeps sealed",
-"p": "Architecture",
-"u": "architecture.html#storage-the-kernel-keeps-sealed",
-"k": 3
-},
-{
-"t": "Erasing a disk is its own authority",
-"p": "Architecture",
-"u": "architecture.html#erasing-a-disk-is-its-own-authority",
-"k": 3
-},
-{
-"t": "A usable userland",
-"p": "Architecture",
-"u": "architecture.html#a-usable-userland",
+"t": "Storage",
+"p": "How the kernel is built",
+"u": "architecture.html#storage",
 "k": 3
 },
 {
@@ -103,182 +91,176 @@ window.HORUS_SEARCH = [
 "k": 1
 },
 {
-"t": "The boot chain",
+"t": "The chain",
 "p": "Trusted boot",
 "u": "boot.html#boot",
 "k": 2
 },
 {
-"t": "GRUB loads the kernel and the boot modules",
+"t": "Modules",
 "p": "Trusted boot",
-"u": "boot.html#grub-loads-the-kernel-and-the-boot-modules",
+"u": "boot.html#modules",
 "k": 3
 },
 {
-"t": "The kernel checks every module against a manifest inside itself",
+"t": "Measurement",
 "p": "Trusted boot",
-"u": "boot.html#the-kernel-checks-every-module-against-a-manifest-inside-its",
+"u": "boot.html#measure",
 "k": 3
 },
 {
-"t": "The kernel is pinned, and the pin is measured",
+"t": "Unsealing",
 "p": "Trusted boot",
-"u": "boot.html#the-kernel-is-pinned-and-the-pin-is-measured",
+"u": "boot.html#unseal",
 "k": 3
 },
 {
-"t": "The disk key is unsealed only if those measurements are right",
+"t": "init",
 "p": "Trusted boot",
-"u": "boot.html#the-disk-key-is-unsealed-only-if-those-measurements-are-righ",
+"u": "boot.html#init",
 "k": 3
 },
 {
-"t": "And a disk that was never sealed cannot satisfy a machine that requires it",
-"p": "Trusted boot",
-"u": "boot.html#and-a-disk-that-was-never-sealed-cannot-satisfy-a-machine-th",
-"k": 3
-},
-{
-"t": "init starts, and hands out every capability anything else will hold",
-"p": "Trusted boot",
-"u": "boot.html#init-starts-and-hands-out-every-capability-anything-else-wil",
-"k": 3
-},
-{
-"t": "Status",
-"p": "Status",
+"t": "What works today",
+"p": "What works today",
 "u": "status.html",
 "k": 1
 },
 {
 "t": "Subsystems",
-"p": "Status",
+"p": "What works today",
 "u": "status.html#status",
 "k": 2
 },
 {
-"t": "What comes next",
-"p": "Status",
+"t": "Ceilings",
+"p": "What works today",
+"u": "status.html#ceilings",
+"k": 2
+},
+{
+"t": "Session queue",
+"p": "What works today",
 "u": "status.html#next",
 "k": 2
 },
 {
-"t": "How it is tested",
-"p": "How it is tested",
+"t": "How a claim is kept",
+"p": "How a claim is kept",
 "u": "testing.html",
 "k": 1
 },
 {
-"t": "Method",
-"p": "How it is tested",
+"t": "The rule",
+"p": "How a claim is kept",
 "u": "testing.html#method",
 "k": 2
 },
 {
-"t": "Every gate is falsified before it is trusted",
-"p": "How it is tested",
-"u": "testing.html#every-gate-is-falsified-before-it-is-trusted",
+"t": "Control arms",
+"p": "How a claim is kept",
+"u": "testing.html#arms",
 "k": 3
 },
 {
-"t": "And every claim is bound to a gate that exists",
-"p": "How it is tested",
-"u": "testing.html#and-every-claim-is-bound-to-a-gate-that-exists",
+"t": "What is bound",
+"p": "How a claim is kept",
+"u": "testing.html#bound",
 "k": 3
 },
 {
-"t": "A single green run says nothing about a concurrency change",
-"p": "How it is tested",
-"u": "testing.html#a-single-green-run-says-nothing-about-a-concurrency-change",
-"k": 3
+"t": "What runs at night",
+"p": "How a claim is kept",
+"u": "testing.html#nightly",
+"k": 2
 },
 {
-"t": "\"Flaky\" is a hypothesis, not a diagnosis",
-"p": "How it is tested",
-"u": "testing.html#flaky-is-a-hypothesis-not-a-diagnosis",
-"k": 3
-},
-{
-"t": "Limitations",
-"p": "Limitations",
+"t": "What is unfinished",
+"p": "What is unfinished",
 "u": "limitations.html",
 "k": 1
 },
 {
-"t": "Findings",
-"p": "Limitations",
+"t": "Open limits",
+"p": "What is unfinished",
 "u": "limitations.html#limits",
 "k": 2
 },
 {
-"t": "C-5Nobody reviews a change before it lands",
-"p": "Limitations",
-"u": "limitations.html#c-5nobody-reviews-a-change-before-it-lands",
+"t": "No independent review",
+"p": "What is unfinished",
+"u": "limitations.html#review",
 "k": 3
 },
 {
-"t": "2.9Measured boot is opt-in",
-"p": "Limitations",
-"u": "limitations.html#2-9measured-boot-is-opt-in",
+"t": "Execute is advisory",
+"p": "What is unfinished",
+"u": "limitations.html#exec",
 "k": 3
 },
 {
-"t": "4A program's execute right is advisory",
-"p": "Limitations",
-"u": "limitations.html#4a-programs-execute-right-is-advisory",
+"t": "The monitor is split",
+"p": "What is unfinished",
+"u": "limitations.html#monitor",
 "k": 3
 },
 {
-"t": "4Hardware support is narrow",
-"p": "Limitations",
-"u": "limitations.html#4hardware-support-is-narrow",
+"t": "Measured boot and rollback",
+"p": "What is unfinished",
+"u": "limitations.html#bootlim",
 "k": 3
 },
 {
-"t": "isoThe releases carry no signature or provenance",
-"p": "Limitations",
-"u": "limitations.html#isothe-releases-carry-no-signature-or-provenance",
+"t": "Cryptography",
+"p": "What is unfinished",
+"u": "limitations.html#crypto",
 "k": 3
 },
 {
-"t": "cryptoEvery primitive is unaudited",
-"p": "Limitations",
-"u": "limitations.html#cryptoevery-primitive-is-unaudited",
+"t": "Hardware",
+"p": "What is unfinished",
+"u": "limitations.html#hardware",
 "k": 3
 },
 {
-"t": "5.5Formal verification is narrow",
-"p": "Limitations",
-"u": "limitations.html#5-5formal-verification-is-narrow",
+"t": "Releases",
+"p": "What is unfinished",
+"u": "limitations.html#releases",
 "k": 3
 },
 {
-"t": "miscSmaller edges, all tracked",
-"p": "Limitations",
-"u": "limitations.html#miscsmaller-edges-all-tracked",
+"t": "Proofs",
+"p": "What is unfinished",
+"u": "limitations.html#narrow",
 "k": 3
 },
 {
 "t": "Where the line sits",
-"p": "Limitations",
+"p": "What is unfinished",
 "u": "limitations.html#where-the-line-sits",
 "k": 3
 },
 {
-"t": "Run it",
-"p": "Run it",
+"t": "Run Horus",
+"p": "Run Horus",
 "u": "run.html",
 "k": 1
 },
 {
-"t": "Two commands",
-"p": "Run it",
+"t": "QEMU",
+"p": "Run Horus",
 "u": "run.html#run",
 "k": 2
 },
 {
-"t": "Installing",
-"p": "Run it",
+"t": "The suite",
+"p": "Run Horus",
+"u": "run.html#targets",
+"k": 3
+},
+{
+"t": "Hardware",
+"p": "Run Horus",
 "u": "run.html#install",
 "k": 2
 }

@@ -1,5 +1,10 @@
 # Storage drivers out of ring 0
 
+**Status.** `sdhcid`, `atad` and `nvmed` run in ring 3 in self-test builds and share the
+block-driver protocol (section 5). Sections 7 and 8 record `sdhcid` and `atad` as built.
+The installed system still uses the kernel's own IDE and eMMC drivers. Nothing here is a
+disk the system stores on until the kernel stops doing disk I/O (ROADMAP 2.7 and 2.10).
+
 The kernel's storage drivers (`src/kernel/sdhci.c`, `ata.c` and `ahci.c`, about 2,300 lines)
 run in ring 0. Each reads card responses, capacity fields and status bits from a device that
 `SECURITY.md` treats as hostile, so a bug in any of them, or a device that never answers, is a

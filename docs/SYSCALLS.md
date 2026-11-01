@@ -2,7 +2,8 @@
 
 Every system call, what it does, and the capability it requires. The numbers and wrappers are in
 [`include/syscall.h`](../include/syscall.h); the authoritative gate for each call is its entry in
-the dispatch table in `src/kernel/syscall.c`.
+the dispatch table in `src/kernel/syscall.c`. The open work that changes a call, and the order
+it should be done in, is [`ROADMAP.md`](ROADMAP.md).
 
 ## Calling convention
 

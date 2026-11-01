@@ -210,12 +210,16 @@ release tags signed by the maintainer's key.
 
 **4.5 ⬜ Releases that carry their evidence.** The four releases so far carry an ISO and its checksum
 from an unsigned tag. Each release also carries the SBOM, the provenance of 4.4 and the expected PCR
-values.
+values. The finished item of this number, in
+[`history/ROADMAP-DONE-2026.md`](history/ROADMAP-DONE-2026.md), is those four tags. This open item
+is the evidence they still do not carry. The number is kept because other documents cite it.
 
 **4.8 ⬜ Secret scanning for non-provider patterns [M-4].**
 
 **4.10 ⬜ The 8x8 font's provenance.** `THIRD_PARTY.md` declares everything else; the origin of the
-font's ASCII half is still open.
+font's ASCII half is still open. The finished item of this number, in
+[`history/ROADMAP-DONE-2026.md`](history/ROADMAP-DONE-2026.md), is that file. This open item is the
+half it does not yet cover. The number is kept because other documents cite it.
 
 **4.11 ⬜ `verify-release.sh`.** A script a third party runs to rebuild from a tag and compare with
 the release, including the PCR values. Needs 4.5.
@@ -228,6 +232,69 @@ every other open pull request; and a fast path that skips the QEMU gates for a c
 documentation. The fast path is decided by a checked allowlist of paths, never by a label, and its
 checker ships with a harness showing a code change cannot take it. The merge queue is a ruleset
 change, made after the pull request that adds the `merge_group` trigger has merged.
+
+**4.16 ⬜ Scanners that can fail, aimed at the trusted userspace.** `cppcheck` and `flawfinder`
+are piped through `head` and `|| true` (`Makefile` targets of those names), so they cannot go red,
+and they scan `src/` and `include/` only. `userspace/init.c`, `userspace/fs_server.c` and
+`userspace/console_server.c` are in the trusted computing base and outside that scan. Semgrep runs
+`--config=auto`, whose rules are not this tree's, and its findings step does not fail the job.
+CodeQL's `analyze` job is a required check, but `.github/workflows/codeql.yml` still calls the job
+advisory, and the trace is `make`, so the ISO's userspace can go unscanned.
+
+One change, or a short series if the arms will not fit in one, and nothing else:
+
+- Point `cppcheck` and `flawfinder` at those three programs as well as the kernel, and drop the
+  pipe that discards their status. Each ships with a planted defect the scan must report, and the
+  unmutated tree must pass.
+- Vendor a Semgrep ruleset for the traps this tree has already shipped: mixing `virt_to_phys` with
+  an arbitrary physical address, `current_user_is_admin` on a grant path, a user pointer that skips
+  the Rust validator, slot 3 treated as a grant, and a user length narrowed before the bounds
+  check. Run it with `--error`. A fixture of each trap must go red, and the unmutated tree must pass.
+- Correct the CodeQL header so it does not call a required job advisory, and trace the ISO so the
+  trusted userspace is in the database. CodeQL stays required. Do not move it to the advisory list.
+
+**4.17 ⬜ One stamped kernel image for the default smoke jobs.** Jobs that boot the default kernel
+rebuild it. They should download one image and refuse it unless its `.build-flags` stamp and its
+hash are the ones that job expects. A job that passes a different flag keeps its own build, and
+`altconfigs` keeps building `DEBUG_SHELL=1`, `MINIMAL_SECURE=1`, `SMP=1` and `SMP=0` itself. A
+shared image that is not checked is a gate that can pass on the wrong kernel. The witness is a job
+handed an image stamped for a different flag, which must go red, and the same job handed the image
+it asked for, which must boot.
+
+**4.18 ⬜ Warning ratchet and a kernel stack-depth budget.** The kernel is not built with `-Werror`.
+A new warning fails the build, by a baseline that shrinks and never grows. Separately, a syscall or
+interrupt path whose stack depth, from `-fstack-usage`, exceeds the per-CPU stack minus the guard
+fails the build. The depth budget ships with a control arm that plants a frame too deep and must go
+red. Neither check deletes a warning to go green.
+
+**4.19 ⬜ A nightly guest syscall fuzzer.** The fuzz targets in `fuzz.yml` are parsers in the Rust
+core. Nothing there calls `syscall()`. A nightly job, off the merge path and in the same shape as
+that workflow, fuzzes the guest entry. A crash fails the run and keeps the input. It does not
+become a required check until it has stayed quiet, and a silent skip is a failure.
+
+**4.20 ⬜ A constant-time check on the password path and the AEAD.** Limitation 5.4 stays the
+status: the primitives are unaudited and not shown constant-time, and this item does not close it
+and does not replace them. What it does land is a call-graph check that the password compare and
+the AEAD use the constant-time compare, plus a nightly timing run of those paths. A planted
+variable-time compare on either path must go red. Writing a new primitive is not this item.
+Roadmap 5.15 is the decision that would replace one.
+
+**4.21 ⬜ A census of properties witnessed only by a positive boot.** Name every row in
+`SECURITY.md` whose only evidence is that a boot reached a marker, so a later change can give each
+one an arm. The census is the list. It does not add the arms, and it does not weaken a row to make
+the list shorter. A checker then fails if a new row is only a positive boot and is not on the list,
+so the list cannot go stale by being forgotten.
+
+**4.22 ⬜ Clang as a second nightly compiler.** A nightly job builds the kernel and the userspace
+that the ISO links, with Clang, and fails if it cannot link. It does not gate a merge until it has
+stayed linkable. A skip, or a job that passes because the compiler was not installed, is a failure.
+
+**4.23 ⬜ A red nightly opens an issue, and PyYAML is hash-pinned.** `fuzz.yml` and `kani-arms.yml`
+do not run on a pull request, so a red run is easy to miss. Each opens an issue when it goes red,
+and does not open a second while that issue is open. The same change hash-pins the existing
+`pyyaml==6.0.3` installs in `.github/workflows/ci.yml` (the plain `pip install` lines and the
+`--user` lines), recording the wheel hash it pins. A substituted wheel must not satisfy the version
+pin. No other dependency moves in that change.
 
 ### Track 5: closing the known limitations
 
@@ -269,3 +336,17 @@ swapped in under it. D8 first.
 specified and model-checked: spawn, wait and teardown (S125), the kernel-stack claim and park (S20),
 the TLB shootdown (S124), and revocation against lookup. Each model ships with a seeded defect it
 must catch, as every gate has an arm. Nightly first. D9 first.
+
+**5.14 ⬜ Refuse a bus-master when the IOMMU is off** (2.12). A build flag in the shape of
+`MEASURED_BOOT_REQUIRED`: when it is set, a boot on which `iommu_active()` is 0 does not hand a
+bus-mastering device to a task, and says so. The default research build keeps today's behaviour,
+which limitation 2.12 already states, and the boot still says that DMA is not confined. The witness
+is that flag on a machine with no IOMMU, which must refuse the device, and the default build on the
+same machine, which must still boot and must still say so. This is not roadmap 2.12. That item
+keeps secret pages out of swap.
+
+**5.15 ⏸ An audit of the cryptography, or a replacement** (5.4). The maintainer decides whether
+the from-scratch primitives are audited or replaced by a vendored, hash-pinned `no_std`
+implementation. This item does not start until that decision is written down. Do not write new
+primitives while waiting. The check that can land without the decision is roadmap 4.20. Limitation
+5.4 stays the status until the decision is carried out.

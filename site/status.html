@@ -3,27 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Horus: Status</title>
-<meta name="description" content="What works in Horus, what is half-built, and what does not exist yet, each with the test that proves it.">
+<title>What works today</title>
+<meta name="description" content="Which parts of Horus a witness currently holds, which are partial, and the work queued for later sessions.">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f5f7fb" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0c1426" media="(prefers-color-scheme: dark)">
-<!-- The wedjat, the Eye of Horus, drawn for 16px. A data URI rather than a file:
-     nothing on this site is fetched that the page itself does not need. -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d3f9e'/%3E%3Cg fill='none' stroke='%23e8eaed' stroke-width='2.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.6C10 4.2 19 4 27.5 6.8'/%3E%3Cpath d='M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4'/%3E%3Cpath d='M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4'/%3E%3Cpath d='M11.2 17.8L10.8 27.4'/%3E%3Cpath d='M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9'/%3E%3C/g%3E%3Ccircle cx='14.2' cy='12.9' r='3.6' fill='%23e8eaed'/%3E%3C/svg%3E">
-<meta property="og:title" content="Horus: Status">
-<meta property="og:description" content="What works in Horus, what is half-built, and what does not exist yet, each with the test that proves it.">
+<meta name="theme-color" content="#e7ece8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101613" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%231b4f3c'/%3E%3Cpath d='M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4' fill='none' stroke='%23f4f7f5' stroke-width='2.4'/%3E%3Ccircle cx='14.2' cy='12.9' r='3.2' fill='%23f4f7f5'/%3E%3C/svg%3E">
+<meta property="og:title" content="What works today">
+<meta property="og:description" content="Which parts of Horus a witness currently holds, which are partial, and the work queued for later sessions.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Horus">
-<!-- Everything this site loads comes from this site. No CDN, no webfont, no
-     analytics: a page arguing about supply-chain provenance has no business pulling
-     bytes from other origins, and it must read the same offline, from a checkout.
-     tools/check_site.py enforces it. -->
 <link rel="stylesheet" href="assets/site.css">
 <script>
-  /* Apply a remembered theme before the first paint, so a dark-mode reader never
-     sees a flash of the light page. Storage can be unavailable; then the system
-     preference decides, which is also the default. */
   try {
     var t = localStorage.getItem("horus-theme");
     if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
@@ -32,12 +23,10 @@
 </head>
 <body class="page-status">
 <a class="skip" href="#main">Skip to content</a>
-
 <header class="top">
   <div class="top__in">
-    <a class="brand" href="index.html">
-      <svg class="brand__mark" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-          <g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <a class="brand" href="index.html"><svg class="brand__mark" width="26" height="26" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4.5 7.6C10 4.2 19 4 27.5 6.8"/>
             <path d="M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4"/>
             <path d="M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4"/>
@@ -45,9 +34,7 @@
             <path d="M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9"/>
           </g>
           <circle cx="14.2" cy="12.9" r="3.6" fill="currentColor"/>
-        </svg>
-      <span>Horus</span>
-    </a>
+        </svg><span>Horus</span></a>
     <nav class="primary" aria-label="Site">
         <a href="why.html">Why Horus</a>
         <a href="architecture.html">Architecture</a>
@@ -85,147 +72,99 @@
     </div>
   </div>
 </header>
-
-<div class="doc">
-  <aside class="toc" aria-labelledby="toc-title">
-    <p class="toc__title" id="toc-title">On this page</p>
-    <ol class="toc__list">
-<li><a href="#status">Subsystems</a>
-</li>
-<li><a href="#next">What comes next</a>
-</li>
+<div class="sheet">
+<aside class="toc" aria-label="On this page">
+<p>On this page</p>
+<ol>
+<li><a href="#status">Subsystems</a></li>
+<li><a href="#ceilings">Ceilings</a></li>
+<li><a href="#next">Session queue</a></li>
 </ol>
-  </aside>
-  <main id="main" class="doc__main">
-    <header class="doc__head">
-      <h1>Status</h1>
-      <p class="lede">What works, what is half-built and what does not exist yet. Working means implemented and gated by a named test: nothing is listed on the strength of having been written.</p>
-    </header>
-<section class="part" aria-labelledby="status">
-<h2 id="status" data-toc="Subsystems">What works, what is half-built, and what is not there at all.</h2>
+</aside>
+<main id="main" class="doc__main">
 
-<ul class="key">
-  <li><span class="pill pill--hold">Working</span> a test proves it</li>
-  <li><span class="pill pill--part">Partial</span> the useful half exists</li>
-  <li><span class="pill pill--off">Not yet</span> it does not exist</li>
-</ul>
-
+<header class="doc__head">
+  <h1>Status</h1>
+  <p class="lede">A row is only as strong as its witness. Where the useful half exists and the security property does not, the row says partial.</p>
+</header>
+<h2 id="status" data-toc="Subsystems">Subsystems, as the tree stands.</h2>
 <div class="tablewrap">
   <table class="table--status">
-    <caption>Subsystem status. The unabridged account is in LIMITATIONS.md and ROADMAP.md.</caption>
+    <caption>The register, with the closed entries, is docs/LIMITATIONS.md. The work order is docs/ROADMAP.md.</caption>
     <thead>
-      <tr><th scope="col" class="t-state">State</th><th scope="col">Subsystem</th><th scope="col">Witness</th></tr>
+      <tr><th scope="col">State</th><th scope="col">Subsystem</th><th scope="col">Witness</th></tr>
     </thead>
     <tbody>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability engine</strong>: mint, grant, subtree revocation, unique 64-bit serials, in safe Rust</th><td class="t-note">Kani · smoke-captest</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Capability-addressed IPC</strong>: bounded endpoint queues, one-shot reply capabilities, a receive that sleeps</th><td class="t-note">smoke-captest · smoke-recvblock</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Servers tell clients apart by the capability they were called through (endpoint tokens)</th><td class="t-note">smoke-captoken</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Untyped memory</strong>: cspaces, endpoints, notifications, frames and tasks are all paid for from a budget a task holds</th><td class="t-note">smoke-captest · smoke-frame · smoke-task-ceiling</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Shared memory through frame capabilities, mapped all-or-nothing</th><td class="t-note">smoke-frame</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Preemptive scheduling on up to eight CPUs; SMT siblings parked; a cache flush between distrusting tasks</th><td class="t-note">smoke-smp · smoke-smp-topology · smoke-flush</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">CPU time as a capability: a task bound to a scheduling context runs on its budget and no more (nothing in the shipped system binds one yet)</th><td class="t-note">smoke-sched-budget · smoke-sched-invariants</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Priorities capped by authority: the higher priority runs among budgeted work, and no task sets one above its own maximum (every shipped task is at 255)</th><td class="t-note">smoke-sched-budget · smoke-captest</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>init</code> supervising every server and the shell</th><td class="t-note">smoke-session</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>console_server</code> owning the UART, VGA text or framebuffer, and the PS/2 keyboard, including on a machine with no serial port</th><td class="t-note">smoke-console-smp · smoke-keyboard-noserial · smoke-fb-console-server</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 <code>fs_server</code> over an encrypted, Merkle-verified volume with a journal (unencrypted only when the installer is told so)</th><td class="t-note">smoke-fs · smoke-fs-wal</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Whole-volume rollback refused, anchored in a TPM counter</th><td class="t-note">smoke-rollback</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">The inode table, allocation bitmaps and block maps sealed at rest, and the superblock's layout authenticated: an edit on the disk is refused</th><td class="t-note">smoke-meta-span · smoke-rollback-anchor-flag</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>An installer</strong> onto IDE disks and SD or eMMC storage, with a typed-word consent and two accounts that each open the disk</th><td class="t-note">smoke-installer · smoke-installer-sd · smoke-installer-replace</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A live boot never opens an installed disk</th><td class="t-note">smoke-live-locked</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Measured boot</strong>: the kernel pinned in the firmware-measured boot image; TPM PCR 4, 8 and 9; the volume key sealed to them</th><td class="t-note">smoke-boot-pin · smoke-tpm-seal</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot under BIOS or UEFI, from CD or disk</th><td class="t-note">smoke-boot-media</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Boot-module SHA-256 manifest; a module that fails it cannot be read</th><td class="t-note">smoke-modules-tamper</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">ELF loading and relocation in safe Rust, under W^X, at a randomised base</th><td class="t-note">smoke-elf64 · smoke-execprobe</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">SMEP, SMAP, kernel W^X, reseeded stack canaries, CR4.TSD, a CSPRNG that refuses to run unseeded</th><td class="t-note">smoke-cpu · smoke-wx · smoke-rng-seed</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>Device capabilities</strong>: one device each, through a PCI bus walk that follows bridges; DMA confined by VT-d; interrupts and MSI on vectors the kernel chooses</th><td class="t-note">smoke-devcap · smoke-sdhci-bridge · smoke-net</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><strong>A shared libc</strong>, handed only to programs that ask, linked by name, and sealed read-only before <code>main</code></th><td class="t-note">smoke-shlib-inherit · smoke-shlib-link</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A shell with pipelines, eleven GNU coreutils and TCC</th><td class="t-note">smoke-pipe · smoke-tcc</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">All of a machine's RAM up to 4 GiB, every region the firmware's memory map names</th><td class="t-note">smoke-pool-span</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Encrypted swap: under memory pressure idle pages go out, an idle task's first, sealed under a per-boot key, and come back exactly</th><td class="t-note">smoke-swap · smoke-swap-store</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">An installed disk that starts on its own under UEFI, with its programs in system trees rebuilt from the verified modules at every boot, which nobody, root included, can change</th><td class="t-note">smoke-install-boot-disk · smoke-system-trees</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row"><code>fork</code> with copy-on-write, and a child whose capabilities stay under its parent's through <code>exec</code></th><td class="t-note">smoke-fork · smoke-forkexec</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A per-task mount table and one path walker for every client</th><td class="t-note">smoke-vfs · smoke-newlib</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A forward-secure audit log</th><td class="t-note">cargo test</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Observing the capability graph under a read-only capability (<code>capview</code>)</th><td class="t-note">smoke-session</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Administration lent to root's session only: a standard account holds the bare minimum, the kernel refuses it <code>dmesg</code>, <code>capview</code> and <code>useradd</code>, and there is no <code>sudo</code></th><td class="t-note">smoke-session-admin-caps</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">Bounded Kani proofs and Miri over the Rust core on every pull request; the proofs' control arms and the fuzz targets every night</th><td class="t-note">kani-bounded · miri · kani-arms · fuzz</td></tr>
-      <tr><td class="t-state"><span class="pill pill--hold">Working</span></td><th scope="row">A reproducible <code>kernel.elf</code> and install ISO</th><td class="t-note">required CI check; a release rebuilds to the same bytes from its tag</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">A network driver in ring 3: <code>netd</code> completes an ARP exchange; nothing above Ethernet</th><td class="t-note">smoke-net</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">A monotonic clock at 10 ms, deliberately; no timers, timeouts or wall clock</th><td class="t-note">smoke-captest</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">A capability-addressed filesystem: the kernel half is done, and <code>fs_server</code> answers through capabilities and refuses moves across directories; the shell and the C library walk with capabilities when given a root, and hand what they run a narrowed copy; every login asks <code>init</code> for its session from the policy and works through it, a new installed volume is given a policy, and nothing reaches a file by user id any more; the filesystem still lives in the kernel</th><td class="t-note">smoke-fs-cap-shell, smoke-session, smoke-fs-perms</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SATA: the controller and drive are identified, but not read or written</th><td class="t-note">smoke-ahci-detect</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">NVMe: a ring-3 driver identifies the controller and reads and writes it under the IOMMU, in a self-test build; nothing installs onto NVMe yet</th><td class="t-note">smoke-nvme</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">SD and eMMC in ring 3: <code>sdhcid</code> brings up a card and reads and writes it holding one device capability and no memory to give the controller, in a self-test build; the installed system still uses the kernel's driver</th><td class="t-note">smoke-sdhcid</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">IDE in ring 3: <code>atad</code> identifies a disk and reads and writes it holding one device capability and no memory to give the controller, in a self-test build; the installed system still uses the kernel's driver, and only that build lets ring 3 reach the controller's ports</th><td class="t-note">smoke-atad</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">A block-driver protocol, served by all three ring-3 storage drivers: each client reaches only the part of the disk it was given, through a buffer of its own; nothing in the installed system uses it yet</th><td class="t-note">smoke-blkproto</td></tr>
-      <tr><td class="t-state"><span class="pill pill--part">Partial</span></td><th scope="row">Kernel object lifecycle: retyped objects are destroyed, but their memory is not reused, and the well-known endpoints live for the whole boot</th><td class="t-note">smoke-cspace-release</td></tr>
-      <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">USB, sound, windowing, graphics beyond a text grid</th><td class="t-note">ROADMAP 2.7</td></tr>
-      <tr><td class="t-state"><span class="pill pill--off">Not yet</span></td><th scope="row">Kernel ASLR, interrupt remapping, process groups and job control</th><td class="t-note">ROADMAP 3.8, 2.3</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">Capability engine in the Rust security core: mint, grant, subtree revocation, 64-bit serials</th><td class="t-note">smoke-captest</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">Capability-addressed IPC: bounded queues, one-shot replies, a receive that sleeps</th><td class="t-note">smoke-recvblock</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">A server distinguishes clients by the capability they were called through</th><td class="t-note">smoke-captoken</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">Untyped memory pays for cspaces, endpoints, notifications, frames and tasks</th><td class="t-note">smoke-frame</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">SMP bring-up on up to eight CPUs, SMT siblings parked, a cache flush between distrusting tasks</th><td class="t-note">smoke-smp-topology</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">Scheduling. Each CPU has a run list. CPU time is a capability, and init binds no task to a budget yet, so a task that never blocks is not confined to a share. Every shipped task is at priority 255. A wake does not preempt until the next tick.</th><td class="t-note">smoke-sched-invariants</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 init supervises the servers and the shell</th><td class="t-note">smoke-session</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">Ring-3 console server: UART, text or framebuffer, PS/2, including a machine with no serial port</th><td class="t-note">smoke-console-smp</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">An encrypted, Merkle-checked volume with a journal. Unencrypted only when the installer is told so.</th><td class="t-note">smoke-fs-wal</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">Whole-volume rollback. A TPM counter bound at format refuses an older copy from a previous boot. An unanchored volume has the tree only. The counter does not move inside the current boot.</th><td class="t-note">smoke-rollback</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">Installer onto IDE and onto SD or eMMC, with typed consent and two accounts that can each open the disk</th><td class="t-note">smoke-installer-sd</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">A live boot does not open an installed disk</th><td class="t-note">smoke-live-locked</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">Measured boot. The mechanism seals the volume key to the firmware's measurement of a kernel pin. The default build boots without a TPM and says so.</th><td class="t-note">smoke-tpm-seal</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">Boot-module manifest. A module that fails SHA-256 cannot be read.</th><td class="t-note">smoke-modules-tamper</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">ELF loading in the Rust core, W^X, randomised base</th><td class="t-note">smoke-elf64</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">Device capabilities name one device. DMA is confined where the machine has an IOMMU. Where it does not, the boot says so and a bus-master reaches memory.</th><td class="t-note">smoke-devcap</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">A shared libc, sealed read-only before main. A task that has bound it cannot fork.</th><td class="t-note">smoke-shlib-link</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">fork and exec with copy-on-write, for a task that has not bound the shared libc. The child's capabilities stay under the parent.</th><td class="t-note">smoke-forkexec</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">The capability filesystem. fs_server authorises by capability, and a session root carries the union of that session's grants. Below the root, fs_server is the reference monitor. A grant names a path, not an object.</th><td class="t-note">smoke-fs-perms</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">Execute. System trees are rebuilt from verified modules and cannot be changed. Elsewhere, a task that can read a file can run it, because the loader is handed bytes.</th><td class="t-note">docs/LIMITATIONS.md 1.23</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">RAM. The pool uses regions the firmware map names below 4 GiB of address. Memory above that is not used. Ragged edges above 1 GiB, under 2 MiB each, are not used either.</th><td class="t-note">smoke-pool-span</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">Encrypted swap of idle pages under a per-boot key. Pages that hold secrets are not yet kept out of it.</th><td class="t-note">smoke-swap</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">An installed disk that boots itself under UEFI. System trees are rebuilt from the verified modules at every boot.</th><td class="t-note">smoke-install-boot-disk</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">No sudo. A standard account is refused the kernel log, capview and useradd.</th><td class="t-note">smoke-session-admin-caps</td></tr>
+      <tr><td><span class="pill pill--hold">Working</span></td><th scope="row">A reproducible kernel image and install ISO. A release tag is still unsigned.</th><td class="t-note">reproducible</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">Networking stops at one ARP exchange from a ring-3 driver. There is no IP stack.</th><td class="t-note">smoke-net</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">One monotonic clock at 10 ms, on purpose. No wall clock and no user timers.</th><td class="t-note">smoke-captest</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">SATA is identified and not read or written. NVMe, SD and IDE have ring-3 drivers in self-test builds. The installed system still uses the kernel's IDE and eMMC drivers.</th><td class="t-note">smoke-sdhcid</td></tr>
+      <tr><td><span class="pill pill--part">Partial</span></td><th scope="row">Destroyed kernel objects free their names and not their memory. The well-known endpoints live for the whole boot.</th><td class="t-note">smoke-cspace-release</td></tr>
+      <tr><td><span class="pill pill--off">Not yet</span></td><th scope="row">USB, and therefore a keyboard on a machine with no PS/2. No sound, no window system.</th><td class="t-note">ROADMAP 2.7</td></tr>
+      <tr><td><span class="pill pill--off">Not yet</span></td><th scope="row">Kernel ASLR, indirect-branch tracking, job control, signed releases.</th><td class="t-note">ROADMAP 3.8, 4.4</td></tr>
     </tbody>
   </table>
 </div>
 
-<p class="note">
-  Compile-time ceilings still apply to most of the system: 256 capability slots per task, a
-  256-byte message, eight CPUs, 4 GiB of RAM and a 16 GiB volume ceiling (the real size is read
-  from the disk).
-  The number of tasks is worked out at boot from the memory reserved for them.
-</p>
-</section>
+<h2 id="ceilings" data-toc="Ceilings">Ceilings that are still compile-time.</h2>
+<p>A task may occupy 128 capabilities in a cspace of 256 slots. An IPC message is 256 bytes. Eight CPUs. A volume ceiling of 16 GiB, with the real size read from the disk. The task count is provisioned at boot from untyped memory, up to 256. The full table, with the symbol for each ceiling, is <code>docs/LIMITATIONS.md</code> section 3.1.</p>
 
-<section class="part" aria-labelledby="next">
-<h2 id="next" data-toc="What comes next">What comes next.</h2>
-<div class="prose">
-  <p>
-    <strong>The foundations are done.</strong> IPC is capability-addressed, <code>uid 0</code>
-    confers no kernel authority, every kernel object is paid for from a budget a task holds a
-    capability to, and the interrupt, locking, journal and spawn-path work that made the kernel
-    correct under several CPUs is finished. The file server authorises by capability alone: no
-    request is decided by who sent it.
-  </p>
-  <p>
-    <strong>Next, in order:</strong> accounts move into files owned by a user-mode authentication
-    server. After that, the
-    filesystem itself moves out of the kernel, onto a copy-on-write format with separate system
-    and home volumes.
-  </p>
-  <p>
-    Beside that runs a longer plan for every open limitation, in waves. The first, closing the
-    remaining holes, is done; the rest finish moving authority to capabilities and tighten the boot
-    chain; move the kernel's
-    remaining services out to user mode; then grow the drivers and networking on top. The roadmap lays it out as a route, with the decisions it
-    waits on listed first.
-  </p>
-  <p>
-    The single highest-leverage change is not technical: a second person reviewing the
-    capability paths. No human reads a change before it merges today.
-  </p>
-</div>
+<h2 id="next" data-toc="Session queue">Work queued for later sessions.</h2>
+<p>Each item is one concern, written so a later session can take it without re-deriving the reason. The same text is in <code>docs/ROADMAP.md</code>. Do not start a later item while an earlier one in the same lane is open. Do not delete a witness to make room.</p>
+<ol class="queue">
+  <li><h3 data-toc-skip>4.16 Scanners that can fail, aimed at the trusted userspace</h3><p><code>cppcheck</code> and <code>flawfinder</code> cannot go red, and they do not see <code>init</code>, <code>fs_server</code> or <code>console_server</code>. Vendor a Semgrep ruleset for the traps this tree has already shipped, and run it with <code>--error</code>. Trace the ISO in CodeQL, and correct the workflow header that still calls that job advisory. Each promotion ships with a planted defect that must go red. CodeQL stays a required check.</p></li>
+  <li><h3 data-toc-skip>4.17 One stamped kernel image for the default smoke jobs</h3><p>Jobs that boot the default kernel should download one image and check its build-flag stamp and its hash. Jobs that pass a different flag keep their own build. A shared image without the stamp is a gate that can pass on the wrong kernel.</p></li>
+  <li><h3 data-toc-skip>4.18 Warning ratchet and a kernel stack-depth budget</h3><p>Fail a new warning. Fail a syscall or interrupt path whose stack depth, from <code>-fstack-usage</code>, exceeds the per-CPU stack minus the guard. The budget ships with a control arm.</p></li>
+  <li><h3 data-toc-skip>4.20 A constant-time check on the password path and the AEAD</h3><p>A call-graph check that those paths use the constant-time compare, and a nightly timing run. This does not close limitation 5.4, and it does not replace the primitives.</p></li>
+  <li><h3 data-toc-skip>4.21 A census of properties witnessed only by a positive boot</h3><p>Name every row in <code>SECURITY.md</code> whose only evidence is that a boot reached a marker, so a later change can give each one an arm. The census is the list. It does not weaken a row to make the list shorter.</p></li>
+  <li><h3 data-toc-skip>4.22 Clang as a second nightly compiler</h3><p>A nightly build with Clang that fails if it cannot link. It does not gate a merge until it has stayed linkable, and a silent skip is a failure.</p></li>
+  <li><h3 data-toc-skip>4.23 A red nightly opens an issue, and PyYAML is hash-pinned</h3><p>The fuzz and Kani control-arm workflows open an issue when they go red. The existing <code>pyyaml==6.0.3</code> installs gain a hash pin, so a substituted wheel cannot satisfy the version pin.</p></li>
+  <li><h3 data-toc-skip>4.19 A nightly guest syscall fuzzer</h3><p>The existing fuzz targets are parsers in the Rust core. Nothing there calls <code>syscall()</code>. Off the merge path, in the same shape as the nightly fuzz workflow.</p></li>
+  <li><h3 data-toc-skip>5.4 Execute only from a file capability</h3><p>Closes limitation 1.23. A session that can read a file and does not hold <code>EXEC</code> cannot run it.</p></li>
+  <li><h3 data-toc-skip>5.6 and 5.7 Measured boot and rollback fail closed when a TPM is present</h3><p>The default research build may still boot without one, and must say so. A machine with a TPM does not mount an unanchored volume unless the installer recorded that choice.</p></li>
+  <li><h3 data-toc-skip>5.14 Refuse a bus-master when the IOMMU is off</h3><p>A build flag in the shape of <code>MEASURED_BOOT_REQUIRED</code>. The default build keeps today's behaviour, which limitation 2.12 already states. This is not roadmap 2.12, which keeps secrets out of swap.</p></li>
+  <li><h3 data-toc-skip>5.15 An audit of the cryptography, or a replacement</h3><p>A maintainer decision. Do not write new primitives. Limitation 5.4 is the status. The check that can land first is roadmap 4.20.</p></li>
+  <li><h3 data-toc-skip>5.11 Models of the four protocols that have already raced</h3><p>Spawn and teardown, the kernel-stack claim, the TLB shootdown, revocation against lookup. Each model ships with a seeded defect. Needs decision D9.</p></li>
+  <li><h3 data-toc-skip>5.9 Reclaim only by revoking the untyped capability</h3><p>Then, and only then, a ring-3 allocator may reuse the bytes. Limitation 2.5.</p></li>
+  <li><h3 data-toc-skip>5.10 Bound each grant in the kernel</h3><p>One capability per grant, after filesystem phase 2. Needs decision D8. Closes limitation 1.24.</p></li>
+  <li><h3 data-toc-skip>4.4 and 4.11 Signed releases a third party can rebuild</h3><p>SLSA provenance, then <code>verify-release.sh</code>. The four existing releases are unsigned tags.</p></li>
+</ol>
 
-<div class="docs">
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md"><b>ARCHITECTURE.md</b><span>Subsystem design, the invariants, and why each decision was made</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ROADMAP.md"><b>ROADMAP.md</b><span>The open work, the decisions it waits on, and the route through it</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md"><b>SECURITY.md</b><span>Threat model, security properties, and what is out of scope</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/SYSCALLS.md"><b>SYSCALLS.md</b><span>The complete ABI, with the authorisation each call requires</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md"><b>TESTS.md</b><span>Every test target and what it proves</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md"><b>LIMITATIONS.md</b><span>What does not work or is not enforced, today</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/tree/main/docs/investigations"><b>investigations/</b><span>How the harder findings were narrowed, and which hypotheses were wrong</span></a>
-  <a href="https://github.com/pharanyx-labs/Horus/blob/main/CONTRIBUTING.md"><b>CONTRIBUTING.md</b><span>How to contribute, and the invariant-preservation rule</span></a>
-</div>
-</section>
-    <nav class="pager" aria-label="Previous and next page">
+<nav class="pager" aria-label="Previous and next page">
 <a class="pager__prev" href="boot.html"><span>Previous</span>Trusted boot</a>
-<a class="pager__next" href="testing.html"><span>Next</span>How it is tested</a>
+<a class="pager__next" href="testing.html"><span>Next</span>Testing</a>
 </nav>
-  </main>
+</main>
 </div>
-
 <footer class="foot">
   <div class="foot__in">
     <div class="foot__about">
-      <a class="brand" href="index.html">
-      <svg class="brand__mark" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-          <g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <a class="brand" href="index.html"><svg class="brand__mark" width="26" height="26" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4.5 7.6C10 4.2 19 4 27.5 6.8"/>
             <path d="M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4"/>
             <path d="M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4"/>
@@ -233,21 +172,19 @@
             <path d="M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9"/>
           </g>
           <circle cx="14.2" cy="12.9" r="3.6" fill="currentColor"/>
-        </svg>
-      <span>Horus</span>
-    </a>
-      <p>A capability-based microkernel for x86-64, where every privileged action needs a token the program was handed.</p>
+        </svg><span>Horus</span></a>
+      <p>A capability-based microkernel for x86-64. A program can do only what a capability it holds allows.</p>
     </div>
     <nav class="foot__col" aria-label="Pages on this site">
       <p class="foot__head">On this site</p>
       <a href="index.html">Home</a>
-        <a href="why.html">Why Horus</a>
-        <a href="architecture.html">Architecture</a>
-        <a href="boot.html">Trusted boot</a>
-        <a href="status.html" aria-current="page">Status</a>
-        <a href="testing.html">Testing</a>
-        <a href="limitations.html">Limitations</a>
-        <a href="run.html">Run it</a>
+      <a href="why.html">Why Horus</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="boot.html">Trusted boot</a>
+      <a href="status.html" aria-current="page">Status</a>
+      <a href="testing.html">Testing</a>
+      <a href="limitations.html">Limitations</a>
+      <a href="run.html">Run it</a>
     </nav>
     <nav class="foot__col" aria-label="Documents in the repository">
       <p class="foot__head">In the repository</p>
@@ -255,27 +192,24 @@
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md">Architecture document</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/SYSCALLS.md">System call reference</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md">Security properties</a>
-      <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md">Test catalogue</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md">Limitations register</a>
-      <a href="https://github.com/pharanyx-labs/Horus/blob/main/CHANGES.md">Changelog</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ROADMAP.md">Roadmap and session queue</a>
     </nav>
   </div>
   <div class="foot__base">
     <p>MIT licence. Copyright 2026 Pharanyx Labs.</p>
-    <p>Research-grade and not independently audited.</p>
+    <p>Research-grade. Not independently audited.</p>
   </div>
 </footer>
-
 <dialog class="search" id="search" aria-labelledby="search-title">
   <form method="dialog" class="search__box" role="search">
     <label id="search-title" class="search__label" for="search-q">Search the site</label>
-    <input id="search-q" type="search" autocomplete="off" spellcheck="false" placeholder="Capabilities, boot, status, a test name">
+    <input id="search-q" type="search" autocomplete="off" spellcheck="false" placeholder="A capability, a limit, a test name">
     <button class="search__close" value="close" aria-label="Close search">Esc</button>
   </form>
   <p class="sr-only" id="search-status" role="status" aria-live="polite"></p>
   <ol class="search__results" id="search-results"></ol>
 </dialog>
-
 <script src="assets/search-index.js"></script>
 <script src="assets/site.js"></script>
 </body>

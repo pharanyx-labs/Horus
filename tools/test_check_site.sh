@@ -57,9 +57,9 @@ arm "R1d" "a page without the shared landmarks" \
 
 # R2: a link that goes nowhere.
 arm "R2a" "a link to an anchor no page has" \
-  "sed -i 's|href=\"why.html\">How capabilities work|href=\"why.html#no-such-section\">How capabilities work|' site/index.html" caught "R2"
+  "sed -i 's|href=\"why.html\">Why Horus exists|href=\"why.html#no-such-section\">Why Horus exists|' site/index.html" caught "R2"
 arm "R2b" "a link to a page that does not exist" \
-  "sed -i 's|<section class=\"part\" aria-labelledby=\"status\">|<section class=\"part\" aria-labelledby=\"status\"><a href=\"state.html\">x</a>|' site/status.html" caught "R2"
+  "sed -i 's|<h2 id=\"status\"|<a href=\"state.html\">x</a><h2 id=\"status\"|' site/status.html" caught "R2"
 
 # R3: bytes from another origin.
 arm "R3a" "a script loaded from a CDN, in every page" \
@@ -67,11 +67,11 @@ arm "R3a" "a script loaded from a CDN, in every page" \
 arm "R3b" "a webfont imported by the stylesheet" \
   "sed -i '1i @import url(\"https://fonts.example.net/css?family=X\");' site/assets/site.css" caught "R3"
 arm "R3c" "an image hotlinked from another site" \
-  "sed -i 's|<section class=\"honest\"|<img src=\"https://tracker.example.net/p.gif\" alt=\"\"><section class=\"honest\"|' site/index.html" caught "R3"
+  "sed -i 's|<h2 id=\"install\"|<img src=\"https://tracker.example.net/p.gif\" alt=\"\"><h2 id=\"install\"|' site/index.html" caught "R3"
 
 # R4: structure, reachability and the current-page mark.
 arm "R4a" "a page with a second h1" \
-  "sed -i '0,/<section class=\"part\"/s//<h1>Another title<\/h1><section class=\"part\"/' site/boot.html" caught "R4"
+  "sed -i 's|<h2 id=\"boot\"|<h1>Another title</h1><h2 id=\"boot\"|' site/boot.html" caught "R4"
 arm "R4b" "a page no menu reaches" \
   "sed -i 's|<a href=\"testing.html\"[^>]*>[^<]*</a>||' site/*.html" caught "not in the primary navigation"
 arm "R4c" "a page whose menus mark another page as current" \
@@ -79,7 +79,7 @@ arm "R4c" "a page whose menus mark another page as current" \
 
 # R5: the contents rail and heading ids.
 arm "R5a" "a heading renamed without its rail entry" \
-  "sed -i 's|data-toc=\"Capabilities\"|data-toc=\"Capability tokens\"|' site/why.html && $REINDEX" caught "R5"
+  "sed -i 's|data-toc=\"What a capability is\"|data-toc=\"Capability tokens\"|' site/why.html && $REINDEX" caught "R5"
 arm "R5b" "a new heading with no id" \
   "sed -i '0,/<h2 id=\"capability\"/s//<h3>Unlinked<\/h3><h2 id=\"capability\"/' site/why.html && $REINDEX" caught "R5"
 
@@ -89,15 +89,15 @@ arm "R6" "a next link that skips a page" \
 
 # R7: the search index.
 arm "R7" "a search index left stale by a heading edit" \
-  "sed -i 's|data-toc=\"Capabilities\"|data-toc=\"Capability tokens\"|' site/why.html && sed -i 's|>Capabilities</a>|>Capability tokens</a>|' site/why.html" caught "R7"
+  "sed -i 's|data-toc=\"What a capability is\"|data-toc=\"Capability tokens\"|; s|>What a capability is</a>|>Capability tokens</a>|' site/why.html" caught "R7"
 
 # THE SILENT DIRECTIONS: an ordinary outbound link, and a heading edit made the
 # right way (rail and index updated with it), are not defects; a checker that
 # flagged them would be switched off rather than obeyed.
 arm "S1" "an ordinary link out to another site" \
-  "sed -i 's|<section class=\"honest\"|<p><a href=\"https://example.org/\">elsewhere</a></p><section class=\"honest\"|' site/index.html" clean
+  "sed -i 's|<h2 id=\"install\"|<p><a href=\"https://example.org/\">elsewhere</a></p><h2 id=\"install\"|' site/index.html" clean
 arm "S2" "a heading renamed with its rail entry and the index regenerated" \
-  "sed -i 's|data-toc=\"Capabilities\"|data-toc=\"Capability tokens\"|; s|>Capabilities</a>|>Capability tokens</a>|' site/why.html && $REINDEX" clean
+  "sed -i 's|data-toc=\"What a capability is\"|data-toc=\"Capability tokens\"|; s|>What a capability is</a>|>Capability tokens</a>|' site/why.html && $REINDEX" clean
 
 echo
 echo "arms passed: $PASSES   failed: $FAILS"

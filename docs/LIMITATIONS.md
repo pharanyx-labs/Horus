@@ -15,7 +15,8 @@ request and in the git history of this file.
 ([`ARCHITECTURE.md`](ARCHITECTURE.md) §14). **[H-n]** came from an external audit on
 2026-08-15 that is not in the tree. **[HORUS-YYYYMMDD-nn]** are findings filed since, by date,
 and "audit F*n*" refers to the 2026-09-19 audit, [`AUDIT.md`](AUDIT.md). A finding has one
-status, and it is the one given here.
+status, and it is the one given here. The order of the work that closes an open entry is
+[`ROADMAP.md`](ROADMAP.md).
 
 ---
 

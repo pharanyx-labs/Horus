@@ -163,6 +163,23 @@ def _kani(key):
     return d.get(key) or []
 
 
+def _header_int(name):
+    """The integer a #define in src/include/kernel.h gives `name`.
+
+    Not a count of matching lines, and not a search of the whole tree.
+    capability.c repeats CNODE_SIZE, so a wider search would see two
+    definitions and still not know the value. The header is the definition
+    the rest of the kernel includes, and the integer on that line is the
+    ceiling the documents state.
+    """
+    text = Path("src/include/kernel.h").read_text()
+    found = re.search(rf"^#define\s+{re.escape(name)}\s+(\d+)\b", text, re.M)
+    if not found:
+        raise SystemExit(
+            f"check_doc_claims: src/include/kernel.h has no integer #define {name}")
+    return int(found.group(1))
+
+
 def derive():
     """Every value the manifest may refer to, computed from the tree."""
     jobs_by_wf = {wf: load_jobs(wf) for wf in WORKFLOWS}
@@ -327,6 +344,14 @@ def derive():
         "tracked_files": len(subprocess.run(
             ["git", "ls-files"], capture_output=True, text=True,
             check=True).stdout.split()),
+        # The two ceilings a task's cspace publishes. Declared with the site
+        # rewrite because the public page had said "256 capability slots" for
+        # the number a task may occupy, and the header says otherwise:
+        # CNODE_SIZE is the slot array, MAX_CAPS_PER_TASK is how many of those
+        # slots may be filled. Read from kernel.h only, as an integer, for the
+        # reason on _header_int.
+        "cnode_slots": _header_int("CNODE_SIZE"),
+        "caps_in_use": _header_int("MAX_CAPS_PER_TASK"),
     }
 
 

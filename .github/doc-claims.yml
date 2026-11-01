@@ -148,6 +148,8 @@ counts:
         pattern: 'All (\d+) properties in SECURITY\.md'
       - file: TESTS.md
         pattern: 'currently \*\*empty\*\*: all (\d+) properties'
+      - file: site/testing.html
+        pattern: '(\d+) security properties, and'
   - id: devlog_entries
     describe: dated entries in docs/history/DEVLOG-2026.md
     derive: devlog_entries
@@ -174,6 +176,8 @@ counts:
         pattern: 'base gates and (\d+) control arms \|'
       - file: TESTS.md
         pattern: '\d+ gates and (\d+) control arms\. Each row'
+      - file: site/testing.html
+        pattern: 'and (\d+) control arms that must go red'
 
   - id: syscalls_covered
     describe: "syscalls whose handler a tracked workload enters (.github/syscall-coverage.yml `covered`)"
@@ -250,7 +254,7 @@ counts:
   - id: kani_harnesses
     describe: "`#[kani::proof]` harnesses, every one listed to gate in .github/kani-harnesses.yml"
     derive: kani_harnesses
-    # FOUR sites, all declared. Until 2026-09-20 this count lived in five
+    # Every site below is declared. Until 2026-09-20 this count lived in five
     # documents as a hand-typed word and no two agreed. Gating one of them would
     # have left the rest free to drift, and a gated figure beside an ungated one
     # makes the ungated one look verified: the same argument as
@@ -267,6 +271,22 @@ counts:
         pattern: 'list\. All \*\*(\d+)\*\* gate'
       - file: TESTS.md
         pattern: 'it can fail anything\.\*\* All \*\*(\d+)\*\* harnesses'
+      - file: site/testing.html
+        pattern: 'and (\d+) Kani proofs gate'
+
+  - id: cnode_slots
+    describe: slots in a task cspace, the integer CNODE_SIZE in src/include/kernel.h
+    derive: cnode_slots
+    occurrences:
+      - file: site/why.html
+        pattern: 'a cspace of <strong>(\d+)</strong> slots'
+
+  - id: caps_in_use
+    describe: capabilities a task may occupy, the integer MAX_CAPS_PER_TASK in src/include/kernel.h
+    derive: caps_in_use
+    occurrences:
+      - file: site/why.html
+        pattern: 'of which <strong>(\d+)</strong> may be occupied'
 
 forbidden:
   - pattern: 'What keeps \*\*\[C-6\]\*\* open|What keeps \[C-6\] open|reconciled to it by hand and lags|\*\*\[C-6\]\*\*, ruleset'

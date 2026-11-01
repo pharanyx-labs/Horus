@@ -3,27 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Horus: Limitations</title>
-<meta name="description" content="What is wrong with Horus right now, published in full.">
+<title>What is unfinished</title>
+<meta name="description" content="The open limits of Horus: no independent review, an advisory execute right, measured boot off by default, unaudited cryptography, and the rest.">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f5f7fb" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0c1426" media="(prefers-color-scheme: dark)">
-<!-- The wedjat, the Eye of Horus, drawn for 16px. A data URI rather than a file:
-     nothing on this site is fetched that the page itself does not need. -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d3f9e'/%3E%3Cg fill='none' stroke='%23e8eaed' stroke-width='2.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 7.6C10 4.2 19 4 27.5 6.8'/%3E%3Cpath d='M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4'/%3E%3Cpath d='M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4'/%3E%3Cpath d='M11.2 17.8L10.8 27.4'/%3E%3Cpath d='M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9'/%3E%3C/g%3E%3Ccircle cx='14.2' cy='12.9' r='3.6' fill='%23e8eaed'/%3E%3C/svg%3E">
-<meta property="og:title" content="Horus: Limitations">
-<meta property="og:description" content="What is wrong with Horus right now, published in full.">
+<meta name="theme-color" content="#e7ece8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101613" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%231b4f3c'/%3E%3Cpath d='M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4' fill='none' stroke='%23f4f7f5' stroke-width='2.4'/%3E%3Ccircle cx='14.2' cy='12.9' r='3.2' fill='%23f4f7f5'/%3E%3C/svg%3E">
+<meta property="og:title" content="What is unfinished">
+<meta property="og:description" content="The open limits of Horus: no independent review, an advisory execute right, measured boot off by default, unaudited cryptography, and the rest.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Horus">
-<!-- Everything this site loads comes from this site. No CDN, no webfont, no
-     analytics: a page arguing about supply-chain provenance has no business pulling
-     bytes from other origins, and it must read the same offline, from a checkout.
-     tools/check_site.py enforces it. -->
 <link rel="stylesheet" href="assets/site.css">
 <script>
-  /* Apply a remembered theme before the first paint, so a dark-mode reader never
-     sees a flash of the light page. Storage can be unavailable; then the system
-     preference decides, which is also the default. */
   try {
     var t = localStorage.getItem("horus-theme");
     if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
@@ -32,12 +23,10 @@
 </head>
 <body class="page-limitations">
 <a class="skip" href="#main">Skip to content</a>
-
 <header class="top">
   <div class="top__in">
-    <a class="brand" href="index.html">
-      <svg class="brand__mark" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-          <g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <a class="brand" href="index.html"><svg class="brand__mark" width="26" height="26" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4.5 7.6C10 4.2 19 4 27.5 6.8"/>
             <path d="M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4"/>
             <path d="M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4"/>
@@ -45,9 +34,7 @@
             <path d="M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9"/>
           </g>
           <circle cx="14.2" cy="12.9" r="3.6" fill="currentColor"/>
-        </svg>
-      <span>Horus</span>
-    </a>
+        </svg><span>Horus</span></a>
     <nav class="primary" aria-label="Site">
         <a href="why.html">Why Horus</a>
         <a href="architecture.html">Architecture</a>
@@ -85,154 +72,81 @@
     </div>
   </div>
 </header>
-
-<div class="doc">
-  <aside class="toc" aria-labelledby="toc-title">
-    <p class="toc__title" id="toc-title">On this page</p>
-    <ol class="toc__list">
-<li><a href="#limits">Findings</a>
-<ol class="toc__sub">
-<li><a href="#c-5nobody-reviews-a-change-before-it-lands">C-5Nobody reviews a change before it lands</a></li>
-<li><a href="#2-9measured-boot-is-opt-in">2.9Measured boot is opt-in</a></li>
-<li><a href="#4a-programs-execute-right-is-advisory">4A program's execute right is advisory</a></li>
-<li><a href="#4hardware-support-is-narrow">4Hardware support is narrow</a></li>
-<li><a href="#isothe-releases-carry-no-signature-or-provenance">isoThe releases carry no signature or provenance</a></li>
-<li><a href="#cryptoevery-primitive-is-unaudited">cryptoEvery primitive is unaudited</a></li>
-<li><a href="#5-5formal-verification-is-narrow">5.5Formal verification is narrow</a></li>
-<li><a href="#miscsmaller-edges-all-tracked">miscSmaller edges, all tracked</a></li>
-<li><a href="#where-the-line-sits">Where the line sits</a></li>
+<div class="sheet">
+<aside class="toc" aria-label="On this page">
+<p>On this page</p>
+<ol>
+<li><a href="#limits">Open limits</a></li>
+<li class="toc-h3"><a href="#review">No independent review</a></li>
+<li class="toc-h3"><a href="#exec">Execute is advisory</a></li>
+<li class="toc-h3"><a href="#monitor">The monitor is split</a></li>
+<li class="toc-h3"><a href="#bootlim">Measured boot and rollback</a></li>
+<li class="toc-h3"><a href="#crypto">Cryptography</a></li>
+<li class="toc-h3"><a href="#hardware">Hardware</a></li>
+<li class="toc-h3"><a href="#releases">Releases</a></li>
+<li class="toc-h3"><a href="#narrow">Proofs</a></li>
+<li class="toc-h3"><a href="#where-the-line-sits">Where the line sits</a></li>
 </ol>
-</li>
-</ol>
-  </aside>
-  <main id="main" class="doc__main">
-    <header class="doc__head">
-      <h1>Limitations</h1>
-      <p class="lede">What is wrong with Horus right now. Published because a security project that hides its weaknesses is not making a security claim.</p>
-    </header>
-<section class="part" aria-labelledby="limits">
-<h2 id="limits" data-toc="Findings">What is wrong with Horus right now.</h2>
-<div class="prose">
-  <p class="lead">
-    Horus is <strong>research-grade</strong>, has not been independently reviewed, and
-    should not be trusted with anything real. These are the open limitations worth knowing
-    before you draw a conclusion about it. The authoritative list, with every closed entry and
-    the pull request that closed it, is
-    <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md">LIMITATIONS.md</a>.
-  </p>
-</div>
+</aside>
+<main id="main" class="doc__main">
 
+<header class="doc__head">
+  <h1>Limitations</h1>
+  <p class="lede">What is wrong with Horus right now. The authoritative register, including every closed entry, is docs/LIMITATIONS.md.</p>
+</header>
+<h2 id="limits" data-toc="Open limits">These are the limits that should change a decision.</h2>
+<p>Horus is research-grade. It should not be trusted with anything you cannot afford to lose. The gating set is 147 checks with 9 exempted. The 9 are the contexts of the three schedule-only workflows, not nine unused jobs. Each security property names a witness, and each gate has an arm. That machinery is not a review.</p>
 <ul class="findings">
   <li>
-    <h3 id="c-5nobody-reviews-a-change-before-it-lands"><span class="id">C-5</span>Nobody reviews a change before it lands</h3>
-    <p>
-      Claude writes most of the code and merges its own pull requests once every gate is
-      green; the maintainer sets direction and decides the questions that touch the security
-      model. No human reads a change before it merges. The automated side is extensive: the
-      gating set is 147 checks with 9 exempted, each security property has a named witness,
-      and each gate has a control arm that puts the defect back and must turn it red. But the
-      2026-07 critical finding passed every gate of its day, because the tests checked the
-      property the author had in mind rather than the one the documentation claimed. The
-      honest claim is "thoroughly automatically verified", not "independently reviewed".
-    </p>
+    <h3 id="review" data-toc="No independent review"><span class="id">5.1</span>Nobody reviews a change before it lands</h3>
+    <p>The ruleset requires a pull request and does not require an approving review. One maintainer cannot turn that on without either blocking every merge or adding a bypass, and a bypass undoes the gating. The honest claim is thoroughly automatically verified. Roadmap 4.1 waits on a second person.</p>
   </li>
   <li>
-    <h3 id="2-9measured-boot-is-opt-in"><span class="id">2.9</span>Measured boot is opt-in</h3>
-    <p>
-      On a machine with no TPM the default build boots without measuring anything, and the
-      boot log says so. A build with <code>MEASURED_BOOT_REQUIRED=1</code> halts instead, and
-      refuses a disk that was never sealed. Rollback protection is anchored in a TPM counter,
-      so a volume formatted on a machine without one has the Merkle tree and nothing more.
-    </p>
+    <h3 id="exec" data-toc="Execute is advisory"><span class="id">1.23</span>A program's execute right is advisory if you can read it</h3>
+    <p><code>SYS_SPAWN_IMAGE</code> runs the bytes it is given. System trees are rebuilt from verified modules and refuse every change. A user's own file, and the output of TCC, can be run by any task that can read it. Closing this is roadmap 5.4: spawn from a file capability that carries <code>EXEC</code>.</p>
   </li>
   <li>
-    <h3 id="4a-programs-execute-right-is-advisory"><span class="id">4</span>A program's execute right is advisory</h3>
-    <p>
-      An installed disk starts on its own under UEFI, and its programs are on it: the system
-      trees are rebuilt from the verified modules at every boot and nobody, root included, can
-      change them. Outside those trees, a task that can read a file can run it whether or not
-      it carries the right to execute, because the loader is handed bytes, not a file, until
-      programs start from file capabilities.
-    </p>
+    <h3 id="monitor" data-toc="The monitor is split"><span class="id">1.24</span>Below a session root, fs_server is the reference monitor</h3>
+    <p>The kernel bounds the session by the union of its grants. Inside that union, a bug in <code>fs_server</code> is a bug in the policy. A grant names a path. An account that can create a name can choose the object another account receives. Mode bits do not include the administrator. A capability with no grant set, held by system tasks and not by a login, can rename a file under a grant. Roadmap 5.10, after filesystem phase 2, is the kernel-side bound. It waits on decision D8.</p>
   </li>
   <li>
-    <h3 id="4hardware-support-is-narrow"><span class="id">4</span>Hardware support is narrow</h3>
-    <p>
-      Horus installs onto legacy IDE disks and SD or eMMC storage, and it has installed onto
-      a laptop's soldered eMMC. It identifies a SATA drive and cannot read or write one. It
-      drives an NVMe disk from ring 3 only in a self-test build, so it cannot install onto one.
-      It has no USB support, and so has no keyboard on a machine that offers no PS/2
-      emulation. One user-mode network driver completes an ARP exchange; there is no IP
-      stack above it. A DMA-capable device is confined by the IOMMU where the machine has
-      one; where it does not, the boot says so.
-    </p>
+    <h3 id="bootlim" data-toc="Measured boot and rollback"><span class="id">2.9</span>Measured boot is off unless the build asks for it</h3>
+    <p>A machine with no TPM boots, says so, and does not seal the volume key. Rollback anchoring has the same shape: only a volume formatted on a machine with a TPM gets the counter, the counter moves once per boot, and there is no export to another machine. Roadmap 5.6 and 5.7 close the fail-open cases. A kernel update changes the pin and locks the old seal out until roadmap 5.8 reseals first.</p>
   </li>
   <li>
-    <h3 id="isothe-releases-carry-no-signature-or-provenance"><span class="id">iso</span>The releases carry no signature or provenance</h3>
-    <p>
-      Each release so far, an alpha for developers, is an ISO and its checksum with no
-      signature and no provenance, so nobody can check that it came from this repository's CI.
-      From v0.4.1-alpha the ISO rebuilds to the same bytes from a checkout of its tag, given the
-      tool versions each release lists, so a release can be checked by building it again and
-      comparing the checksum.
-    </p>
+    <h3 id="crypto" data-toc="Cryptography"><span class="id">5.4</span>The cryptography is unaudited and not shown constant-time</h3>
+    <p>ChaCha20, SHA-256, BLAKE2b, Argon2id and the AEAD are from-scratch <code>no_std</code> Rust with no third-party crate. They wrap the volume key, every block, every password and the CSPRNG. Tests check how they are used. They do not audit the primitives. Writing new primitives is not the fix. An audit, or a vendored hash-pinned implementation, is a maintainer decision (roadmap 5.15). A call-graph check and a nightly timing run are queued as roadmap 4.20 and can land before that decision.</p>
   </li>
   <li>
-    <h3 id="cryptoevery-primitive-is-unaudited"><span class="id">crypto</span>Every primitive is unaudited</h3>
-    <p>
-      ChaCha20, SHA-256, BLAKE2b, Argon2id and the AEAD are from-scratch <code>no_std</code>
-      Rust checked against published test vectors. None has been independently audited and
-      none is verified constant-time. They protect the measured-boot chain, every block of
-      the encrypted store and every password at rest. Treat them as research code.
-    </p>
+    <h3 id="hardware" data-toc="Hardware"><span class="id">2.12</span>Hardware support is narrow, and DMA is not always confined</h3>
+    <p>Install works on IDE and on SD or eMMC. SATA is identified and not read or written. NVMe is a self-test. There is no USB, so a machine without PS/2 has no keyboard. One network driver completes ARP and nothing above it. Where the firmware has no IOMMU, a bus-mastering device reaches memory and the boot says so. A build that refuses that configuration is roadmap 5.14. The default research build will keep booting.</p>
   </li>
   <li>
-    <h3 id="5-5formal-verification-is-narrow"><span class="id">5.5</span>Formal verification is narrow</h3>
-    <p>
-      Bounded Kani proofs cover capability revocation, the ELF validator, the user-address
-      validators, the random pool's seed gate, the login throttle and the page-pool reference
-      counts, and every one of them gates a merge. That is all of it: the kernel as a whole is
-      not verified, and there is no TLA+ specification.
-    </p>
+    <h3 id="releases" data-toc="Releases"><span class="id">5.3</span>The releases carry no signature and no provenance</h3>
+    <p>Four alpha ISOs, each with a checksum, from an unsigned tag. From v0.4.1-alpha the ISO rebuilds to the same bytes from that tag if the compiler, Rust, GRUB, xorriso and mtools match the versions listed beside it. Nobody else has a script that checks that for them yet. Roadmap 4.4 and 4.11.</p>
   </li>
   <li>
-    <h3 id="miscsmaller-edges-all-tracked"><span class="id">misc</span>Smaller edges, all tracked</h3>
-    <p>
-      A destroyed kernel object's memory is not reused until its budget is reset, which is not
-      written. A program linked to the shared libc cannot fork. There is a monotonic clock at
-      10 ms resolution, deliberately, and no wall clock or timers. Scheduling is a
-      single shared pool with global locks, fine at eight CPUs and not beyond.
-    </p>
+    <h3 id="narrow" data-toc="Proofs"><span class="id">5.5</span>Formal verification covers the security core, not the kernel</h3>
+    <p>Kani proves properties of capability derivation, lookup, revocation, the ELF validator, the user-address checks, the random pool, the login throttle and the page-pool counts. Every harness gates a merge. There is no refinement proof and no TLA+ specification. Two unsound TLA+ specifications were removed on 2026-09-10. A model of the concurrent protocols, nightly, with a seeded bug in each, is roadmap 5.11.</p>
   </li>
 </ul>
-
 <div class="callout">
   <h3 id="where-the-line-sits">Where the line sits</h3>
-  <p>
-    Horus boots, installs onto a disk, runs an unprivileged <code>init</code> that supervises
-    unprivileged servers and a shell, and enforces capability-based access control end to end,
-    including across IPC and device access. The machinery that checks it (measured boot,
-    adversarial CI, bounded proofs) is more mature than the operating system it checks.
-  </p>
-  <p>
-    <strong>This is a research kernel, not a shipping operating system.</strong> Nothing here
-    should be trusted with anything real.
-  </p>
-</div>
-</section>
-    <nav class="pager" aria-label="Previous and next page">
-<a class="pager__prev" href="testing.html"><span>Previous</span>How it is tested</a>
-<a class="pager__next" href="run.html"><span>Next</span>Run it</a>
-</nav>
-  </main>
+  <p>Horus boots, installs onto IDE and eMMC, and enforces capability checks on the syscall path, including IPC and device access. The checking machinery is ahead of the operating system it checks. Memory of a destroyed object is not reused. There is no wall clock. Scheduling does not yet bind a CPU-time budget in the shipped system.</p>
+  <p>This is a research kernel, not a product. The session queue on the status page is the order in which the open items above should be closed.</p>
 </div>
 
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager__prev" href="testing.html"><span>Previous</span>Testing</a>
+<a class="pager__next" href="run.html"><span>Next</span>Run it</a>
+</nav>
+</main>
+</div>
 <footer class="foot">
   <div class="foot__in">
     <div class="foot__about">
-      <a class="brand" href="index.html">
-      <svg class="brand__mark" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-          <g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <a class="brand" href="index.html"><svg class="brand__mark" width="26" height="26" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4.5 7.6C10 4.2 19 4 27.5 6.8"/>
             <path d="M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4"/>
             <path d="M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4"/>
@@ -240,21 +154,19 @@
             <path d="M18 17.2C18.6 22.6 21 26.4 24.6 26.4C27 26.4 28.2 24.6 27.7 23C27.2 21.4 25.3 20.9 24 21.9"/>
           </g>
           <circle cx="14.2" cy="12.9" r="3.6" fill="currentColor"/>
-        </svg>
-      <span>Horus</span>
-    </a>
-      <p>A capability-based microkernel for x86-64, where every privileged action needs a token the program was handed.</p>
+        </svg><span>Horus</span></a>
+      <p>A capability-based microkernel for x86-64. A program can do only what a capability it holds allows.</p>
     </div>
     <nav class="foot__col" aria-label="Pages on this site">
       <p class="foot__head">On this site</p>
       <a href="index.html">Home</a>
-        <a href="why.html">Why Horus</a>
-        <a href="architecture.html">Architecture</a>
-        <a href="boot.html">Trusted boot</a>
-        <a href="status.html">Status</a>
-        <a href="testing.html">Testing</a>
-        <a href="limitations.html" aria-current="page">Limitations</a>
-        <a href="run.html">Run it</a>
+      <a href="why.html">Why Horus</a>
+      <a href="architecture.html">Architecture</a>
+      <a href="boot.html">Trusted boot</a>
+      <a href="status.html">Status</a>
+      <a href="testing.html">Testing</a>
+      <a href="limitations.html" aria-current="page">Limitations</a>
+      <a href="run.html">Run it</a>
     </nav>
     <nav class="foot__col" aria-label="Documents in the repository">
       <p class="foot__head">In the repository</p>
@@ -262,27 +174,24 @@
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ARCHITECTURE.md">Architecture document</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/SYSCALLS.md">System call reference</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/SECURITY.md">Security properties</a>
-      <a href="https://github.com/pharanyx-labs/Horus/blob/main/TESTS.md">Test catalogue</a>
       <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/LIMITATIONS.md">Limitations register</a>
-      <a href="https://github.com/pharanyx-labs/Horus/blob/main/CHANGES.md">Changelog</a>
+      <a href="https://github.com/pharanyx-labs/Horus/blob/main/docs/ROADMAP.md">Roadmap and session queue</a>
     </nav>
   </div>
   <div class="foot__base">
     <p>MIT licence. Copyright 2026 Pharanyx Labs.</p>
-    <p>Research-grade and not independently audited.</p>
+    <p>Research-grade. Not independently audited.</p>
   </div>
 </footer>
-
 <dialog class="search" id="search" aria-labelledby="search-title">
   <form method="dialog" class="search__box" role="search">
     <label id="search-title" class="search__label" for="search-q">Search the site</label>
-    <input id="search-q" type="search" autocomplete="off" spellcheck="false" placeholder="Capabilities, boot, status, a test name">
+    <input id="search-q" type="search" autocomplete="off" spellcheck="false" placeholder="A capability, a limit, a test name">
     <button class="search__close" value="close" aria-label="Close search">Esc</button>
   </form>
   <p class="sr-only" id="search-status" role="status" aria-live="polite"></p>
   <ol class="search__results" id="search-results"></ol>
 </dialog>
-
 <script src="assets/search-index.js"></script>
 <script src="assets/site.js"></script>
 </body>

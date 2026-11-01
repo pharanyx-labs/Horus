@@ -1,7 +1,8 @@
 # Building Horus
 
 How to build Horus, run it under QEMU or on a real machine, install it, and choose its build
-flags. Horus is x86-64 only and boots through GRUB under BIOS or UEFI.
+flags. Horus is x86-64 only and boots through GRUB under BIOS or UEFI. The open work, and the
+order a later session should take it, is [`ROADMAP.md`](ROADMAP.md).
 
 ---
 

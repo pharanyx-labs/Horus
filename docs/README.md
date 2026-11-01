@@ -3,6 +3,13 @@
 Start with the [project README](../README.md). Where a document and the code disagree, the code
 is right; please open an issue so the document is fixed.
 
+## Where a later session starts
+
+The open work, and the order to take it, is [`ROADMAP.md`](ROADMAP.md). The items recorded so
+the long-term security and CI work is not re-derived each session are 4.16 to 4.23, 5.14 and
+5.15. The same queue is on the status page of the site. Do not start a later item in a lane
+while an earlier one is open, and do not implement one of them inside a documentation change.
+
 ## The living documents
 
 These describe the system as it is today, and each change updates them in the same pull request.
@@ -29,9 +36,9 @@ Specifications written before the code. Each says at its top what of it is built
 |---|---|
 | [`design/filesystem.md`](design/filesystem.md) | The capability-addressed filesystem. Phases 1a (endpoint tokens, S105) and 1b are built; phases 2 to 4 remain (ROADMAP 2.10) |
 | [`design/installed-system.md`](design/installed-system.md) | Programs on the disk under a pinned manifest, a disk that boots itself, accounts as files. The first two are built; accounts as files are not (ROADMAP 2.11) |
-| [`design/scheduler.md`](design/scheduler.md) | Scheduling and SMP: CPU time as a capability accounted per CPU, priorities capped by authority, passive servers, per-CPU run queues, one-shot timers, affinity that only narrows, more than eight CPUs. Steps 0, 1, 1b, 2a (#523 to #526), 2 (the per-CPU run lists) and 3a (tickless idle) are built; deadline timers are next (ROADMAP 1.8) |
+| [`design/scheduler.md`](design/scheduler.md) | Scheduling and SMP: CPU time as a capability accounted per CPU, priorities capped by authority, passive servers, per-CPU run queues, one-shot timers, affinity that only narrows, more than eight CPUs. Steps 0, 1, 1b, 2a, 2, 3a, 3b, 3c, 4a and 4b are built. Next is step 5, passive servers, then affinity, more than eight CPUs and targeted shootdown (ROADMAP 1.8) |
 | [`design/swap.md`](design/swap.md) | Encrypted swap: a per-boot key, every page authenticated with its tag kept in RAM, only private pages, an in-kernel pager. Steps 1, 2 and 2a are built: the sealed slot store, eviction and fault-in, and the pager hold (S118, S119, S123) |
-| [`design/ring3-storage.md`](design/ring3-storage.md) | Storage drivers out of ring 0: the kernel keeps the keys and stops doing disk I/O, and ring-3 drivers holding one device capability move the ciphertext. Step 1 is built: `sdhcid`, the SD/eMMC driver, in a self-test build (ROADMAP 2.7) |
+| [`design/ring3-storage.md`](design/ring3-storage.md) | Storage drivers out of ring 0: the kernel keeps the keys and stops doing disk I/O, and ring-3 drivers holding one device capability move the ciphertext. `sdhcid`, `atad` and `nvmed` run in self-test builds and share the block-driver protocol. The installed system still uses the kernel's IDE and eMMC drivers (ROADMAP 2.7, 2.10) |
 | [`design/shared-libc.md`](design/shared-libc.md) | How programs receive, bind and seal the shared libc. Built (S106 to S108) |
 | [`design/meta-cache-merkle.md`](design/meta-cache-merkle.md) | The bounded metadata cache and the Merkle rollback tree. Built (S65, S66) |
 | [`design/console-server.md`](design/console-server.md) | Moving the console driver to ring 3. Built |

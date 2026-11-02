@@ -370,7 +370,14 @@ void spawn_initial_userspace_init(void) {
     extern uint8_t embedded_init_bin_start[];
     extern uint8_t embedded_init_bin_end[];
     extern int cap_install_from_root(int pid, uint32_t slot, uint32_t root_slot, uint32_t object);
-    uint32_t full_sz = (uint32_t)(embedded_init_bin_end - embedded_init_bin_start);
+    /* The two symbols bracket one image the linker placed. They are not the
+     * ends of one C array, so a pointer subtraction is the finding cppcheck
+     * reports: comparePointers in 2.13, the version CI installs, and
+     * subtractPointers in 2.17. Suppressing one id leaves the other version
+     * red, and suppressing both is an unmatched suppression on whichever id
+     * did not fire. The size is the integer distance between the addresses. */
+    uint32_t full_sz = (uint32_t)((uintptr_t)embedded_init_bin_end
+                                  - (uintptr_t)embedded_init_bin_start);
     if (full_sz < HORUS_IMAGE_HDR_BYTES) return;
     const uint8_t *bin = embedded_init_bin_start;
     /* One parse, shared with the loader and every other staging site (S80):
@@ -517,7 +524,11 @@ void spawn_initial_userspace_init(void) {
 void spawn_initial_userspace_shell(void) {
     extern uint8_t embedded_shell_bin_start[];
     extern uint8_t embedded_shell_bin_end[];
-    uint32_t full_sz = (uint32_t)(embedded_shell_bin_end - embedded_shell_bin_start);
+    /* Same as the init image above: one linker image, so the size is the
+     * integer distance. A pointer subtraction is comparePointers on the
+     * CI cppcheck and subtractPointers on 2.17. */
+    uint32_t full_sz = (uint32_t)((uintptr_t)embedded_shell_bin_end
+                                  - (uintptr_t)embedded_shell_bin_start);
     if (full_sz < HORUS_IMAGE_HDR_BYTES) return;
     const uint8_t *bin = embedded_shell_bin_start;
     /* One parse, shared with the loader and every other staging site (S80):

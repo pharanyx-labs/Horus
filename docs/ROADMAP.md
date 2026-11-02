@@ -233,26 +233,6 @@ documentation. The fast path is decided by a checked allowlist of paths, never b
 checker ships with a harness showing a code change cannot take it. The merge queue is a ruleset
 change, made after the pull request that adds the `merge_group` trigger has merged.
 
-**4.16 ⬜ Scanners that can fail, aimed at the trusted userspace.** `cppcheck` and `flawfinder`
-are piped through `head` and `|| true` (`Makefile` targets of those names), so they cannot go red,
-and they scan `src/` and `include/` only. `userspace/init.c`, `userspace/fs_server.c` and
-`userspace/console_server.c` are in the trusted computing base and outside that scan. Semgrep runs
-`--config=auto`, whose rules are not this tree's, and its findings step does not fail the job.
-CodeQL's `analyze` job is a required check, but `.github/workflows/codeql.yml` still calls the job
-advisory, and the trace is `make`, so the ISO's userspace can go unscanned.
-
-One change, or a short series if the arms will not fit in one, and nothing else:
-
-- Point `cppcheck` and `flawfinder` at those three programs as well as the kernel, and drop the
-  pipe that discards their status. Each ships with a planted defect the scan must report, and the
-  unmutated tree must pass.
-- Vendor a Semgrep ruleset for the traps this tree has already shipped: mixing `virt_to_phys` with
-  an arbitrary physical address, `current_user_is_admin` on a grant path, a user pointer that skips
-  the Rust validator, slot 3 treated as a grant, and a user length narrowed before the bounds
-  check. Run it with `--error`. A fixture of each trap must go red, and the unmutated tree must pass.
-- Correct the CodeQL header so it does not call a required job advisory, and trace the ISO so the
-  trusted userspace is in the database. CodeQL stays required. Do not move it to the advisory list.
-
 **4.17 ⬜ One stamped kernel image for the default smoke jobs.** Jobs that boot the default kernel
 rebuild it. They should download one image and refuse it unless its `.build-flags` stamp and its
 hash are the ones that job expects. A job that passes a different flag keeps its own build, and

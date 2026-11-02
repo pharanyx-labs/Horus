@@ -6,7 +6,7 @@ is right; please open an issue so the document is fixed.
 ## Where a later session starts
 
 The open work, and the order to take it, is [`ROADMAP.md`](ROADMAP.md). The items recorded so
-the long-term security and CI work is not re-derived each session are 4.16 to 4.23, 5.14 and
+the long-term security and CI work is not re-derived each session are 4.17 to 4.23, 5.14 and
 5.15. The same queue is on the status page of the site. Do not start a later item in a lane
 while an earlier one is open, and do not implement one of them inside a documentation change.
 

@@ -71,6 +71,7 @@ open. The account of each is in its pull requests.
 | 4.10 Third-party material declared | `THIRD_PARTY.md`, 2026-09-08 |
 | 4.12 A security-invariant registry [F-4.1] | `tools/check_invariants.py` binds every `SECURITY.md` property to a witness that runs. 2026-08-28 |
 | 4.14 Nightly fuzzing and full Kani | Every Kani proof gates every pull request (#485); each proof's recorded mutation is replayed nightly to show it still fails (#493); every fuzz target runs nightly for ten minutes and a crash fails the run (#492). 2026-10-06 |
+| 4.16 Scanners that can fail, aimed at the trusted userspace | `cppcheck` and `flawfinder` return their status and scan `init`, `fs_server` and `console_server`. A vendored Semgrep ruleset fails the build on the traps this tree has already shipped. CodeQL's header no longer calls that required job advisory, and the `make` it traces compiles those three programs. 2026-11-02, #602 |
 
 ## Track 5: closing the known limitations
 

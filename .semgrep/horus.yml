@@ -1,0 +1,164 @@
+# Vendored rules for traps this tree has already shipped. Run by
+# tools/semgrep_horus.py with --error. These rules are this repository's.
+# They are not a registry ruleset, and they do not change under us.
+#
+# The runner blanks regions whose preprocessor condition is false in the
+# ship build (the macros in check_dispatch_gates.SHIP_ABSENT) before this
+# file is applied. A control arm keeps its defect. The ship build does not
+# contain it, and a copy of that defect with the guard removed must still
+# fail. A region whose condition this runner cannot decide is left in place.
+
+rules:
+  - id: horus.virt-phys-mix
+    languages: [c]
+    severity: ERROR
+    message: >-
+      virt_to_phys and phys_to_virt translate kernel image symbols.
+      An arbitrary physical address goes through PHYS_KVA. Mixing the
+      two addresses the wrong memory.
+    pattern-either:
+      - pattern: virt_to_phys(PHYS_KVA(...))
+      - pattern: phys_to_virt(PHYS_KVA(...))
+      - pattern: PHYS_KVA(virt_to_phys(...))
+      - pattern: PHYS_KVA(phys_to_virt(...))
+
+  - id: horus.admin-grants
+    languages: [c]
+    severity: ERROR
+    message: >-
+      current_user_is_admin is not a grant. Authority to grant is a
+      capability checked at the point of use.
+    pattern-either:
+      - pattern: |
+          if (current_user_is_admin()) {
+            ...
+            cap_grant_into(...);
+            ...
+          }
+      - pattern: |
+          if (current_user_is_admin()) {
+            ...
+            cap_grant_from_user(...);
+            ...
+          }
+      - pattern: |
+          if (current_user_is_admin()) {
+            ...
+            rust_cap_grant_into(...);
+            ...
+          }
+      - pattern: |
+          if (current_user_is_admin()) {
+            ...
+            rust_cap_grant_from_user(...);
+            ...
+          }
+      - pattern: |
+          if (!current_user_is_admin()) $S;
+          ...
+          cap_grant_into(...);
+      - pattern: |
+          if (!current_user_is_admin()) $S;
+          ...
+          cap_grant_from_user(...);
+      - pattern: |
+          if (!current_user_is_admin()) $S;
+          ...
+          rust_cap_grant_into(...);
+      - pattern: |
+          if (!current_user_is_admin()) $S;
+          ...
+          rust_cap_grant_from_user(...);
+
+  - id: horus.user-pointer-skips-validator
+    languages: [c]
+    severity: ERROR
+    message: >-
+      A syscall register is used as a pointer without copy_from_user,
+      copy_to_user, or a Rust validator.
+    mode: taint
+    pattern-sources:
+      - pattern: (void *)(uintptr_t)r->$A
+      - pattern: (void *)(addr_t)r->$A
+      - pattern: (const void *)(uintptr_t)r->$A
+      - pattern: (const void *)(addr_t)r->$A
+    pattern-sinks:
+      - pattern: memcpy(...)
+      - pattern: memmove(...)
+      - pattern: memset(...)
+    pattern-sanitizers:
+      - pattern: copy_from_user(...)
+      - pattern: copy_to_user(...)
+      - pattern: rust_elf_validate_header(...)
+      - pattern: rust_elf_build_load_plan(...)
+      - pattern: rust_validate_page_fault(...)
+
+  - id: horus.slot3-lookup
+    languages: [c]
+    severity: ERROR
+    message: >-
+      Slot 3 is the decoy CAP_FRAME every task is born holding. A
+      lookup of it is not a grant.
+    patterns:
+      - pattern: cap_lookup(3, ...)
+      - pattern-not-inside: cap_snapshot(...)
+
+  - id: horus.slot3-dispatch-row
+    languages: [c]
+    severity: ERROR
+    message: >-
+      A dispatch row gated on slot 3 authorises every task. Slot 3 is
+      not a grant.
+    pattern-regex: '\[\s*[A-Za-z_][A-Za-z0-9_]*\s*\]\s*=\s*\{\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*3\s*,'
+
+  - id: horus.length-narrowed-before-bound
+    languages: [c]
+    severity: ERROR
+    message: >-
+      A user length is narrowed for the bounds check and the original
+      wide length is what is copied.
+    pattern-either:
+      - pattern: |
+          if ((uint32_t)$LEN <= $B) {
+            ...
+            memcpy($D, $S, $LEN);
+            ...
+          }
+      - pattern: |
+          if ((uint32_t)$LEN < $B) {
+            ...
+            memcpy($D, $S, $LEN);
+            ...
+          }
+      - pattern: |
+          if ((uint32_t)$LEN <= $B)
+            memcpy($D, $S, $LEN);
+      - pattern: |
+          if ((uint32_t)$LEN < $B)
+            memcpy($D, $S, $LEN);
+      - pattern: |
+          $N = (uint32_t)$WIDE;
+          ...
+          if ($N <= $B) {
+            ...
+            memcpy($D, $S, $WIDE);
+            ...
+          }
+      - pattern: |
+          $N = (uint32_t)$WIDE;
+          ...
+          if ($N < $B) {
+            ...
+            memcpy($D, $S, $WIDE);
+            ...
+          }
+      - pattern: |
+          $N = (uint32_t)$WIDE;
+          ...
+          if ($N <= $B)
+            memcpy($D, $S, $WIDE);
+      - pattern: |
+          $N = (uint32_t)$WIDE;
+          ...
+          if ($N < $B)
+            memcpy($D, $S, $WIDE);

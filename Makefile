@@ -15970,9 +15970,13 @@ ap-trampoline-control-arm:
 	 fi
 	@rm -rf $(AP_TRAMP_TEST)
 
-.PHONY: security security-install semgrep trivy gitleaks cppcheck flawfinder cargo-audit
+.PHONY: security security-install semgrep semgrep-horus trivy gitleaks cppcheck flawfinder cargo-audit
 
-security: semgrep trivy gitleaks cppcheck flawfinder cargo-audit
+# cppcheck, flawfinder and semgrep-horus are gating (roadmap 4.16) and are
+# not prerequisites of this target. CI runs them in their own step. This
+# target is the remainder, whose findings stay advisory: semgrep --config=auto
+# uses a registry ruleset, and trivy exits 0 on findings.
+security: semgrep trivy gitleaks cargo-audit
 	@echo ""
 	@echo "✅ Security scan complete."
 	@echo "   Review all output above for findings."
@@ -16030,16 +16034,16 @@ gitleaks:
 	gitleaks detect --source . --verbose --redact
 
 cppcheck:
-	@echo "=== cppcheck (C static analysis) ==="
-	command -v cppcheck >/dev/null 2>&1 || sudo apt-get install -y cppcheck
-	cppcheck --version
-	cppcheck --enable=all --inconclusive --suppress=missingIncludeSystem src/ include/ rust/ 2>&1 | head -80 || true
+	@echo "=== cppcheck (ship configuration, trusted userspace included) ==="
+	./tools/cppcheck_gate.sh
 
 flawfinder:
-	@echo "=== flawfinder (C/C++ security weaknesses) ==="
-	command -v flawfinder >/dev/null 2>&1 || pipx install flawfinder || pip install flawfinder
-	flawfinder --version
-	flawfinder src/ include/ 2>&1 | head -60 || true
+	@echo "=== flawfinder (level 4 and above, trusted userspace included) ==="
+	./tools/flawfinder_gate.sh
+
+semgrep-horus:
+	@echo "=== semgrep (vendored horus rules) ==="
+	python3 tools/semgrep_horus.py
 
 cargo-audit:
 	@echo "=== cargo-audit (Rust dependency advisories) ==="

@@ -1311,7 +1311,9 @@ void h_notify(struct interrupt_frame64 *r) {
     }
     r->rax = sys_notify(ns, r->rcx);
 }
-/* SYS_WAIT_NOTIFY (26): slot-3 READ enforced by the table.
+/* SYS_WAIT_NOTIFY (26): rbx names a CAP_NOTIFICATION with READ.
+ * ipc_notif_from_slot is the gate. The table row is SC_NONE. A fixed slot-3
+ * READ check would admit every task and never consult the notification.
  * The badge is returned in r->rbx so interrupt_handler64 writes it into
  * frame->rbx; the userspace wrapper reads it from the ebx output constraint.
  * For the blocking path r->rbx is patched in sys_notify via saved_ksp->rbx. */

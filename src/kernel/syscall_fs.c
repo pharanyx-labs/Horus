@@ -546,8 +546,9 @@ void h_fs_store_kind(struct interrupt_frame64 *r) {
  * Fixed (slot, rights[, type]) capability requirements are declared in
  * syscall_table[] below and enforced centrally before the handler runs, so
  * these bodies no longer repeat that check. Handlers whose authority is
- * dynamic (FS dir-slot from args; cap_mint/transfer/move/revoke target slot)
- * or self-authorizing (auth/sudo) carry SC_NONE and do their own checks. */
+ * dynamic (the capability the caller names) or that act only on the caller
+ * (SYS_AUTH) carry SC_NONE and do their own checks. SYS_SUDO is withdrawn
+ * and answers SYS_ERR_NOSYS before any check. */
 
 /* SYS_YIELD (0). */
 
@@ -572,7 +573,10 @@ void h_ramfs_create(struct interrupt_frame64 *r) {
 }
 #endif /* RAMFS_SLOT3_GATE */
 
-/* SYS_SPAWN (28): slot-3 WRITE|EXEC enforced by the table.
+/* SYS_SPAWN (28) is implemented in kspawn.c. Its table row is SC_NONE:
+ * the handler resolves the caller's CAP_UNTYPED (S57). The sentence that
+ * stood here, that slot-3 WRITE|EXEC was enforced by the table, described
+ * the row retired on 2026-08-30 (docs/LIMITATIONS.md 1.6b, closed).
  * ebx = userspace pointer to a null-terminated binary name, or 0.
  * ecx = max bytes to read from the name (0 means up to 31).
  * If ebx is nonzero, arm the named embedded binary then spawn it.

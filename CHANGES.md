@@ -14,6 +14,10 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- A point-in-time security assessment of commit `e3aa595` is recorded in `audit.md`, with the rendered copy at `docs/audit-2026-11-02.pdf`. It sets no statuses. `docs/LIMITATIONS.md` remains the register, and `docs/AUDIT.md` remains the 19 September 2026 audit.
+
 ### Security
 
 - A budget reschedule on the way out of a system call no longer hides a return to ring 3 on the wrong page tables (S156). The switch reloaded the next task's root and resumed the caller later on its own, so `ring3_cr3_check` never saw the slip: on the push of #608, `smoke-cr3-return-control` reached `CAPTEST: PASS 271` instead of killing the caller. The switch now waits until the loaded root is the caller's, and the fork refusal asks for that switch on every such return. `make smoke-cr3-return` and its arm (#610).

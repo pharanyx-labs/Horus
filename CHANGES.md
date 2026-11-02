@@ -14,6 +14,10 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- A point-in-time security assessment of commit `e3aa595` is recorded in `audit.md`, with the rendered copy at `docs/audit-2026-11-02.pdf`. It sets no statuses. `docs/LIMITATIONS.md` remains the register, and `docs/AUDIT.md` remains the 19 September 2026 audit.
+
 ### Security
 
 - A revocation now reaches a copy derived through a task that has died (LIMITATIONS 1.33, closed; S3). A death emptied the task's cspace and cut the edges its capabilities' children named, so a program lent the keyboard by a shell that then died kept it when `init` took back the shell's copy, and could read what was typed at the next prompt. Before a cspace is emptied, every capability derived from one in it now names that capability's own parent; a Kani proof shows no edge into the dead cspace survives, and `make smoke-captest` revokes above a dead link and reaches the grandchild. (#599)

@@ -1,0 +1,13 @@
+# Warnings the default kernel build still emits. Roadmap 4.18.
+#
+# A row is the file, the warning flag and the function. Line numbers are not
+# recorded. The ceiling is the number of rows. It shrinks when a row leaves
+# because the compiler stopped emitting it. It does not grow: the copy on main
+# is the parent, and a row that is not in the parent fails the build.
+# The kernel is not built with -Werror. Deleting one of these functions to
+# silence the line is not how a change goes green.
+
+ceiling: 3
+src/kernel/smp.c -Wunused-function smp_check_in
+src/kernel/smp.c -Wunused-function smp_checkin_instrument
+src/kernel/smp.c -Wunused-function smp_park_refused

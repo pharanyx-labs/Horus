@@ -607,7 +607,34 @@ jobs:
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
       - name: Build kernel.elf
-        run: make
+        run: |
+          set -o pipefail
+          make 2>&1 | tee kernel-warnings.txt
+      # Roadmap 4.18. The kernel is not built with -Werror. The ratchet is this
+      # job's log against .github/warning-baseline.txt. Main's copy is the
+      # parent, so a warning added beside a matching baseline line is still
+      # growth. The first time the file exists, main has no copy and
+      # --establish is the only legal acceptance. A missing parent path is not
+      # that case.
+      - name: The default build's warnings may shrink and may not grow
+        run: |
+          git fetch --depth=1 origin main
+          if git cat-file -e FETCH_HEAD:.github/warning-baseline.txt; then
+            git show FETCH_HEAD:.github/warning-baseline.txt > /tmp/warning-baseline-parent.txt
+            python3 tools/check_warning_ratchet.py kernel-warnings.txt \
+              --baseline .github/warning-baseline.txt \
+              --parent /tmp/warning-baseline-parent.txt
+          else
+            python3 tools/check_warning_ratchet.py kernel-warnings.txt \
+              --baseline .github/warning-baseline.txt \
+              --establish
+          fi
+      - name: A syscall or interrupt path stays inside the kernel stack
+        run: python3 tools/check_stack_budget.py
+      - name: Falsify the warning ratchet and the stack budget
+        run: |
+          ./tools/test_check_warning_ratchet.sh
+          ./tools/test_check_stack_budget.sh
       # Audit F2. The .bss budget is exact in both directions, so any growth or
       # shrink is a line in .github/image-budget.yml that a reviewer sees. Checked
       # on THIS job's kernel.elf because it is the default build; a selftest or

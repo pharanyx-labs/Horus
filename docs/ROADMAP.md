@@ -241,12 +241,6 @@ shared image that is not checked is a gate that can pass on the wrong kernel. Th
 handed an image stamped for a different flag, which must go red, and the same job handed the image
 it asked for, which must boot.
 
-**4.18 ⬜ Warning ratchet and a kernel stack-depth budget.** The kernel is not built with `-Werror`.
-A new warning fails the build, by a baseline that shrinks and never grows. Separately, a syscall or
-interrupt path whose stack depth, from `-fstack-usage`, exceeds the per-CPU stack minus the guard
-fails the build. The depth budget ships with a control arm that plants a frame too deep and must go
-red. Neither check deletes a warning to go green.
-
 **4.19 ⬜ A nightly guest syscall fuzzer.** The fuzz targets in `fuzz.yml` are parsers in the Rust
 core. Nothing there calls `syscall()`. A nightly job, off the merge path and in the same shape as
 that workflow, fuzzes the guest entry. A crash fails the run and keeps the input. It does not

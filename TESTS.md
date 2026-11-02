@@ -398,7 +398,7 @@ The jobs that are not boot tests:
 | `conflict-markers` | No tracked file carries a merge-conflict marker |
 | `prose-style` | The docs and the website use no em dash and British spelling |
 | `rust` | Rust unit tests + clippy (deny-warnings gate) |
-| `kernel` | Build kernel.elf + bootable ISO (x86_64) |
+| `kernel` | Build kernel.elf + bootable ISO (x86_64). The default build's warnings match `.github/warning-baseline.txt` and may only shrink, and a syscall or interrupt path stays within the kernel stack |
 | `altconfigs` | Build alternate configs (each configuration) |
 | `measured-boot-required` | Measured boot can be required, and then an unmeasured boot does not proceed |
 | `defect-flags` | Every boot states which defect flags built it (and a flag change forces a rebuild) |

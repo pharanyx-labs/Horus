@@ -1,6 +1,11 @@
 # Build artifacts
 *.o
 *.d
+# Stack-usage and call-graph reports. The stack budget reads them from a build.
+*.su
+*.ci
+# The kernel job keeps the compiler's warnings for the warning ratchet.
+kernel-warnings.txt
 *.a
 *.bin
 *.elf

@@ -58,6 +58,9 @@ CFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -MMD -MP \
          -mno-sse -mno-mmx -mno-80387 \
          -Wall -Wextra -Wformat -Wformat-security -Werror=vla -Werror=comment -O2 -pipe \
          -I src/include -I include -std=gnu99 -fno-builtin -mcmodel=kernel -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus
+# Reports for the stack-depth budget. Neither flag changes the instructions
+# the compiler emits. A clean build writes the files again; they are gitignored.
+CFLAGS += -fstack-usage -fcallgraph-info=su
 ASFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c -I src/include
 LDFLAGS = -T linker64.ld -m elf_x86_64 -nostdlib -static --build-id=none
 RUST_TARGET ?= x86_64-unknown-none

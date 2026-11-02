@@ -1984,9 +1984,13 @@ static int merkle_root_hash(const struct fs_superblock *sb, const uint8_t *top_i
         sb->journal_blocks,     sb->inode_bitmap_start, sb->inode_bitmap_blocks,
         sb->block_bitmap_start, sb->inode_table_start,  sb->data_start,
         sb->inode_count,        sb->block_count,
-        /* The three flags share one word: none is wider than a byte's worth. */
+        /* The four flags share one word. None is wider than a byte, and
+         * measured_absent is the low byte of the padding that used to follow
+         * rollback_anchored, so a volume written before it existed hashes the
+         * same word (S143, S157). */
         (uint64_t)sb->rollback_anchored | ((uint64_t)sb->unsealed << 32)
-                                        | ((uint64_t)sb->tpm_mode << 40),
+                                        | ((uint64_t)sb->tpm_mode << 40)
+                                        | ((uint64_t)sb->measured_absent << 48),
     };
     const uint8_t *salt = sb->volume_key_salt;
 #else
@@ -3596,6 +3600,15 @@ static int apply_tpm_kek_binding(struct block_device *bd,
 static int format_seal_tpm(struct block_device *bd, struct fs_superblock *sb,
                            uint64_t blob_block)
 {
+#ifdef MEASURED_SEAL_INJECT_FAIL
+    /* The seal refused, forced, before any blob is written and before any
+     * secret exists. The caller takes the same path a real TPM refusal takes
+     * (S157). The rest of the function is not compiled here: a return above a
+     * live body is unreachable, and a warning on this arm would be it failing
+     * for the wrong reason. */
+    (void)bd; (void)sb; (void)blob_block;
+    return -1;
+#else
     uint8_t tpm_secret[32];
     secure_random_bytes(tpm_secret, sizeof(tpm_secret));
 
@@ -3616,6 +3629,7 @@ static int format_seal_tpm(struct block_device *bd, struct fs_superblock *sb,
     sb->tpm_priv_len   = blob.priv_len;
     sb->tpm_blob_block = blob_block;
     return 0;
+#endif
 }
 
 /* Format a block device and seal disk_key with the user's password.
@@ -3806,8 +3820,18 @@ static int storage_format_sealed(struct block_device *bd,
      * be a lock on an open door that the boot then reports as measured. */
     if (unsealed) want_tpm = 0;
     if (want_tpm && format_seal_tpm(bd, &sb, tpm_blob_block) != 0) {
+#ifdef MEASURED_SEAL_FAIL_OPEN
+        /* CONTROL ARM, never ship. The seal failed and the format continues as
+         * a password-only volume, which is the downgrade S157 refuses. The
+         * disk key is kept: zeroing it here would write a volume sealed to
+         * nothing, and the arm would pass for the wrong reason. */
+        println("STORAGE: seal failure ignored; writing a password-only volume");
+        want_tpm = 0;
+#else
         secure_zero(disk_key, sizeof(disk_key));
+        println("STORAGE: a TPM is present but the volume could not be sealed; refusing to format");
         return -1;
+#endif
     }
     {
         /* v7 -- seal disk_key into SLOT 0 rather than into the superblock. The
@@ -3919,6 +3943,19 @@ static int storage_format_sealed(struct block_device *bd,
      * later state for anyone to roll back to. */
     sb.rollback_gen       = 0;
     sb.rollback_anchored  = 0;
+    sb.measured_absent    = 0;
+#ifndef MEASURED_ABSENT_UNRECORDED
+    /* A persistent volume formatted with no TPM records that fact (S157). The
+     * ephemeral vdisk does not: it does not survive the boot, so there is
+     * nothing later to explain. The byte is the low byte of the old padding,
+     * and it is bound into the root below, so clearing it on disk fails the
+     * unlock rather than quietly claiming a measurement that was not there.
+     * MEASURED_ABSENT_UNRECORDED leaves the byte zero, which is the arm. */
+    if (!g_vdisk_high_entropy_kek && !tpm_present()) {
+        sb.measured_absent = 1;
+        println("STORAGE: recorded no TPM");
+    }
+#endif
     if (!g_vdisk_high_entropy_kek && tpm_present()) {
         uint64_t gen = 0;
         if (tpm_nv_counter_provision(&gen) != 0) {
@@ -4488,6 +4525,19 @@ static struct block_device *storage_lay_out_bootable(struct block_device *dev,
     return &g_part_bd;
 }
 
+/* The measured-boot facts on a storage survey (S157). tpm_present is the
+ * machine, filled on every survey. The volume fields are the mounted volume,
+ * and only when `mounted_here` says this survey is about that volume: a device
+ * survey of a different disk must not answer with this one's record. */
+static void storage_info_tpm(struct storage_info *out, int mounted_here)
+{
+    out->tpm_present = tpm_present() ? 1u : 0u;
+    if (!mounted_here || !g_mounted_fs.mounted) return;
+    out->volume_tpm_mode = g_mounted_fs.sb.tpm_mode;
+    out->volume_unsealed = g_mounted_fs.sb.unsealed ? 1u : 0u;
+    out->measured_absent = g_mounted_fs.sb.measured_absent ? 1u : 0u;
+}
+
 /* What SYS_STORAGE_INFO reports. See struct storage_info in kernel.h for why
  * each field is there and why there are not more of them.
  *
@@ -4548,6 +4598,9 @@ void storage_query(struct storage_info *out)
     out->recognised   = (out->present && g_mounted_fs.mounted) ? 1u : 0u;
     out->unlocked     = (out->recognised && g_mounted_fs.unlocked) ? 1u : 0u;
     if (out->recognised) out->volume_blocks = g_mounted_fs.sb.total_blocks;
+    /* The ephemeral vdisk is mounted and is not "present". The fields are
+     * still filled; init does not report them as a persistent volume. */
+    storage_info_tpm(out, g_mounted_fs.mounted);
 }
 
 /* The survey for ONE enumerated device, rather than for the machine (SECURITY.md
@@ -4589,6 +4642,7 @@ int storage_device_query(int index, struct storage_info *out)
 #else
     out->format_on_login = 0u;
 #endif
+    storage_info_tpm(out, is_mounted);
     return 0;
 }
 
@@ -5137,6 +5191,98 @@ void storage_tpm_kek_selftest(void)
 
     g_tpm_force_seal = 0;
     if (!failed) println("TPM_KEK_SELFTEST: PASS");
+}
+#endif
+
+#ifdef MEASURED_SEAL_SELFTEST
+/* A seal the TPM will not perform must not become a password-only volume
+ * (S157). The inject makes format_seal_tpm refuse. The shipped path returns
+ * before any key slot is written and prints REFUSED. MEASURED_SEAL_FAIL_OPEN
+ * writes the volume anyway and prints IGNORED. The ephemeral key is the fast
+ * one: the refusal happens before Argon2, and the arm would otherwise pay it
+ * for a volume the test is about to throw away. */
+void storage_measured_seal_selftest(void)
+{
+    STORAGE_OP;
+    if (!tpm_present())   { println("MEASURED_SEAL: SKIP no TPM"); return; }
+    if (!g_vdisk_backing) { println("MEASURED_SEAL: SKIP no vdisk"); return; }
+
+    g_vdisk_high_entropy_kek = 1;
+    g_tpm_force_seal         = 1;
+    g_vdisk.data        = g_vdisk_backing;
+    g_vdisk.size        = VDISK_BYTES;
+    g_vdisk.block_count = VDISK_BLOCKS;
+    my_memset(g_vdisk.data, 0, g_vdisk.size);
+
+    const char *pw = "seal-selftest";
+    size_t pl = 0; for (const char *c = pw; *c; c++) pl++;
+    int rc = storage_format_sealed(&g_vdisk_bd, pw, pl, 0, 0);
+
+    g_tpm_force_seal = 0;
+    g_vdisk_high_entropy_kek = 0;
+    if (rc != 0) {
+        println("MEASURED_SEAL: REFUSED");
+    } else {
+        /* A whole block. The superblock is smaller than BLOCK_SIZE, and
+         * vdisk_read writes the block it was asked for, so a read into the
+         * struct itself would run off the stack. */
+        uint8_t blk[BLOCK_SIZE];
+        struct fs_superblock sb;
+        my_memset(&sb, 0, sizeof(sb));
+        if (g_vdisk_bd.read_block(&g_vdisk_bd, 0, blk) != 0) {
+            println("MEASURED_SEAL: UNREADABLE");
+        } else {
+            my_memcpy(&sb, blk, sizeof(sb));
+            if (sb.tpm_mode == 0)
+                println("MEASURED_SEAL: IGNORED");
+            else
+                println("MEASURED_SEAL: SEALED");
+        }
+    }
+    storage_forget_mounted();
+    my_memset(g_vdisk.data, 0, g_vdisk.size);
+}
+#endif
+
+#ifdef MEASURED_ABSENT_SELFTEST
+/* The record is the byte a persistent format writes when no TPM is present,
+ * read back through the survey the installer and init use (S157). The
+ * ephemeral flag is cleared for this one format, because that flag is what
+ * keeps a RAM disk from claiming it was an install. It is set back, and the
+ * disk wiped, before storage_init lays down the real ephemeral volume.
+ * MEASURED_ABSENT_UNRECORDED leaves the byte zero: the survey then says NOT
+ * RECORDED, which is the arm. */
+void storage_measured_absent_selftest(void)
+{
+    STORAGE_OP;
+    if (tpm_present())    { println("MEASURED_ABSENT: SKIP a TPM is present"); return; }
+    if (!g_vdisk_backing) { println("MEASURED_ABSENT: SKIP no vdisk"); return; }
+
+    g_vdisk_high_entropy_kek = 0;
+    g_vdisk.data        = g_vdisk_backing;
+    g_vdisk.size        = VDISK_BYTES;
+    g_vdisk.block_count = VDISK_BLOCKS;
+    current_bd          = &g_vdisk_bd;
+    my_memset(g_vdisk.data, 0, g_vdisk.size);
+
+    const char *pw = "absent-selftest";
+    size_t pl = 0; for (const char *c = pw; *c; c++) pl++;
+    if (storage_format_sealed(&g_vdisk_bd, pw, pl, 0, 0) != 0) {
+        println("MEASURED_ABSENT: FAIL format");
+    } else if (storage_mount(&g_vdisk_bd) != 0) {
+        println("MEASURED_ABSENT: FAIL mount");
+    } else {
+        struct storage_info si;
+        my_memset(&si, 0, sizeof(si));
+        storage_query(&si);
+        if (si.measured_absent == 1 && si.tpm_present == 0)
+            println("MEASURED_ABSENT: RECORDED");
+        else
+            println("MEASURED_ABSENT: NOT RECORDED");
+    }
+    storage_forget_mounted();
+    g_vdisk_high_entropy_kek = 0;
+    my_memset(g_vdisk.data, 0, g_vdisk.size);
 }
 #endif
 

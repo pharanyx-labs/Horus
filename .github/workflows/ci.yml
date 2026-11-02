@@ -1817,9 +1817,13 @@ jobs:
         run: make smoke-tpm
 
   measured-boot-required:
-    name: "Measured boot can be required, and then an unmeasured boot does not proceed"
+    name: "Measured boot fails closed when a TPM is present, and can be required of a machine without one"
     runs-on: ubuntu-latest
-    timeout-minutes: 105
+    # Eight boots were added for S157 (a present TPM, the seal, and the no-TPM
+    # say-so, each with its arm). Two of them pay Argon2. 105 was the previous
+    # six. 210 leaves room for the extra clean builds without making a wedge
+    # look like a budget.
+    timeout-minutes: 210
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain + QEMU + swtpm
@@ -1864,6 +1868,34 @@ jobs:
         env:
           SWTPM_REQUIRED: "1"
         run: make smoke-measured-persist-control
+      # S157, the default kernel. A TPM that answered and then could not be
+      # measured halts. The arm continues, and must not then say the measurement
+      # succeeded.
+      - name: A present TPM whose measurement fails does not boot
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-measured-present
+      - name: Control arm, the measurement failure is ignored, and the boot says so
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-measured-present-control
+      - name: A present TPM whose seal fails does not format a password-only volume
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-measured-seal
+      - name: Control arm, the seal failure is ignored and a password-only volume is written
+        env:
+          SWTPM_REQUIRED: "1"
+        run: make smoke-measured-seal-control
+      # No swtpm. The say-so is init's, and the record is a format with no TPM.
+      - name: A machine with no TPM says so at login
+        run: make smoke-measured-absent
+      - name: Control arm, the absence goes unsaid
+        run: make smoke-measured-absent-control
+      - name: A volume formatted with no TPM records that
+        run: make smoke-measured-absent-record
+      - name: Control arm, the record is left unset
+        run: make smoke-measured-absent-record-control
 
   smoke-tpm-tamper:
     name: Measured boot falsification (a tampered module diverges the PCRs)

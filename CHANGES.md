@@ -14,6 +14,10 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- A point-in-time security assessment of commit `e3aa595` is recorded in `audit.md`, with the rendered copy at `docs/audit-2026-11-02.pdf`. It sets no statuses. `docs/LIMITATIONS.md` remains the register, and `docs/AUDIT.md` remains the 19 September 2026 audit.
+
 ### Security
 
 - Gap G-14 is an open entry in the limitations register (1.42). Ring 0 still holds the on-disk filesystem, the accounts and the loader, beside the verified core. The architecture document already called the gap open. The register, which is the status of a finding, did not name it.

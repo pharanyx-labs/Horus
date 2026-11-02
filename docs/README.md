@@ -48,7 +48,8 @@ Specifications written before the code. Each says at its top what of it is built
 
 | Record | What it holds |
 |---|---|
-| [`AUDIT.md`](AUDIT.md) | The latest self-audit, 2026-09-19: three findings (F1 to F3), all closed |
+| [`AUDIT.md`](AUDIT.md) | The 19 September 2026 self-audit: three findings (F1 to F3), all closed. `tools/check_doc_claims.py` parses its rejected-candidate table, so this file stays |
+| [`../audit.md`](../audit.md) | The 2 November 2026 assessment of commit `e3aa595`. It sets no statuses. The rendered copy is [`audit-2026-11-02.pdf`](audit-2026-11-02.pdf) |
 | [`history/AUDIT-EXTERNAL-2026-09-20.md`](history/AUDIT-EXTERNAL-2026-09-20.md) | The first outside review of the tree, reconciled against the checkout. It sets no statuses |
 | [`history/AUDIT-2026-08-30.md`](history/AUDIT-2026-08-30.md) | The 2026-08-30 whole-tree audit |
 | [`history/AUDIT-2026-07.md`](history/AUDIT-2026-07.md) | The 2026-07 audit that defined the [C-n], [I-n], [M-n] and [F-n] findings, with its predecessor as an appendix |

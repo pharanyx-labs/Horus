@@ -65,10 +65,14 @@ except ImportError:
 # ct-timing.yml (roadmap 4.20) likewise: schedule-only timing of the password
 # and AEAD compares. The per-PR half is tools/check_ct_compare.py. Dropping
 # the nightly run must be loud. It does not close limitation 5.4.
+# nightly-issue.yml (roadmap 4.23) likewise: it runs after Fuzz or Kani
+# control arms completes, never on a pull request. A failure opens one issue.
+# Dropping it must be loud.
 WORKFLOWS = [".github/workflows/ci.yml", ".github/workflows/codeql.yml",
              ".github/workflows/ruleset-audit.yml", ".github/workflows/fuzz.yml",
              ".github/workflows/kani-arms.yml",
-             ".github/workflows/ct-timing.yml"]
+             ".github/workflows/ct-timing.yml",
+             ".github/workflows/nightly-issue.yml"]
 CI_YML = ".github/workflows/ci.yml"
 GATING_YML = ".github/ci-gating.yml"
 RULESET = "repos/pharanyx-labs/Horus/rulesets/21815299"

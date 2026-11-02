@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install PyYAML
-        run: pip install --disable-pip-version-check pyyaml==6.0.3
+        run: pip install --disable-pip-version-check --require-hashes --no-deps -r .github/pyyaml-pin.txt
       # Finding [C-6]: the live required list lives in a branch ruleset no commit
       # touches, so a job added here landed advisory BY DEFAULT and nothing asked
       # whether it should have. This fails the build when ci.yml and
@@ -395,6 +395,17 @@ jobs:
         run: python3 tools/check_ct_compare.py
       - name: Falsify the constant-time compare check
         run: ./tools/test_check_ct_compare.sh
+      # Roadmap 4.23. The PyYAML installs in this workflow take the recorded
+      # hashes, and a wheel that only claims the same version does not
+      # install. A red Fuzz or Kani control-arms run opens one issue.
+      - name: PyYAML installs accept only the recorded files
+        run: python3 tools/check_pyyaml_pin.py
+      - name: Falsify the PyYAML pin, including a substituted wheel
+        run: ./tools/test_check_pyyaml_pin.sh
+      - name: A red nightly opens one issue
+        run: python3 tools/check_nightly_issue.py
+      - name: Falsify the nightly issue check
+        run: ./tools/test_nightly_issue.sh
 
   unsafe-safety:
     name: "Every unsafe in the security core states the caller's obligations"
@@ -446,7 +457,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install PyYAML
-        run: pip install --disable-pip-version-check pyyaml==6.0.3
+        run: pip install --disable-pip-version-check --require-hashes --no-deps -r .github/pyyaml-pin.txt
       # Every number written into a document here has gone stale within days.
       # The 2026-08-19 audit found nine wrong across five files -- CI job and
       # context counts, the required set, the capability suite's check count --
@@ -5786,7 +5797,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install PyYAML
-        run: pip install --user pyyaml==6.0.3
+        run: pip install --user --require-hashes --no-deps -r .github/pyyaml-pin.txt
       # Source-only and instant, and it is the half that catches a NEW module
       # nobody classified -- so it runs before the toolchain install.
       - name: Every test module is run under Miri or excused with a reason
@@ -5842,7 +5853,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install PyYAML
-        run: pip install --user pyyaml==6.0.3
+        run: pip install --user --require-hashes --no-deps -r .github/pyyaml-pin.txt
       # Cheap, no toolchain needed, and it is the half that catches a NEW proof
       # nobody wired up -- so it runs before the expensive install.
       - name: Every Kani proof is listed to run here

@@ -250,13 +250,6 @@ become a required check until it has stayed quiet, and a silent skip is a failur
 that the ISO links, with Clang, and fails if it cannot link. It does not gate a merge until it has
 stayed linkable. A skip, or a job that passes because the compiler was not installed, is a failure.
 
-**4.23 ⬜ A red nightly opens an issue, and PyYAML is hash-pinned.** `fuzz.yml` and `kani-arms.yml`
-do not run on a pull request, so a red run is easy to miss. Each opens an issue when it goes red,
-and does not open a second while that issue is open. The same change hash-pins the existing
-`pyyaml==6.0.3` installs in `.github/workflows/ci.yml` (the plain `pip install` lines and the
-`--user` lines), recording the wheel hash it pins. A substituted wheel must not satisfy the version
-pin. No other dependency moves in that change.
-
 ### Track 5: closing the known limitations
 
 

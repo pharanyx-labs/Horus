@@ -378,10 +378,10 @@ Currently **108 of 108** implemented syscalls are covered, and **0** are listed 
 ## CI
 
 
-`.github/workflows/ci.yml` defines **143** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target) and the nightly Kani control arms (`kani-arms.yml`) the total is below: **147** jobs, **156** contexts, counted by `tools/check_ci_gating.py`.
+`.github/workflows/ci.yml` defines **143** jobs, run on every push and pull request; most are sharded runs of the gates above. With CodeQL, the scheduled ruleset audit, the nightly fuzzing (`fuzz.yml`, one context per target), the nightly Kani control arms (`kani-arms.yml`) and the nightly compare timing (`ct-timing.yml`) the total is below: **148** jobs, **157** contexts, counted by `tools/check_ci_gating.py`.
 
 `.github/ci-gating.yml` classifies every job as gating or exempt with a written reason, and the `ci-gating` job fails on a job in neither list. The branch ruleset requires two checks: `gates`, which needs every gating job and passes only if each succeeded (skipped or cancelled counts as failed), and CodeQL.
-The set is **147 gating contexts and 9 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms` and `ruleset-audit` (both run on a schedule, never on a pull request). `ruleset-audit` also checks that every workflow GitHub runs on the repository is a file in the tree or recorded, with its reason, in `.github/injected-workflows.yml`, and that one recorded as stopped has not run again (`tools/check_injected_workflows.py`).
+The set is **147 gating contexts and 10 reasoned exemptions**: `fuzz` (seven targets, ten minutes each, nightly; a crash fails it, but it never runs on a pull request), `kani-arms`, `ruleset-audit` and `ct-timing` (each runs on a schedule, never on a pull request). `ct-timing` times the password compare and the AEAD tag compare and fails if that clock cannot separate a planted variable-time compare of the same length. It does not show the primitives are constant-time. `ruleset-audit` also checks that every workflow GitHub runs on the repository is a file in the tree or recorded, with its reason, in `.github/injected-workflows.yml`, and that one recorded as stopped has not run again (`tools/check_injected_workflows.py`).
 
 The jobs that are not boot tests:
 
@@ -390,7 +390,7 @@ The jobs that are not boot tests:
 | `ci-gating` | Every CI job is classified as gating or exempted (with a reason) |
 | `gates` | All required gates passed |
 | `installer-accounts` | An installed machine has two accounts and either one boots it (S76) |
-| `invariants` | Every security property is bound to a witness that exists, and the positive-boot census matches the table |
+| `invariants` | Every security property is bound to a witness that exists, the positive-boot census matches the table, and the password and AEAD compares are the constant-time ones |
 | `unsafe-safety` | Every unsafe in the security core states the caller's obligations |
 | `apt-hardening` | No build depends on a repository this project does not use, and no stalled download can hold a job |
 | `doc-claims` | Every documented count matches the tool that derives it |

@@ -387,6 +387,14 @@ jobs:
         run: python3 tools/check_positive_boot.py
       - name: Falsify the positive-boot census
         run: ./tools/test_check_positive_boot.sh
+      # Roadmap 4.20. The password hash compare and the AEAD tag compare
+      # are the constant-time compares. A memcmp, an early return, or a
+      # slice equality on either path fails the job. Limitation 5.4 stays
+      # open: this does not audit the primitives.
+      - name: The password and AEAD compares are the constant-time ones
+        run: python3 tools/check_ct_compare.py
+      - name: Falsify the constant-time compare check
+        run: ./tools/test_check_ct_compare.sh
 
   unsafe-safety:
     name: "Every unsafe in the security core states the caller's obligations"

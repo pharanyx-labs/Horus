@@ -433,3 +433,14 @@ advisory:
     how a change made in the GitHub UI is caught, and a control that can be
     removed silently is the defect [C-6] described. It fails loudly if its GitHub App
     credential is unconfigured rather than skipping.
+
+  ct-timing: >-
+    Schedule-only (ct-timing.yml: nightly cron plus workflow_dispatch), so it
+    never runs on a pull request and has no conclusion to gate one with. It
+    times the password compare and the AEAD tag compare, an early mismatch
+    against a late one, and it fails if a planted variable-time compare of
+    the same length does not separate on that clock. A coarse host timer is
+    not a proof the primitives are constant-time. Limitation 5.4 stays open.
+    The per-PR half is tools/check_ct_compare.py in the required invariants
+    job. Listed here so that deleting it trips ci-gating rather than passing
+    quietly.

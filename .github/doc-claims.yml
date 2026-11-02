@@ -1004,3 +1004,11 @@ forbidden:
       reaching somebody else's conclusions. Anchored on the table row rather
       than on the words, which appear legitimately in the two rows beneath it.
       Kept on ONE LINE because this checker matches line by line.
+
+  - pattern: 'queued as roadmap 4\.20|The check that can land first is roadmap 4\.20|The check that can land without the decision is roadmap 4\.20'
+    reason: >-
+      Roadmap 4.20 landed the call-graph check and the nightly timing run.
+      Those sentences said the check was still queued, or that it was the
+      check which could land before the cryptography decision. Limitation 5.4
+      stays open. Putting the queue wording back would say the gate does not
+      exist. Kept on ONE LINE because this checker matches line by line.

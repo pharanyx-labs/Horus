@@ -1,0 +1,53 @@
+# Nightly timing of the password compare and the AEAD tag compare.
+#
+# Roadmap 4.20. The merge path is tools/check_ct_compare.py, in the required
+# invariants job: a memcmp, an early return, or a slice equality on either
+# path fails the pull request. This run is the other half. It times the real
+# compares, an early mismatch against a late one, and it fails if a planted
+# variable-time compare of the same length does not separate on this clock.
+#
+# A coarse host timer is not a proof that rust_ct_eq or tags_equal is
+# constant-time. Limitation 5.4 stays open. The primitives are not audited
+# here and they are not replaced.
+#
+# Not a merge gate. It never runs on a pull request, so it has no conclusion
+# to gate one with. Classified in .github/ci-gating.yml so that deleting it
+# trips ci-gating rather than passing quietly. A missing compiler is a
+# failure, not a skip. A red run is not retried until it happens to pass.
+
+name: Constant-time timing
+
+on:
+  schedule:
+    - cron: '15 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ct-timing
+  cancel-in-progress: false
+
+jobs:
+  ct-timing:
+    name: Time the password and AEAD compares
+    runs-on: ubuntu-latest
+    # Backstop, not a budget. The release test build is the slow part.
+    # The measurement itself is seconds.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Time the compares, and require the planted one to separate
+        run: |
+          set -euo pipefail
+          # An ignored test is skipped by the required rust job's
+          # `cargo test --release`. This step asks for it by name. A filter
+          # that matches nothing exits 0, so the markers are the evidence
+          # the test ran. No marker is a skip, and a skip is a failure.
+          cargo test --manifest-path rust/Cargo.toml --release -- --ignored --nocapture ct_timing \
+            2>&1 | tee /tmp/ct-timing.log
+          grep -q 'ct-timing: planted variable-time compare separated' /tmp/ct-timing.log
+          grep -q 'ct-timing: password compare held' /tmp/ct-timing.log
+          grep -q 'ct-timing: aead compare held' /tmp/ct-timing.log

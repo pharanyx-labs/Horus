@@ -791,10 +791,14 @@ void h_fork(struct interrupt_frame64 *r) {
      * smoke-sched-budget's forking counter fast enough to spend its region; the
      * fault report on COM3 named cr3=0x20D000 against the task's own.
      * FORK_NOMEM_KEEPS_KCR3=1 drops the restore, for the control arm of
-     * smoke-captest. */
+     * smoke-captest. The pending budget switch is what stops a tick that landed
+     * in this syscall from reloading the caller's own root on the way out and
+     * hiding the slip from ring3_cr3_check (S156). */
     if (tasks[child].state == 0) {
 #ifndef FORK_NOMEM_KEEPS_KCR3
         if (caller_cr3 != kcr3) __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
+#else
+        sched_cr3_slip_pending(parent);
 #endif
         spawn_stage_release();
         r->rax = (uint64_t)(uint32_t)SYS_ERR_NOMEM;

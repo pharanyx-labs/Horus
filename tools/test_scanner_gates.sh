@@ -61,6 +61,15 @@ arm C1 caught cppcheck 'int f(void) { *(volatile int *)0 = 1; return 0; }'
 
 arm C3 caught cppcheck 'int f(void) { int x; return x; }'
 
+# Both ids of the same finding: comparePointers on 2.13, subtractPointers
+# on 2.17. A global suppression of either name would let this through on
+# the version that uses that name, so the plant is the subtraction itself.
+arm C4 caught cppcheck 'int f(void) {
+  extern unsigned char a[];
+  extern unsigned char b[];
+  return (int)(b - a);
+}'
+
 arm C2 clean cppcheck 'int f(void) { return 1; }'
 
 arm F1 caught flawfinder '#include <stdio.h>

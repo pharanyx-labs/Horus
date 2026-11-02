@@ -400,6 +400,14 @@ void ensure_tpm_tis_mapped(uint64_t *root_pml4);
 /* Drive the TPM-sealed KEK end-to-end over the vdisk (roadmap 2.2 stage 3). */
 void storage_tpm_kek_selftest(void);
 #endif
+#ifdef MEASURED_SEAL_SELFTEST
+/* A forced seal failure is refused, or, under the control arm, ignored (S157). */
+void storage_measured_seal_selftest(void);
+#endif
+#ifdef MEASURED_ABSENT_SELFTEST
+/* A persistent format with no TPM sets measured_absent, and the survey says so. */
+void storage_measured_absent_selftest(void);
+#endif
 
 /* Floor keeps 16 MiB *usable* after the base reserves (staging, RAM vdisk,
  * untyped arena), so even a tiny E820 pool still boots with the historical
@@ -1237,6 +1245,15 @@ struct storage_info {
     uint64_t esp_bytes;      /* the image's size as the boot loader reported it    */
     uint8_t  esp_hash8[8];   /* the first 8 bytes of the SHA-256 the kernel took   */
     uint8_t  esp_pin8[8];    /* the first 8 bytes of the pin it was compared with  */
+    /* Measured boot, as a fact about this machine and about the mounted volume
+     * (S157). tpm_present is the machine. The other three are the mounted
+     * volume, and they are zero when nothing is mounted. init holds
+     * CAP_STORAGE_FORMAT and says them at every login. The shell is not given
+     * that capability, and these fields are not a reason to give it one. */
+    uint32_t tpm_present;       /* 1 if a TPM answered at boot                     */
+    uint32_t volume_tpm_mode;   /* the mounted volume's tpm_mode, else 0          */
+    uint32_t volume_unsealed;   /* 1 if that volume was left unencrypted          */
+    uint32_t measured_absent;   /* 1 if that volume was formatted with no TPM     */
 };
 
 /* Carve up the arena and publish the two boot regions. Called from kernel_main
@@ -2479,10 +2496,16 @@ typedef struct fs_superblock {
      *
      * `rollback_anchored` records whether the volume was formatted with an
      * anchor at all. A volume formatted on a machine with no TPM has none, and
-     * says so rather than pretending: see docs/LIMITATIONS.md. */
+     * says so rather than pretending: see docs/LIMITATIONS.md.
+     *
+     * `measured_absent` is that same fact for the measurement (S157): 1 when a
+     * persistent volume was formatted with no TPM. It is the low byte of the
+     * padding that used to follow `rollback_anchored`, so a volume written
+     * before it existed reads 0 and its root hash does not change. */
     uint64_t rollback_gen;
     uint32_t rollback_anchored;
-    uint32_t _rollback_pad;
+    uint8_t  measured_absent;
+    uint8_t  _rollback_pad[3];
 } fs_superblock_t;
 _Static_assert(sizeof(fs_superblock_t) <= BLOCK_SIZE,
                "fs_superblock must fit in one block");

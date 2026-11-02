@@ -51,7 +51,7 @@ The recommendation is the one the route is written around; it is not the decisio
 |---|---|---|---|---|
 | Filesystem | Accounts as files, then exec by capability | 2.11 step 3, 5.4 | 1.23 | |
 | Console | Job control: stopping and resuming the foreground program | 2.3 job control | | |
-| Boot | Measured boot by default, rollback anchoring | 5.6, 5.7 | 2.9, 1.12 | |
+| Boot | Rollback anchoring | 5.7 | 1.12 | |
 | Supply chain | Verifiable releases, then updates without a lockout | 4.5, 4.4, 4.11, then 5.8 | 5.3, 2.9a | |
 | SMP | Timers as notifications | 2.2 | | |
 | Memory | Reclaimable kernel memory | 5.9 | 2.5, 2.3 | |
@@ -146,7 +146,7 @@ controller is identified and the drive answers IDENTIFY), USB through xHCI (and 
 on machines with no PS/2 emulation), and a framebuffer server.
 
 **2.7a ⬜ Evict the in-kernel services [F-2.7a].** `.github/ring0-classification.yml` (S87) measures
-the ring-0 `service` class at about 6,000 code lines beside a 13,354-line core: `storage.c` (the
+the ring-0 `service` class at about 6,000 code lines beside a 13,360-line core: `storage.c` (the
 encrypted store and the on-disk filesystem), `kusers.c` (accounts and password hashing), the loader
 and spawn path, `crypto.c` and `syscall_fs.c`, and the IDE, SD and eMMC drivers sit in ring 0 too.
 The drivers leave by [`design/ring3-storage.md`](design/ring3-storage.md), storage with 2.10 phase
@@ -253,11 +253,6 @@ become a required check until it has stayed quiet, and a silent skip is a failur
 `EXEC`, with `fs_server` supplying the bytes through it; `SYS_SPAWN_IMAGE` then needs a capability no
 session holds. A compiler's output still runs, from a home the policy grants `EXEC`. Witness: a
 session holding a readable, non-`EXEC` file cannot run it by either route.
-
-**5.6 ⬜ Measured boot whenever a TPM is present** (2.9). A machine with a TPM fails closed when
-measurement or sealing fails; one without boots, says so at install and at every login, and the
-installer records it. The `MEASURED_BOOT_REQUIRED=1` build stays, for deployments that refuse
-TPM-less machines.
 
 **5.7 ⬜ Rollback anchoring** (1.12). Refuse an unanchored volume on a machine with a TPM unless the
 installer recorded it as deliberate; advance the counter at clean shutdown and at a bounded interval

@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>What is unfinished</title>
-<meta name="description" content="The open limits of Horus: no independent review, an advisory execute right, measured boot off by default, unaudited cryptography, and the rest.">
+<meta name="description" content="The open limits of Horus: no independent review, an advisory execute right, no measurement without a TPM, unaudited cryptography, and the rest.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#e7ece8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#101613" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%231b4f3c'/%3E%3Cpath d='M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4' fill='none' stroke='%23f4f7f5' stroke-width='2.4'/%3E%3Ccircle cx='14.2' cy='12.9' r='3.2' fill='%23f4f7f5'/%3E%3C/svg%3E">
 <meta property="og:title" content="What is unfinished">
-<meta property="og:description" content="The open limits of Horus: no independent review, an advisory execute right, measured boot off by default, unaudited cryptography, and the rest.">
+<meta property="og:description" content="The open limits of Horus: no independent review, an advisory execute right, no measurement without a TPM, unaudited cryptography, and the rest.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Horus">
 <link rel="stylesheet" href="assets/site.css">
@@ -110,8 +110,8 @@
     <p>The kernel bounds the session by the union of its grants. Inside that union, a bug in <code>fs_server</code> is a bug in the policy. A grant names a path. An account that can create a name can choose the object another account receives. Mode bits do not include the administrator. A capability with no grant set, held by system tasks and not by a login, can rename a file under a grant. Roadmap 5.10, after filesystem phase 2, is the kernel-side bound. It waits on decision D8.</p>
   </li>
   <li>
-    <h3 id="bootlim" data-toc="Measured boot and rollback"><span class="id">2.9</span>Measured boot is off unless the build asks for it</h3>
-    <p>A machine with no TPM boots, says so, and does not seal the volume key. Rollback anchoring has the same shape: only a volume formatted on a machine with a TPM gets the counter, the counter moves once per boot, and there is no export to another machine. Roadmap 5.6 and 5.7 close the fail-open cases. A kernel update changes the pin and locks the old seal out until roadmap 5.8 reseals first.</p>
+    <h3 id="bootlim" data-toc="Measured boot and rollback"><span class="id">2.9</span>A machine with no TPM is not measured, and it says so</h3>
+    <p>A machine with a TPM halts when measurement fails and refuses to format a volume it cannot seal. A machine with no TPM still boots, says so at install and at every login, and the volume records that it was created with no TPM. Rollback is still open: an unanchored volume is accepted, the counter moves once per boot, and there is no export to another machine (roadmap 5.7). A kernel update still changes the pin and locks the old seal out until roadmap 5.8 reseals first.</p>
   </li>
   <li>
     <h3 id="crypto" data-toc="Cryptography"><span class="id">5.4</span>The cryptography is unaudited and not shown constant-time</h3>

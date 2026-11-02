@@ -1483,6 +1483,11 @@ static int do_install(void)
         }
         say("INSTALLER: volume of ", line);
     }
+    /* The superblock's own record, read back through the survey rather than
+     * assumed from the machine (S157). One write. A volume formatted with a
+     * TPM present does not say it. */
+    if (after.measured_absent)
+        say("INSTALLER: recorded no TPM", "");
     return 0;
 }
 /* ---- entry -------------------------------------------------------------- */
@@ -1800,9 +1805,21 @@ void _start(void)
     }
 
     frame("Installed");
-    int r = para(ROW_BODY, g_unsealed ? "The volume is created and open. It is NOT encrypted."
-                                      : "The volume is created, sealed and open.",
-                 g_unsealed ? C_DANGER : C_OK);
+    /* One sentence, one row. The body is 14 rows and this line sits at the top
+     * of it; a second sentence would be a paragraph the layout gate refuses.
+     * "Sealed" in the TPM sentence means sealed to the measurement. Without a
+     * TPM the volume is still encrypted, and the superblock records that there
+     * was nothing to seal it to (S157). An unsealed volume says that, whether
+     * or not a TPM is present: the operator's choice is the fact that matters. */
+    const char *done = "The volume is created, sealed and open.";
+    uint16_t done_attr = C_OK;
+    if (g_unsealed) {
+        done = "The volume is created and open. It is NOT encrypted.";
+        done_attr = C_DANGER;
+    } else if (!g_si.tpm_present) {
+        done = "Encrypted and open. This machine has no TPM, and that is recorded.";
+    }
+    int r = para(ROW_BODY, done, done_attr);
     r++;
     r = para(r, g_unsealed ? "Two accounts exist:"
                            : "Two accounts exist, and either password opens the disk:", C_TEXT);

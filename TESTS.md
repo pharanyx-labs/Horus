@@ -50,7 +50,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 610 `smoke-*` targets: 255 gates and 355 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 618 `smoke-*` targets: 259 gates and 359 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -186,6 +186,10 @@ There are 610 `smoke-*` targets: 255 gates and 355 control arms. Each row is a g
 | `smoke-rollback-anchor-flag` | A restored volume whose `rollback_anchored` flag was cleared is refused before the anchor is consulted | S70, S143 | `smoke-rollback-anchor-flag-control` |
 | `smoke-irq-policy` | The interrupt state at five named boot milestones matches the stated policy |  |  |
 | `smoke-measured-boot-required` | A `MEASURED_BOOT_REQUIRED` kernel halts when measured boot is unavailable | S12, S85 | `smoke-measured-boot-required-control`, `smoke-measured-boot-required-volume-control` |
+| `smoke-measured-present` | A TPM that answered, and then could not be measured, halts the boot | S157 | `smoke-measured-present-control` |
+| `smoke-measured-seal` | A seal the TPM will not perform does not become a password-only volume | S157 | `smoke-measured-seal-control` |
+| `smoke-measured-absent` | A machine with no TPM still boots, and init says so at login | S157 | `smoke-measured-absent-control` |
+| `smoke-measured-absent-record` | A persistent volume formatted with no TPM records that, and the survey says so | S157 | `smoke-measured-absent-record-control` |
 | `smoke-measured-persist` | Under that policy, a persistent disk that was never sealed is refused | S85 | `smoke-measured-persist-control` |
 | `smoke-measured-persist-sealed` | Under that policy, a disk sealed to the same measurements still opens | S85 |  |
 | `smoke-modules` | Boot modules are provisioned into `/bin` and run from the filesystem, and the manual is unpacked from its archive module |  |  |
@@ -400,7 +404,7 @@ The jobs that are not boot tests:
 | `rust` | Rust unit tests + clippy (deny-warnings gate) |
 | `kernel` | Build kernel.elf + bootable ISO (x86_64). The default build's warnings match `.github/warning-baseline.txt` and may only shrink, and a syscall or interrupt path stays within the kernel stack |
 | `altconfigs` | Build alternate configs (each configuration) |
-| `measured-boot-required` | Measured boot can be required, and then an unmeasured boot does not proceed |
+| `measured-boot-required` | Measured boot fails closed when a TPM is present, and can be required of a machine without one |
 | `defect-flags` | Every boot states which defect flags built it (and a flag change forces a rebuild) |
 | `ksp-guard` | A bogus resume %rsp is refused where it is produced (G-9) |
 | `syscall-coverage` | Which syscall handlers a test actually enters is decided, not drifting |
@@ -442,7 +446,7 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 158 properties name a witness that resolves. The same job checks
+currently **empty**: all 159 properties name a witness that resolves. The same job checks
 that the rows witnessed only by a positive boot are exactly `.github/positive-boot.yml`.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per

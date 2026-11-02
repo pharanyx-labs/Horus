@@ -899,7 +899,46 @@ static void session_open(int sh, struct sess_reply *rep) {
     rep->g = sg.g;
 }
 
+/* Measured boot, said at every login (S157).
+ *
+ * The shell is not told. The survey answers to CAP_STORAGE_FORMAT, which init
+ * holds and the shell must not: a banner is not a reason to grant it
+ * (userspace/shell.c). Asked again here rather than reused from the boot
+ * survey, because the installer may have formatted a volume since then, and a
+ * relaunch after logout is another login.
+ *
+ * A machine with no TPM says so. A persistent volume that is encrypted and not
+ * sealed to a measurement says so, and one the format recorded as created with
+ * no TPM says that too. The ephemeral store is not a volume anyone installed,
+ * so those two lines are not said for it. MEASURED_BOOT_UNSAID is the arm: the
+ * fact is replaced by one line that names the omission, and the volume lines
+ * are not said either. */
+static void say_measured_boot(void) {
+    struct storage_info si;
+    for (unsigned z = 0; z < sizeof(si); z++) ((char *)&si)[z] = 0;
+    if (sys_storage_info(&si) != 0) return;
+#ifdef MEASURED_BOOT_UNSAID
+    report("init: measured-boot absence went unsaid\n");
+    return;
+#else
+    if (!si.tpm_present)
+        report("init: this machine has no TPM; measured boot was not done\n");
+    /* `present` is a real disk. The ephemeral vdisk is mounted and is not
+     * reported as present, so the two lines below are not said for it. */
+    if (!si.present || !si.recognised) return;
+    if (si.volume_tpm_mode == 0 && !si.volume_unsealed)
+        report("init: this volume is not sealed to a measurement\n");
+    if (si.measured_absent)
+        report("init: the install recorded that this volume was created with no TPM\n");
+#endif
+}
+
 static int launch_shell(void) {
+    /* Before the shell is spawned, so the fact is on the wire at every login
+     * including the one after a logout, and before the shell can write. After
+     * console_boot_done, so it is session output: the last stamped line of an
+     * ordinary boot stays "init: starting, launching shell". */
+    say_measured_boot();
     cspace_snapshot();
     int sh = sys_spawn_named("shell");
     if (sh <= 0) return -1;

@@ -140,11 +140,15 @@ wherever it is mounted: mounting `dev_server` at `/dev` does not confine it to `
 Confinement is each server's job. The table is per-task, so a child inherits no mounts, and it
 holds at most `HVFS_MAX_MOUNTS` (4).
 
-### 2.9 Measured boot is off unless the build asks for it
+### 2.9 A machine with no TPM is not measured, and it says so
 
-On a machine with no TPM (and under QEMU without swtpm) boot proceeds: nothing is measured and the
-volume key is not sealed, so `SECURITY.md` S11 and S12 do not apply. The boot log says so. A build
-with `MEASURED_BOOT_REQUIRED=1` halts when measured boot is unavailable and refuses a persistent
+A machine with a TPM halts if measurement fails, and refuses to format a volume it cannot seal
+(`SECURITY.md` S157, `make smoke-measured-present`, `make smoke-measured-seal`). A machine with no
+TPM still boots. Nothing is measured and the volume key is not sealed, so S11 and S12 do not apply
+to it. `init` says so at every login, the installer says so when it finishes, and a persistent
+volume records that it was created with no TPM. Rollback anchoring is still open (1.12, roadmap
+5.7): an unanchored volume is still accepted, and the counter still moves once per boot. A build
+with `MEASURED_BOOT_REQUIRED=1` still halts when no TPM is present and still refuses a persistent
 volume that was never sealed (S85, `make smoke-measured-persist`). The default build does not set
 it. CI requires swtpm for every TPM gate (`SWTPM_REQUIRED=1`), so those gates cannot pass by
 measuring nothing.

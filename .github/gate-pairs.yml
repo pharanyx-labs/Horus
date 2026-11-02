@@ -298,9 +298,13 @@ control_arms:
   smoke-kstack-reuse-control: smoke-kstack-reuse
   smoke-libhorus-retry-control: smoke-libhorus
   smoke-libhorus-strncpy-control: smoke-libhorus
+  smoke-measured-absent-control: smoke-measured-absent
+  smoke-measured-absent-record-control: smoke-measured-absent-record
   smoke-measured-boot-required-control: smoke-measured-boot-required
   smoke-measured-boot-required-volume-control: smoke-measured-boot-required
   smoke-measured-persist-control: smoke-measured-persist
+  smoke-measured-present-control: smoke-measured-present
+  smoke-measured-seal-control: smoke-measured-seal
   smoke-net-decode-control: smoke-net
   smoke-net-busmaster-control: smoke-net
   smoke-net-iommu-control: smoke-net
@@ -563,8 +567,12 @@ gates:
   - smoke-kstack-reuse
   - smoke-libhorus
   - smoke-mapphys
+  - smoke-measured-absent
+  - smoke-measured-absent-record
   - smoke-measured-boot-required
   - smoke-measured-persist
+  - smoke-measured-present
+  - smoke-measured-seal
   - smoke-meta-evict
   - smoke-measured-persist-sealed
   - smoke-modules

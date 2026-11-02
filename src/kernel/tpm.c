@@ -30,9 +30,12 @@
  * not match (tools/mkbootimg.sh, grub.cfg), so the pin makes the kernel
  * unforgeable and PCR[4] makes the pin unremovable. `SECURITY.md` **S92**.
  *
- * Best-effort: if no TPM is discovered the whole thing is a no-op and boot
- * continues. A machine legitimately without a TPM is not a failure; a store that
- * later opts into TPM sealing is what makes the measurement load-bearing.
+ * A machine with no TPM is not a failure: boot continues, and init says so
+ * (S157, docs/LIMITATIONS.md 2.9). A TPM that is present and then cannot be
+ * measured is a failure: the boot halts, because a seal taken afterwards would
+ * bind nothing. MEASURED_BOOT_REQUIRED is the stricter policy, which also
+ * refuses a machine with no TPM. MEASURED_BOOT_FAIL_OPEN restores the old
+ * continue, and is the control arm.
  *
  * Transport reference: TCG PC Client Platform TPM Profile (PTP), TIS/FIFO.
  */
@@ -670,17 +673,11 @@ static void print_hex32(const uint8_t *b) {
     }
 }
 
-/* Measured boot did not happen. In the default build that is a fact to report:
- * this kernel is expected to run on machines with no TPM, and `docs/LIMITATIONS.md`
- * §2.9 says so. Under MEASURED_BOOT_REQUIRED it is fatal.
- *
- * The distinction the flag draws is between "the property does not apply here"
- * and "the property applies and was not obtained". Without the flag those two
- * are the same log line -- `tpm: no TPM present, measured boot skipped` -- which
- * is honest and, as §2.9 put it, easy to read past. A deployment that requires
- * measured boot needs the second case to stop the machine, because everything
- * downstream (S11, S12, the sealed volume key) is a claim about a measurement
- * that was never taken.
+/* No TPM, so measured boot does not apply. The default build reports that and
+ * continues: this kernel is expected to run on machines with no TPM, and
+ * docs/LIMITATIONS.md 2.9 says so. MEASURED_BOOT_REQUIRED is the deployment
+ * that refuses those machines. The panic text is what
+ * smoke-measured-boot-required-control matches, so it stays this string.
  *
  * Halting rather than continuing degraded is the same choice entropy_init makes
  * about an unseeded CSPRNG, and "PANIC" is in the smoke harness's FAULT_RE, so a
@@ -696,6 +693,32 @@ static void measured_boot_unavailable(const char *why) {
 #endif
 }
 
+/* A TPM answered, and the measurement still did not happen (S157).
+ *
+ * That is a different fact from "no TPM". The seal policy binds PCR[4], which
+ * this kernel does not extend. Continuing would let a later format seal to an
+ * unextended bank, or skip the seal and write a password-only volume, and the
+ * boot log would still be able to say measured boot had been attempted. The
+ * halt is the refusal. MEASURED_BOOT_FAIL_OPEN is the old behaviour, kept as
+ * the control arm: it continues, and it says that it ignored the failure, so a
+ * gate can tell a halt that did not happen from a boot that never tried.
+ *
+ * The no-TPM path does not come here. It uses measured_boot_unavailable, whose
+ * panic text the existing policy gate matches. */
+static void measured_boot_fail(const char *why) {
+#ifdef MEASURED_BOOT_FAIL_OPEN
+    println("tpm: measured boot failure ignored; continuing");
+    print("tpm: measured boot failure was (");
+    print(why);
+    println(")");
+#else
+    print("PANIC: a TPM is present but measured boot failed (");
+    print(why);
+    println("); halting");
+    for (;;) __asm__ volatile ("cli; hlt");
+#endif
+}
+
 void tpm_measured_boot(void) {
     if (!tpm_present()) {
         println("tpm: no TPM present, measured boot skipped");
@@ -704,9 +727,19 @@ void tpm_measured_boot(void) {
     }
     if (!tpm_request_locality()) {
         println("tpm: measured boot FAILED (locality)");
-        measured_boot_unavailable("locality");
+        measured_boot_fail("locality");
         return;
     }
+
+#ifdef MEASURED_BOOT_INJECT_FAIL
+    /* The failure the halt exists for, forced, so the gate does not have to
+     * wait for a TPM that is actually broken. After locality: the device
+     * answered, which is the whole of "a TPM is present". */
+    println("tpm: measured boot FAILED (injected)");
+    measured_boot_fail("injected");
+    tpm_release_locality();
+    return;
+#endif
 
     /* THE KERNEL CHECKS THAT THE THING IT RELIES ON ACTUALLY HAPPENED.
      *
@@ -715,33 +748,37 @@ void tpm_measured_boot(void) {
      * measured something: on a platform whose firmware ignores the TPM, PCR[4]
      * reads as never-extended, the policy binds it to all-zero, and an
      * attacker's boot chain presents the same all-zero value. The binding would
-     * then be decorative -- present in the policy, worth nothing -- which is the
-     * "safe by circumstance rather than by property" shape this tree keeps
-     * finding.
+     * then be decorative, present in the policy and worth nothing.
      *
-     * So it is asked rather than assumed. Under MEASURED_BOOT_REQUIRED an
-     * unextended PCR[4] is fatal: a deployment that requires measured boot is
-     * told its platform cannot provide it, instead of running with a seal that
-     * binds nothing. Without the flag it is reported and the boot continues,
-     * which is the same bargain the no-TPM case already makes.
+     * So it is asked rather than assumed. An unreadable or unextended PCR[4]
+     * halts (S157): a sealed volume would be bound to nothing. This used to
+     * fall through into the measurement and could still print "measured boot
+     * OK". It returns instead, including under MEASURED_BOOT_FAIL_OPEN, so that
+     * line cannot be printed after the failure.
      *
      * Deliberately read BEFORE measure_kernel_identity(): this kernel only ever
-     * extends 8 and 9, so PCR[4] cannot change underneath us -- but reading it
+     * extends 8 and 9, so PCR[4] cannot change underneath us, but reading it
      * first keeps the check about the firmware and not about our own ordering. */
     int ok = (tpm_startup() == 0);
     if (ok) {
         uint8_t pcr4[32];
+        const char *pcr_why = 0;
         if (tpm_pcr_read(TPM_PCR_BOOT_IMAGE, pcr4) != 0) {
             println("tpm: could not read PCR[4]; the seal's root of trust is unverified");
-            measured_boot_unavailable("PCR[4] unreadable");
+            pcr_why = "PCR[4] unreadable";
         } else {
             int any = 0;
             for (int i = 0; i < 32; i++) any |= pcr4[i];
             if (!any) {
-                println("tpm: PCR[4] is unextended -- this platform's firmware measured "
+                println("tpm: PCR[4] is unextended; this platform's firmware measured "
                         "no boot image, so a sealed volume would be bound to nothing");
-                measured_boot_unavailable("PCR[4] unextended");
+                pcr_why = "PCR[4] unextended";
             }
+        }
+        if (pcr_why) {
+            measured_boot_fail(pcr_why);
+            tpm_release_locality();
+            return;
         }
     }
 
@@ -751,7 +788,7 @@ void tpm_measured_boot(void) {
     if (!ok) {
         println("tpm: measured boot FAILED (transport)");
         tpm_release_locality();
-        measured_boot_unavailable("transport");
+        measured_boot_fail("transport");
         return;
     }
 
@@ -760,7 +797,7 @@ void tpm_measured_boot(void) {
         tpm_pcr_read(TPM_PCR_BOOT_MODULES,   pcr9) != 0) {
         println("tpm: measured boot FAILED (readback)");
         tpm_release_locality();
-        measured_boot_unavailable("PCR readback");
+        measured_boot_fail("PCR readback");
         return;
     }
 

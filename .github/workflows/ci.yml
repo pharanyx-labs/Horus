@@ -619,7 +619,10 @@ jobs:
       - name: The default build's warnings may shrink and may not grow
         run: |
           git fetch --depth=1 origin main
-          if git cat-file -e FETCH_HEAD:.github/warning-baseline.txt; then
+          # ls-tree is quiet when main has no baseline. cat-file -e on a path
+          # that exists in the worktree but not in that commit prints a fatal
+          # line (git 2.56) and is the wrong signal for --establish.
+          if git ls-tree --name-only FETCH_HEAD -- .github/warning-baseline.txt | grep -q .; then
             git show FETCH_HEAD:.github/warning-baseline.txt > /tmp/warning-baseline-parent.txt
             python3 tools/check_warning_ratchet.py kernel-warnings.txt \
               --baseline .github/warning-baseline.txt \

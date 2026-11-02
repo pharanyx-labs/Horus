@@ -149,6 +149,12 @@ w_missing_parent() {
   printf '%s\n' --parent "$(pwd)/no-such-parent" > args
 }
 
+w_empty_ok() {
+  : > log
+  printf '%s\n' '# none' > base
+  printf '%s\n' 'ceiling: 0' >> base
+}
+
 echo "Falsifying tools/check_warning_ratchet.py:"
 
 arm W1 pass "the log and the baseline are the same set" w_same "ceiling holds"
@@ -163,6 +169,7 @@ arm W9 pass "the compiler quoted the function with locale quotes" w_quotes "ceil
 arm W10 fail "a warning that names no function" w_nameless "names no function"
 arm W11 fail "an empty baseline while the log has a warning" w_empty_base "new warning"
 arm W12 fail "a parent path that is not there" w_missing_parent "is missing"
+arm W13 pass "an empty log and a ceiling of zero, which is the default build" w_empty_ok "ceiling holds"
 
 echo
 echo "$PASSES passed, $FAILS failed"

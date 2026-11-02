@@ -4,10 +4,13 @@
 # recorded. The ceiling is the number of rows. It shrinks when a row leaves
 # because the compiler stopped emitting it. It does not grow: the copy on main
 # is the parent, and a row that is not in the parent fails the build.
-# The kernel is not built with -Werror. Deleting one of these functions to
-# silence the line is not how a change goes green.
+# The kernel is not built with -Werror. Deleting a function to silence a
+# line is not how a change goes green.
+#
+# The default build passes -DSMP (SMP ?= 1). smp_check_in, smp_park_refused
+# and smp_checkin_instrument are called on that build. They are unused, and
+# the compiler warns, only when a build drops -DSMP. A CFLAGS override does
+# that, because -DSMP is appended after the base flags. That build is not
+# this ratchet, and the functions stay.
 
-ceiling: 3
-src/kernel/smp.c -Wunused-function smp_check_in
-src/kernel/smp.c -Wunused-function smp_checkin_instrument
-src/kernel/smp.c -Wunused-function smp_park_refused
+ceiling: 0

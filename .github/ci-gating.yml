@@ -452,3 +452,12 @@ advisory:
     opens nothing. Listed here so that deleting it trips ci-gating rather
     than passing quietly. The per-PR half is tools/check_nightly_issue.py in
     the required invariants job.
+
+  clang-nightly: >-
+    Schedule-only (clang-nightly.yml: nightly cron plus workflow_dispatch), so
+    it never runs on a pull request and has no conclusion to gate one with.
+    It builds the kernel and the userspace that kernel links, with Clang, and
+    fails if the compiler is missing or the link produces no kernel.elf. It
+    does not gate a merge until it has stayed linkable. The per-PR half is
+    tools/check_clang_nightly.py in the required invariants job. Listed here
+    so that deleting it trips ci-gating rather than passing quietly.

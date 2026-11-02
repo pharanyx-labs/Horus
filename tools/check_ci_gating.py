@@ -68,11 +68,15 @@ except ImportError:
 # nightly-issue.yml (roadmap 4.23) likewise: it runs after Fuzz or Kani
 # control arms completes, never on a pull request. A failure opens one issue.
 # Dropping it must be loud.
+# clang-nightly.yml (roadmap 4.22) likewise: schedule-only Clang link of the
+# kernel and the userspace it includes. A missing compiler fails the job.
+# Dropping it must be loud. It does not gate a merge.
 WORKFLOWS = [".github/workflows/ci.yml", ".github/workflows/codeql.yml",
              ".github/workflows/ruleset-audit.yml", ".github/workflows/fuzz.yml",
              ".github/workflows/kani-arms.yml",
              ".github/workflows/ct-timing.yml",
-             ".github/workflows/nightly-issue.yml"]
+             ".github/workflows/nightly-issue.yml",
+             ".github/workflows/clang-nightly.yml"]
 CI_YML = ".github/workflows/ci.yml"
 GATING_YML = ".github/ci-gating.yml"
 RULESET = "repos/pharanyx-labs/Horus/rulesets/21815299"

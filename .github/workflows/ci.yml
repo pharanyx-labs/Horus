@@ -406,6 +406,13 @@ jobs:
         run: python3 tools/check_nightly_issue.py
       - name: Falsify the nightly issue check
         run: ./tools/test_nightly_issue.sh
+      # Roadmap 4.22. The nightly Clang link is not a merge gate. A workflow
+      # that skips, or that passes when the compiler was not installed, fails
+      # this job. The link itself runs on the schedule.
+      - name: The Clang nightly fails closed
+        run: python3 tools/check_clang_nightly.py
+      - name: Falsify the Clang nightly check
+        run: ./tools/test_check_clang_nightly.sh
 
   unsafe-safety:
     name: "Every unsafe in the security core states the caller's obligations"

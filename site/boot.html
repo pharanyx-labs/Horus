@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Trusted boot</title>
-<meta name="description" content="How a Horus boot measures what it loads, and the cases where measurement is off unless the build asks for it.">
+<meta name="description" content="How a Horus boot measures what it loads, and what a machine without a TPM does instead.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#e7ece8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#101613" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%231b4f3c'/%3E%3Cpath d='M4.5 14.2C9 9.6 15 8.6 20.5 9.8C23.4 10.5 25.8 12 28.5 13.4M4.5 14.2C9 17.8 15.5 18.4 22.5 14.4' fill='none' stroke='%23f4f7f5' stroke-width='2.4'/%3E%3Ccircle cx='14.2' cy='12.9' r='3.2' fill='%23f4f7f5'/%3E%3C/svg%3E">
 <meta property="og:title" content="Trusted boot">
-<meta property="og:description" content="How a Horus boot measures what it loads, and the cases where measurement is off unless the build asks for it.">
+<meta property="og:description" content="How a Horus boot measures what it loads, and what a machine without a TPM does instead.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Horus">
 <link rel="stylesheet" href="assets/site.css">
@@ -101,7 +101,7 @@
   </li>
   <li>
     <h3 id="unseal" data-toc="Unsealing">Without a TPM, the default build says so and continues</h3>
-    <p>Nothing is measured and the volume key is not sealed. The boot log says so. <code>MEASURED_BOOT_REQUIRED=1</code> halts instead, and refuses a persistent volume that was never sealed. CI runs the TPM gates with <code>SWTPM_REQUIRED=1</code>, so those gates cannot pass by measuring nothing.</p>
+    <p>Nothing is measured and the volume key is not sealed. The boot log says so, and so does init at every login. A machine with a TPM halts if the measurement fails, and a format that cannot seal the volume is refused. <code>MEASURED_BOOT_REQUIRED=1</code> also halts when no TPM is present, and refuses a persistent volume that was never sealed. CI runs the TPM gates with <code>SWTPM_REQUIRED=1</code>, so those gates cannot pass by measuring nothing.</p>
   </li>
   <li>
     <h3 id="init" data-toc="init">init is the only delegation root</h3>

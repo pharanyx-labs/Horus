@@ -8,9 +8,9 @@
  * boot-module manifest (audit A4) — into the TPM's PCRs, so the boot state can
  * be attested at runtime rather than only checked at build time.
  *
- * Best-effort by design: on a machine with no TPM (the default, and the plain
- * release horus.iso) the whole subsystem is a no-op and boot continues normally.
- * A dedicated CI gate (`make smoke-tpm`) always attaches an emulated TPM and
+ * On a machine with no TPM (the plain release horus.iso) nothing is measured
+ * and boot continues; init says so (S157). A TPM that is present and cannot be
+ * measured halts the boot. `make smoke-tpm` attaches an emulated TPM and
  * asserts the measured PCRs equal the values recomputed from the reproducible
  * manifest on the host.
  *
@@ -96,11 +96,11 @@ int tpm_nv_counter_increment(void);
 int tpm_nv_counter_provision(uint64_t *out);
 
 /* Discover the TPM, ensure it is started, and extend the reproducible boot hash
- * chain into PCR[8]/PCR[9]. Reads the two PCRs back and prints them on the
- * serial console as a `[tpm] PCR8=<hex> PCR9=<hex>` marker the smoke test keys
- * on. Best-effort: prints `[tpm] no TPM present` and returns if none is found,
- * or `[tpm] measured boot FAILED` (without halting) on a transport error. Call
- * once at boot, right after boot_module_verify_all(). */
+ * chain into PCR[8]/PCR[9]. Reads the two PCRs back and prints them. Prints
+ * `tpm: no TPM present, measured boot skipped` and returns if none is found.
+ * A TPM that is present and then fails locality, PCR[4], the extend or the
+ * readback halts (S157), unless MEASURED_BOOT_FAIL_OPEN, which continues and
+ * says so. Call once at boot, right after boot_module_verify_all(). */
 void tpm_measured_boot(void);
 
 #endif /* HORUS_TPM_H */

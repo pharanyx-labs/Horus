@@ -995,6 +995,13 @@ struct storage_info {
     uint64_t esp_bytes;      /* the image's size as the boot loader reported it    */
     uint8_t  esp_hash8[8];   /* the first 8 bytes of the SHA-256 the kernel took   */
     uint8_t  esp_pin8[8];    /* the first 8 bytes of the pin it was compared with  */
+    /* Measured boot (S157). tpm_present is the machine. The other three describe
+     * the mounted volume and are zero when nothing is mounted. Gated on
+     * CAP_STORAGE_FORMAT, the same capability as the rest of this survey. */
+    uint32_t tpm_present;       /* 1 if a TPM answered at boot                     */
+    uint32_t volume_tpm_mode;   /* the mounted volume's tpm_mode, else 0          */
+    uint32_t volume_unsealed;   /* 1 if that volume was left unencrypted          */
+    uint32_t measured_absent;   /* 1 if that volume was formatted with no TPM     */
 };
 
 /* What volume this machine has. CAP_STORAGE_FORMAT + READ at

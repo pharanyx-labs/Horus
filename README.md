@@ -48,7 +48,7 @@ Horus is a research system, and nobody independent has reviewed it.
   sets direction and decides anything that touches the security model.
 - **The checks are extensive, but they are not review.** Every gate is built to fail when the
   defect it guards against is put back; that is evidence, not a second pair of eyes.
-- **Some security limitations are open.** Measured boot is opt-in on a machine without a TPM
+- **Some security limitations are open.** A machine without a TPM is not measured, and it says so
   (2.9), and the cryptography is unaudited (5.4).
 
 [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) is the single authoritative status of every known
@@ -269,8 +269,8 @@ test does not exist or does not run.
 
 | Layer | What it covers |
 |---|---|
-| Security properties | 158 numbered properties, each bound to a witness by `tools/check_invariants.py` |
-| QEMU integration tests | 610 `smoke-*` targets: 255 base gates and 355 control arms |
+| Security properties | 159 numbered properties, each bound to a witness by `tools/check_invariants.py` |
+| QEMU integration tests | 618 `smoke-*` targets: 259 base gates and 359 control arms |
 | Control arms | A build that puts a defect back on purpose; CI requires its gate to go red against it |
 | Kani | 44 bounded proofs over revocation, the ELF validator, user-address checks, the RNG seed gate, the login throttle and page reference counts; each gates every pull request, and each proof's recorded mutation is replayed nightly to show it still fails |
 | Miri | The security core's tests, interpreted for undefined behaviour on every pull request |

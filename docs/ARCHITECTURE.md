@@ -850,10 +850,13 @@ host and CI compares.
 kernel, boot image, command line or module leaves the volume locked (S12). The in-RAM volume's key
 is random and derived with HKDF rather than Argon2id, because there is no password to harden.
 
-A build with `MEASURED_BOOT_REQUIRED=1` halts when measured boot is unavailable and refuses a
-persistent volume that was never sealed (S85); by default a machine without a TPM boots and says
-so. The tests: `smoke-modules-tamper`, `smoke-tpm-tamper`, `smoke-tpm-seal`, `smoke-boot-pin`,
-`smoke-tpm-bootimg` and `smoke-tpm-cmdline`, each against an arm that restores the attack.
+A machine with a TPM halts when that measurement fails, and a format that cannot seal the volume
+key is refused (S157). A build with `MEASURED_BOOT_REQUIRED=1` also halts when no TPM is present
+and refuses a persistent volume that was never sealed (S85). By default a machine without a TPM
+boots and says so, at install and at every login, and the volume records that it was created
+without one. The tests: `smoke-modules-tamper`, `smoke-tpm-tamper`, `smoke-tpm-seal`,
+`smoke-boot-pin`, `smoke-tpm-bootimg`, `smoke-tpm-cmdline`, `smoke-measured-present` and
+`smoke-measured-seal`, each against an arm that restores the attack.
 
 ---
 

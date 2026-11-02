@@ -3404,13 +3404,17 @@ static void do_login(void) {
  *
  * WHAT IS DELIBERATELY ABSENT, and why, so the next person does not re-derive it:
  *
- *   - CPU count, total RAM, TPM presence and whether measured boot engaged are
- *     all kernel facts with no ring-3 surface. Adding one would mean adding a
- *     syscall, which is a capability question and not a decoration question.
+ *   - CPU count and total RAM are kernel facts with no ring-3 surface. Adding
+ *     one would mean adding a syscall, which is a capability question and not a
+ *     decoration question. Whether a TPM is present, and whether the volume was
+ *     sealed to a measurement, are on the storage survey. init holds
+ *     CAP_STORAGE_FORMAT and says them at every login (S157). The shell is not
+ *     given that capability, and a banner line is not a reason to give it one.
  *   - Storage (persistent vs ephemeral) needs SYS_STORAGE_INFO, which answers to
- *     CAP_STORAGE_FORMAT -- a capability only the installer is granted, because
- *     the survey is the first screen of the call that destroys the volume. The
- *     shell is not given it and must not be given it for a banner line.
+ *     CAP_STORAGE_FORMAT. init holds it and lends a copy to the installer,
+ *     because the survey is the first screen of the call that destroys the
+ *     volume. The shell is not given it and must not be given it for a banner
+ *     line.
  *   - The DEFECT FLAGS list is not repeated here. The kernel already prints it
  *     from a string stamped into .build-flags, which forces a rebuild when the
  *     flags change; userspace objects carry no such prerequisite (see the

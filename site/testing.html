@@ -90,9 +90,9 @@
 </header>
 <h2 id="method" data-toc="The rule">A test that cannot fail on the bug it targets is not a witness.</h2>
 <p>Horus has been bitten by gates that passed because they checked the property the author had in mind. The 2026-07 critical finding did that. The rule since is mechanical. <code>.github/gate-pairs.yml</code> pairs each gate with the arm that restores the defect. The arm must go red. A marker the test looks for is one write, so a torn line cannot be counted twice. A boot that dies before the interesting line is not a pass.</p>
-<h3 id="arms" data-toc="Control arms">255 QEMU integration targets, and 355 control arms that must go red</h3>
-<p>Those two figures are derived from <code>.github/gate-pairs.yml</code>. Adding them together and calling the sum "tests" hides which layer you mean. The Makefile names 610 <code>smoke-*</code> targets. The run page states that count in the place the checker reads.</p>
-<h3 id="bound" data-toc="What is bound">158 security properties, and 44 Kani proofs gate a merge</h3>
+<h3 id="arms" data-toc="Control arms">259 QEMU integration targets, and 359 control arms that must go red</h3>
+<p>Those two figures are derived from <code>.github/gate-pairs.yml</code>. Adding them together and calling the sum "tests" hides which layer you mean. The Makefile names 618 <code>smoke-*</code> targets. The run page states that count in the place the checker reads.</p>
+<h3 id="bound" data-toc="What is bound">159 security properties, and 44 Kani proofs gate a merge</h3>
 <p>Every row in <code>SECURITY.md</code> names a witness that exists. <code>tools/check_invariants.py</code> fails the build otherwise. The Kani harnesses are classified in <code>.github/kani-harnesses.yml</code>, and every one of them gates. Miri runs the Rust tests that are in scope, and the scope file says which modules it skips and why. A proof whose nightly arm comes back successful has become vacuous: an assumption ate the inputs that mattered.</p>
 <p>What this does not prove: the kernel as a whole, a refinement down to the C, or the filesystem server. Formal verification is narrow. That is limitation 5.5, and it is open.</p>
 <h2 id="nightly" data-toc="What runs at night">The nightly jobs are real, and they do not block a merge.</h2>

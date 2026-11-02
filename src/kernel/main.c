@@ -976,13 +976,12 @@ void kernel_main(uint32_t mb_info) {
     print_decimal((uint64_t)g_max_tasks);
     print(" provisioned from the kernel untyped reserve\n");
 
-    /* Measured boot (roadmap 2.2): record the reproducible boot hash chain — a
-     * kernel-identity token and the just-verified boot-module manifest — into the
-     * TPM's PCRs, so the boot state can be attested at runtime. Placed right after
-     * paging_init: the TPM MMIO mapping needs the physical allocator and the low
-     * identity map that paging_init installs. Best-effort — a no-op without a TPM,
-     * still long before any userspace (or the store unlock that stages 2-3 gate on
-     * these measurements) exists. */
+    /* Measured boot (roadmap 2.2, S157): record the reproducible boot hash
+     * chain, a kernel-identity token and the just-verified boot-module manifest,
+     * into the TPM's PCRs. Placed here because the TPM MMIO mapping needs the
+     * physical allocator and the low identity map that paging_init installs.
+     * No TPM: say so and continue. A TPM that is present and cannot be measured
+     * halts, still long before any userspace exists. */
     tpm_measured_boot();
 #ifdef PIPE_SELFTEST
     /* Fast in-kernel exercise of the pipe object (roadmap userspace: pipelines).
@@ -1131,6 +1130,16 @@ void kernel_main(uint32_t mb_info) {
     /* Prove the TPM-sealed KEK (roadmap 2.2 stage 3) before storage_init sets up
      * the real vdisk. Boot continues; make smoke-tpm-seal asserts on the marker. */
     storage_tpm_kek_selftest();
+#endif
+#ifdef MEASURED_SEAL_SELFTEST
+    /* Before storage_init, which reformats the vdisk. The marker is the refusal
+     * or, on the control arm, the ignored seal (S157). */
+    storage_measured_seal_selftest();
+#endif
+#ifdef MEASURED_ABSENT_SELFTEST
+    /* Before storage_init, for the same reason. One persistent-shaped format
+     * with no TPM, then the survey, then the disk is wiped for the real boot. */
+    storage_measured_absent_selftest();
 #endif
 #ifndef MINIMAL_SECURE
     /* Storage: probes for an ATA disk (persistent) and falls back to the

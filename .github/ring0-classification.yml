@@ -726,14 +726,19 @@
 # grandparents before its cspace is emptied (the edge-moving itself is in the
 # Rust core, rust_cap_reparent_dying), and the CAP_REPARENT_SKIPPED arm. What a
 # revocation can reach is the capability model, so core.
-# 2026-11-02: 13354 -> 13367, +13, S156. sched_budget_resched_take was
-# switching away while a fork refusal still had the kernel root loaded, so
-# the resume put the task's own root back and ring3_cr3_check never saw the
-# slip. The take now leaves that switch pending until the root is the task's,
-# and the fork refusal asks for the switch on every such return, so a boot
-# where no tick landed in the fork still reaches the epilogue. Which address space a task
-# returns to is the isolation check, so it stays in core.
-core_budget_loc: 13367
+# 2026-11-02: 13354 -> 13360, +6, S157. main.c calls the seal selftest and
+# the absent selftest beside storage_tpm_kek_selftest, before storage_init
+# reformats the vdisk. The selftests themselves are in storage.c (service)
+# and the halt when a present TPM cannot measure is in tpm.c (driver). The
+# calls are boot sequencing, which is why they stay in core.
+# 2026-11-02: 13360 -> 13373, +13, S156 (#610), measured on the sum. A budget
+# reschedule was switching away while a fork refusal still had the kernel root
+# loaded, so the resume put the task's own root back and ring3_cr3_check never
+# saw the slip. The take now leaves that switch pending until the root is the
+# task's, and the fork refusal asks for the switch on every such return.
+# Which address space a task returns to is the isolation check, so it stays
+# in core.
+core_budget_loc: 13373
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

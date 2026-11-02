@@ -134,6 +134,9 @@ DEFECT_FLAGS = \
 	RNG_UNSEEDED_PROBE RNG_UNSEEDED_LEGACY \
 	POSIX_LEGACY_WALK HVFS_DOTDOT_SERVER \
 	MEASURED_BOOT_REQUIRED MEASURED_VOLUME_EXEMPT_NONE MEASURED_VOLUME_UNCHECKED \
+	MEASURED_BOOT_INJECT_FAIL MEASURED_BOOT_FAIL_OPEN \
+	MEASURED_SEAL_INJECT_FAIL MEASURED_SEAL_FAIL_OPEN \
+	MEASURED_ABSENT_UNRECORDED MEASURED_BOOT_UNSAID \
 	LEGACY_SYSCALLS_PRESENT CAP_ENUMERATE_UNGATED CLOCK_TSC_RESOLUTION \
 	IMAGE_HDR_WRITER_SKEW \
 	TASKINFO_WIDE_AUTHORITY WAIT_TCB_UNCHECKED TCB_GENERATION_UNCHECKED APIC_ID_IS_CPU_INDEX SMT_SIBLING_BY_INDEX AP_WAIT_LOOP_COUNT AP_LATE_ADMITTED AP_CHECKIN_LATE AP_CHECKIN_PAST_BOUND SLOT_REUSE_UNCHECKED KSTACK_REUSE_WIDEN DEAD_TASK_RUNS KILL_ASYNC KILL_IPI_WITHHELD GETLINE_SLOT3_FALLBACK CAP_LOOKUP_ASSERT_HANG \
@@ -1664,6 +1667,21 @@ ifeq ($(TPM_KEK_SELFTEST),1)
 CFLAGS  += -DTPM_KEK_SELFTEST
 endif
 
+# Not defect flags. Each builds one boot-time probe and changes no check.
+# MEASURED_SEAL_SELFTEST formats the vdisk with the seal forced and the inject
+# above deciding the result. MEASURED_ABSENT_SELFTEST formats it once as a
+# persistent volume with no TPM and reads the survey. Both run before
+# storage_init and wipe the disk they used. Driven by smoke-measured-seal and
+# smoke-measured-absent-record.
+MEASURED_SEAL_SELFTEST ?= 0
+ifeq ($(MEASURED_SEAL_SELFTEST),1)
+CFLAGS += -DMEASURED_SEAL_SELFTEST
+endif
+MEASURED_ABSENT_SELFTEST ?= 0
+ifeq ($(MEASURED_ABSENT_SELFTEST),1)
+CFLAGS += -DMEASURED_ABSENT_SELFTEST
+endif
+
 # NEWLIB_SELFTEST=1 embeds hello_newlib (newlib + posix + malloc on Horus) and
 # spawns it at boot to verify printf/sprintf/malloc/string ops work end-to-end
 # (prints NEWLIB_SELFTEST: PASS to serial).  Gated off the ship kernel.
@@ -2493,6 +2511,49 @@ endif
 MEASURED_VOLUME_UNCHECKED ?= 0
 ifeq ($(MEASURED_VOLUME_UNCHECKED),1)
 CFLAGS += -DMEASURED_VOLUME_UNCHECKED
+endif
+
+# S157. A present TPM whose measurement fails used to be reported and then
+# ignored. MEASURED_BOOT_INJECT_FAIL forces that failure after the TPM has
+# answered, so the halt does not depend on a TPM that is actually broken.
+# MEASURED_BOOT_FAIL_OPEN is the old continue, and it says that it ignored the
+# failure. Neither is a shipped policy: MEASURED_BOOT_REQUIRED still refuses a
+# machine with no TPM, which is a different fact.
+MEASURED_BOOT_INJECT_FAIL ?= 0
+ifeq ($(MEASURED_BOOT_INJECT_FAIL),1)
+CFLAGS += -DMEASURED_BOOT_INJECT_FAIL
+endif
+MEASURED_BOOT_FAIL_OPEN ?= 0
+ifeq ($(MEASURED_BOOT_FAIL_OPEN),1)
+CFLAGS += -DMEASURED_BOOT_FAIL_OPEN
+endif
+
+# The seal half of the same property. The inject makes format_seal_tpm refuse
+# before it writes a blob. The fail-open writes a password-only volume anyway.
+MEASURED_SEAL_INJECT_FAIL ?= 0
+ifeq ($(MEASURED_SEAL_INJECT_FAIL),1)
+CFLAGS += -DMEASURED_SEAL_INJECT_FAIL
+endif
+MEASURED_SEAL_FAIL_OPEN ?= 0
+ifeq ($(MEASURED_SEAL_FAIL_OPEN),1)
+CFLAGS += -DMEASURED_SEAL_FAIL_OPEN
+endif
+
+# A persistent format with no TPM records that on the superblock. This leaves
+# the byte zero, which is what every volume written before the field existed
+# also reads as, so the arm is "the survey does not say it".
+MEASURED_ABSENT_UNRECORDED ?= 0
+ifeq ($(MEASURED_ABSENT_UNRECORDED),1)
+CFLAGS += -DMEASURED_ABSENT_UNRECORDED
+endif
+
+# init's say-so, omitted. Userspace: USERSPACE_CFLAGS is assigned with `=`
+# earlier, so the -D is applied beside INIT_ADMIN_CAPS_AT_LAUNCH. It is also
+# on CFLAGS so the kernel's defect line names it. The honest sentence is what
+# the arm must not print.
+MEASURED_BOOT_UNSAID ?= 0
+ifeq ($(MEASURED_BOOT_UNSAID),1)
+CFLAGS += -DMEASURED_BOOT_UNSAID
 endif
 
 POSIX_LEGACY_WALK ?= 0
@@ -6279,6 +6340,9 @@ endif
 ifeq ($(INIT_ADMIN_CAPS_AT_LAUNCH),1)
 USERSPACE_CFLAGS += -DINIT_ADMIN_CAPS_AT_LAUNCH
 endif
+ifeq ($(MEASURED_BOOT_UNSAID),1)
+USERSPACE_CFLAGS += -DMEASURED_BOOT_UNSAID
+endif
 
 # PASSWD_TARGET_IGNORED, here for exactly the reason above: USERSPACE_CFLAGS is
 # assigned with `=` a few lines up, so a `+=` before that point is discarded and
@@ -9571,9 +9635,114 @@ smoke-measured-boot-required-volume-control:
 		EXPECT_FAULT_CHANNEL=kcon EXPECT_FAULT='PANIC: measured boot required but the volume is not sealed' \
 		tools/run_with_swtpm.sh horus.iso
 
+# ---- a present TPM fails closed (docs/LIMITATIONS.md 2.9, S157) -------------
+#
+# The policy above is opt-in and also refuses a machine with no TPM. This is
+# the default kernel. A TPM that answered and then could not be measured halts.
+# A seal that cannot be made refuses the format. A machine with no TPM still
+# boots, and init says so. SWTPM_REQUIRED=1 is in the recipe: a missing swtpm
+# must not skip a gate whose subject is a TPM.
+
+# The failure, forced after locality, so the halt is not waiting on a TPM that
+# is actually broken. Early: the panic is before userspace.
+.PHONY: smoke-measured-present
+smoke-measured-present:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEASURED_BOOT_INJECT_FAIL=1
+	@$(MAKE) --no-print-directory MEASURED_BOOT_INJECT_FAIL=1 horus.iso
+	@SWTPM_REQUIRED=1 TPM=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		EXPECT_FAULT_CHANNEL=kcon \
+		EXPECT_FAULT='PANIC: a TPM is present but measured boot failed (injected); halting' \
+		tools/smoke_test.sh horus.iso
+
+# The old continue. The ignore line is one print, and "measured boot OK" must
+# not follow it: that line is what a fall-through back into the success path
+# would still say. The shell banner is the proof the boot went on. A panic
+# fails the run on its own.
+.PHONY: smoke-measured-present-control
+smoke-measured-present-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEASURED_BOOT_INJECT_FAIL=1 MEASURED_BOOT_FAIL_OPEN=1
+	@$(MAKE) --no-print-directory MEASURED_BOOT_INJECT_FAIL=1 MEASURED_BOOT_FAIL_OPEN=1 horus.iso
+	@SWTPM_REQUIRED=1 TPM=1 SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='tpm: measured boot failure ignored; continuing' \
+		FAIL_MARKER='tpm: measured boot OK' \
+		tools/smoke_test.sh horus.iso
+
+# Seal refused, before any blob and before Argon2. The selftest is not a defect
+# flag; the inject is. Reaching the shell shows the refusal did not halt the
+# boot, which is format's job, not measured boot's.
+.PHONY: smoke-measured-seal
+smoke-measured-seal:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEASURED_SEAL_SELFTEST=1 MEASURED_SEAL_INJECT_FAIL=1
+	@$(MAKE) --no-print-directory MEASURED_SEAL_SELFTEST=1 MEASURED_SEAL_INJECT_FAIL=1 horus.iso
+	@SWTPM_REQUIRED=1 TPM=1 SMOKE_TIMEOUT=180 MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='MEASURED_SEAL: REFUSED' \
+		FAIL_MARKER='MEASURED_SEAL: IGNORED' \
+		tools/smoke_test.sh horus.iso
+
+# The downgrade: the same forced refusal is swallowed and a password-only
+# volume is written. The format continues, so the timeout is the long one.
+.PHONY: smoke-measured-seal-control
+smoke-measured-seal-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEASURED_SEAL_SELFTEST=1 MEASURED_SEAL_INJECT_FAIL=1 MEASURED_SEAL_FAIL_OPEN=1
+	@$(MAKE) --no-print-directory MEASURED_SEAL_SELFTEST=1 MEASURED_SEAL_INJECT_FAIL=1 MEASURED_SEAL_FAIL_OPEN=1 horus.iso
+	@SWTPM_REQUIRED=1 TPM=1 SMOKE_TIMEOUT=180 MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='MEASURED_SEAL: IGNORED' \
+		FAIL_MARKER='MEASURED_SEAL: REFUSED' \
+		tools/smoke_test.sh horus.iso
+
+# No TPM. init says so, on the console, because the line is init's. The shell
+# banner is required, so a boot that says the line and then dies does not pass.
+.PHONY: smoke-measured-absent
+smoke-measured-absent:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory
+	@$(MAKE) --no-print-directory horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		REQUIRE_MARKER='init: this machine has no TPM; measured boot was not done' \
+		tools/smoke_test.sh horus.iso
+
+# The say-so omitted. The honest line is the failure.
+.PHONY: smoke-measured-absent-control
+smoke-measured-absent-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEASURED_BOOT_UNSAID=1
+	@$(MAKE) --no-print-directory MEASURED_BOOT_UNSAID=1 horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) \
+		REQUIRE_MARKER='init: measured-boot absence went unsaid' \
+		FAIL_MARKER='init: this machine has no TPM; measured boot was not done' \
+		tools/smoke_test.sh horus.iso
+
+# The byte on a persistent-shaped format, read back through the survey. No
+# swtpm, on purpose: the record is the no-TPM case. Argon2 runs once, which is
+# why the timeout is the long one. The marker is the kernel's.
+.PHONY: smoke-measured-absent-record
+smoke-measured-absent-record:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEASURED_ABSENT_SELFTEST=1
+	@$(MAKE) --no-print-directory MEASURED_ABSENT_SELFTEST=1 horus.iso
+	@SMOKE_TIMEOUT=180 MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='MEASURED_ABSENT: RECORDED' \
+		FAIL_MARKER='MEASURED_ABSENT: NOT RECORDED' \
+		tools/smoke_test.sh horus.iso
+
+# The byte left zero. The survey then says it was not recorded.
+.PHONY: smoke-measured-absent-record-control
+smoke-measured-absent-record-control:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory MEASURED_ABSENT_SELFTEST=1 MEASURED_ABSENT_UNRECORDED=1
+	@$(MAKE) --no-print-directory MEASURED_ABSENT_SELFTEST=1 MEASURED_ABSENT_UNRECORDED=1 horus.iso
+	@SMOKE_TIMEOUT=180 MARKER_CHANNEL=kcon \
+		REQUIRE_MARKER='MEASURED_ABSENT: NOT RECORDED' \
+		FAIL_MARKER='MEASURED_ABSENT: RECORDED' \
+		tools/smoke_test.sh horus.iso
+
 # ---- the policy, met by a REAL DISK (docs/LIMITATIONS.md 2.9, S85) ----------
 #
-# The three arms above all run on the ephemeral vdisk. The volume half of the
+# smoke-measured-boot-required and its two arms run on the ephemeral vdisk. The volume half of the
 # policy is reached there only by REMOVING the vdisk's exemption
 # (MEASURED_VOLUME_EXEMPT_NONE=1), so what they show is that the branch fires
 # when it is entered -- on a RAM volume that is exempt by design, under a flag

@@ -116,7 +116,9 @@ registered legacy line stays masked until `SYS_IRQ_ACK` (S46); `SYS_MSI_REGISTER
 (S47). There is no call to list devices.
 
 **Installing.** `SYS_STORAGE_INFO` and `SYS_STORAGE_DEVICE` survey the disks, and
-`SYS_STORAGE_FORMAT` erases the disk it names (S83). All three need `CAP_STORAGE_FORMAT`, which
+`SYS_STORAGE_FORMAT` erases the disk it names (S83). The survey also reports whether a TPM is
+present and, for the mounted volume, whether it is sealed and whether the format recorded that
+no TPM was present (S157). All three need `CAP_STORAGE_FORMAT`, which
 only the installer holds (S72). A volume that has been unlocked cannot be reformatted (S90), and
 on a live boot the kernel refuses to open or format a persistent disk at all (S110). With
 `STORAGE_FORMAT_BOOTABLE` the format lays out a disk that boots itself: a GPT, an EFI system

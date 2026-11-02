@@ -1778,30 +1778,32 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_SIGMASK]                  = { h_sigmask,                 SC_NONE, 0, SC_ANYTYPE }, /* self: block/unblock own signals */
     [SYS_SPAWN_ARG]                = { h_spawn_arg,               SC_NONE, 0, SC_ANYTYPE }, /* self: read own spawn argument */
     [SYS_GET_ARGV]                 = { h_get_argv,                SC_NONE, 0, SC_ANYTYPE }, /* self: read own argument vector */
-    /* execve-from-fd: spawn/exec a caller-supplied program image. Same slot-3
-     * WRITE|EXEC gate as SYS_SPAWN / SYS_EXEC_NAMED; the image is validated by the
-     * loader (arm_image_from_user -> try_elf_load) exactly like a named binary. */
+    /* SYS_SPAWN_IMAGE: the caller supplies the bytes. The row is SC_NONE
+     * because the authority is the CAP_UNTYPED the handler resolves
+     * (spawn_untyped_region, S57), not a fixed slot. The loader validates the
+     * image the same way it validates a named binary. The row does not ask
+     * for EXEC on a file: the caller already holds the bytes
+     * (docs/LIMITATIONS.md 1.23). Until 2026-08-30 the comment on this row
+     * claimed a slot-3 WRITE|EXEC gate. The row has been SC_NONE since that
+     * decoy was retired (1.6b, closed). tools/check_dispatch_gates.py reads
+     * the row, not this comment (S79). */
     [SYS_SPAWN_IMAGE]              = { h_spawn_image,             SC_NONE, 0, SC_ANYTYPE }, /* CAP_UNTYPED, resolved in the handler */
-    /* Same entry as SYS_SPAWN, and deliberately not SC_NONE. Read that as
-     * consistency rather than as enforcement: slot 3 holds the CAP_FRAME
-     * create_task gives EVERY task, with exactly READ|WRITE|EXEC, so WRITE|EXEC
-     * on it is satisfied by every caller. By S28 this is not a gate, and this
-     * comment claimed it was one until 2026-08-30.
-     *
-     * It is left in place rather than changed to SC_NONE because the entry is
-     * the right SHAPE -- creating a task should answer to an authority -- and
-     * the authority does not exist yet: it would have to name a task object, and
-     * tasks[] is still .bss ([I-7], roadmap 0.3). What keeps this from being a
-     * hole meanwhile is that these calls confer nothing new: a fork copies the
-     * caller's own address space and cspace, and a spawn endows a child from
-     * what the spawner holds and never more (S41, S42). See
-     * docs/LIMITATIONS.md 1.6b. */
+    /* SYS_FORK is SC_NONE for the same reason as SYS_SPAWN. The authority is
+     * the caller's CAP_UNTYPED, resolved in the handler (S57). The row used
+     * to name slot 3, the CAP_FRAME every task is born holding, which S28
+     * does not count as a gate (LIMITATIONS 1.6b, closed 2026-08-30). The
+     * comment that stood here still said the row was deliberately not
+     * SC_NONE, and that tasks[] was still a .bss table waiting on roadmap
+     * 0.3. Both were already false: the row is SC_NONE, and a task's cspace
+     * is carved from untyped memory. A fork still copies the caller's own
+     * address space and derives the child's capabilities (S41, S42). */
     [SYS_FORK]                     = { h_fork,                    SC_NONE, 0, SC_ANYTYPE }, /* CAP_UNTYPED, resolved in the handler */
     [SYS_EXEC_IMAGE]               = { h_exec_image,              SC_NONE, 0, SC_ANYTYPE }, /* self only, as SYS_EXEC_NAMED */
     [SYS_SIGALTSTACK]              = { h_sigaltstack,             SC_NONE, 0, SC_ANYTYPE }, /* self: register own altstack */
-    /* Zero-trust identity: a receiver reads the kernel-attested uid of an
-     * endpoint's last sender. Slot-3 READ (same as SYS_IPC_RECV) so only a
-     * legitimate receiver on the endpoint can query it. */
+    /* SYS_IPC_SENDER: the receiver names the endpoint. The row is SC_NONE
+     * and h_ipc_sender resolves that slot (S13). The comment used to say
+     * slot-3 READ, the decoy the IPC rows retired. A fixed slot here would
+     * admit every task and never consult the endpoint. */
     [SYS_IPC_SENDER]               = { h_ipc_sender,              SC_NONE, 0, SC_ANYTYPE },
     /* Object-store owner/mode persistence — same gate as the rest of the store:
      * CAP_ENCRYPTED_STORAGE at CAPSLOT_AUDIT, and that alone. Filesystem server
@@ -1817,8 +1819,10 @@ static const syscall_desc_t syscall_table[SYSCALL_TABLE_SIZE] = {
 #else
     [SYS_FS_SET_META]              = { h_fs_set_meta,             SC_NONE, 0, SC_ANYTYPE }, /* withdrawn 2026-10-16: SYS_ERR_NOSYS to everyone */
 #endif
-    /* Reply routed to the request's kernel-recorded sender (multi-client safe).
-     * Slot-3 WRITE, same as the other send/reply paths. */
+    /* SYS_IPC_REPLY_TO routes the reply to the sender the kernel recorded.
+     * The row is SC_NONE. The one-shot reply capability is resolved in the
+     * handler (S13b). The comment used to say slot-3 WRITE, which every task
+     * satisfies and which is not the gate. */
     [SYS_IPC_REPLY_TO]             = { h_ipc_reply_to,            SC_NONE, 0, SC_ANYTYPE },
     [SYS_GETUID]                   = { h_getuid,                  SC_NONE, 0, SC_ANYTYPE },
     [SYS_GETPID]                   = { h_getpid,                  SC_NONE, 0, SC_ANYTYPE }, /* own id: self-authorizing */

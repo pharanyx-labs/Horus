@@ -20,16 +20,17 @@ int program_armed = 0;
  * the two, so "the armed image" was ambient state — authority-shaped state that
  * a caller is trusted for having, rather than for holding a capability to.
  *
- * Two consequences, one latent and one live:
+ * Two consequences, one that was live and one that the owner stamp closed:
  *
- *  - SYS_SUDO (kusers.c) re-authenticates the caller and then spawns whatever
- *    image is armed AS UID 0. The arm and the spawn are separate syscalls, so
- *    the image sudo elevates need never have been armed by the task that typed
- *    the password: task A arms its own image, task B authenticates, and B's
- *    successful sudo spawns A's image with A's code at uid 0. A confused
- *    deputy, reachable from ring 3 by any task holding the spawn capability.
- *    Nothing in userspace calls sudo today, which is why this is [G-11] and not
- *    a [C-n] -- latency, not soundness, is the only thing between them.
+ *  - SYS_SUDO, withdrawn on 2026-10-15 (kusers.c), re-authenticated the caller
+ *    and then spawned whatever image was armed as uid 0. The arm and the spawn
+ *    were separate syscalls, so the image it would have elevated need never
+ *    have been armed by the task that typed the password: task A arms its own
+ *    image, task B authenticates, and B's sudo would have spawned A's image
+ *    at uid 0. A confused deputy. Nothing in userspace called it, which is
+ *    why it was recorded as [G-11] rather than as a live elevation. The call
+ *    now answers SYS_ERR_NOSYS to every caller. The owner stamp below is what
+ *    still refuses a foreign arm on the spawn path that remains (S21).
  *
  *  - Within one spawn, two CPUs arming concurrently used to interleave freely
  *    (roadmap 1.7). spawn_stage_acquire() in kspawn.c serialises that window;

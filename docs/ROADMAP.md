@@ -246,10 +246,6 @@ core. Nothing there calls `syscall()`. A nightly job, off the merge path and in 
 that workflow, fuzzes the guest entry. A crash fails the run and keeps the input. It does not
 become a required check until it has stayed quiet, and a silent skip is a failure.
 
-**4.22 ⬜ Clang as a second nightly compiler.** A nightly job builds the kernel and the userspace
-that the ISO links, with Clang, and fails if it cannot link. It does not gate a merge until it has
-stayed linkable. A skip, or a job that passes because the compiler was not installed, is a failure.
-
 ### Track 5: closing the known limitations
 
 

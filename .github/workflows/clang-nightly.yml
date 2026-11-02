@@ -1,0 +1,44 @@
+# Nightly: build the kernel and the userspace it links, with Clang.
+#
+# The default build is GCC. This is the second compiler. It does not run on a
+# pull request and it does not gate a merge until it has stayed linkable.
+# A missing compiler is a failure, not a skip. A failed step is not ignored.
+# The Rust core is still rustc, and the link is still ld. Roadmap 4.22.
+
+name: Clang nightly
+
+on:
+  schedule:
+    - cron: '50 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clang-nightly
+  cancel-in-progress: false
+
+jobs:
+  clang-nightly:
+    name: Clang links the kernel and the shipped userspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install Clang and the link tools
+        uses: ./.github/actions/apt
+        with:
+          packages: build-essential binutils make clang
+      - name: Add bare-metal Rust target
+        run: rustup target add x86_64-unknown-none
+      - name: Refuse a missing compiler
+        run: |
+          set -euo pipefail
+          command -v clang
+          clang --version
+      - name: Link the kernel and the shipped userspace
+        run: |
+          set -euo pipefail
+          make CLANG=1 kernel.elf
+          test -s kernel.elf

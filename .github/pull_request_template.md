@@ -54,9 +54,10 @@ Tick what you actually ran, and paste the relevant output if a test is central t
 > aggregated check (`gates`) plus CodeQL, and `gates` needs every required job, so a job you
 > classify as required gates in this PR, with no ruleset change.
 >
-> Five jobs are exempt, each with its reason in `.github/ci-gating.yml`, and none runs on a pull
+> Six jobs are exempt, each with its reason in `.github/ci-gating.yml`, and none runs on a pull
 > request: the nightly `fuzz` (`fuzz.yml`), `kani-arms` (`kani-arms.yml`), `ct-timing`
-> (`ct-timing.yml`) and `nightly-issue` (`nightly-issue.yml`), and the scheduled `ruleset-audit`. None is exempt for an open defect; `smoke-session-smp-soak` was
+> (`ct-timing.yml`), `nightly-issue` (`nightly-issue.yml`) and `clang-nightly`
+> (`clang-nightly.yml`), and the scheduled `ruleset-audit`. None is exempt for an open defect; `smoke-session-smp-soak` was
 > the last exemption that stood for one, and was promoted back when **[G-8]** closed on
 > 2026-08-17. If you add a CI job, the
 > `ci-gating` check fails until you classify it there: that is deliberate.

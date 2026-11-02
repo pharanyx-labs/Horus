@@ -2,6 +2,14 @@ CC     = gcc
 LD     = ld
 OBJCOPY = objcopy
 AS     = gcc
+# CLANG=1 is the nightly second compiler (roadmap 4.22). It does not gate a
+# merge. The assembler follows the C compiler, because the .S files are
+# preprocessed before they are assembled. The linker stays ld: linker64.ld is
+# a GNU ld script. The Rust core stays rustc.
+ifeq ($(CLANG),1)
+CC     = clang
+AS     = clang
+endif
 
 export SOURCE_DATE_EPOCH ?= 1609459200
 
@@ -59,8 +67,15 @@ CFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -MMD -MP \
          -Wall -Wextra -Wformat -Wformat-security -Werror=vla -Werror=comment -O2 -pipe \
          -I src/include -I include -std=gnu99 -fno-builtin -mcmodel=kernel -frandom-seed=horus -fdebug-prefix-map=$(CURDIR)=/horus
 # Reports for the stack-depth budget. Neither flag changes the instructions
-# the compiler emits. A clean build writes the files again; they are gitignored.
+# GCC emits. A clean build writes the files again; they are gitignored.
+# Clang rejects -fcallgraph-info. The nightly build keeps -fstack-usage,
+# which Clang accepts, and leaves the call-graph report to the default
+# compiler. The merge-path budget is still measured by GCC.
+ifeq ($(CLANG),1)
+CFLAGS += -fstack-usage
+else
 CFLAGS += -fstack-usage -fcallgraph-info=su
+endif
 ASFLAGS = -m64 -ffreestanding -fno-pic -fno-pie -x assembler-with-cpp -c -I src/include
 LDFLAGS = -T linker64.ld -m elf_x86_64 -nostdlib -static --build-id=none
 RUST_TARGET ?= x86_64-unknown-none
@@ -6488,8 +6503,19 @@ LIBHORUS_OBJS = userspace/libhorus.o userspace/hvfs.o userspace/tui.o userspace/
 $(LIBHORUS_LIB): $(LIBHORUS_OBJS)
 	$(AR) rcs $@ $(LIBHORUS_OBJS)
 
-userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) $(LIBHORUS_LIB) userspace/pie.ld
-	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ $< $(MALLOC_OBJ) $(LIBHORUS_LIB)
+# Clang emits memcpy for a struct copy GCC inlines (userspace/compiler_rt.c).
+# The archive is not libhorus, and it is not on this line unless CLANG=1, so a
+# GCC link is the same command and a newlib link still takes libc's memcpy.
+ifeq ($(CLANG),1)
+COMPILER_RT_LIB = userspace/compiler_rt.a
+userspace/compiler_rt.a: userspace/compiler_rt.o
+	$(AR) rcs $@ userspace/compiler_rt.o
+else
+COMPILER_RT_LIB =
+endif
+
+userspace/%.pie.elf: userspace/%.o $(MALLOC_OBJ) $(LIBHORUS_LIB) $(COMPILER_RT_LIB) userspace/pie.ld
+	$(LD) -m elf_x86_64 -pie -T userspace/pie.ld -o $@ $< $(MALLOC_OBJ) $(LIBHORUS_LIB) $(COMPILER_RT_LIB)
 
 # The ring-3 storage drivers carry the block-driver protocol's server half,
 # written once (userspace/blkserve.c) so every driver holds a client to the same

@@ -390,7 +390,7 @@ The jobs that are not boot tests:
 | `ci-gating` | Every CI job is classified as gating or exempted (with a reason) |
 | `gates` | All required gates passed |
 | `installer-accounts` | An installed machine has two accounts and either one boots it (S76) |
-| `invariants` | Every security property is bound to a witness that exists |
+| `invariants` | Every security property is bound to a witness that exists, and the positive-boot census matches the table |
 | `unsafe-safety` | Every unsafe in the security core states the caller's obligations |
 | `apt-hardening` | No build depends on a repository this project does not use, and no stalled download can hold a job |
 | `doc-claims` | Every documented count matches the tool that derives it |
@@ -442,7 +442,8 @@ Two of those deserve a sentence each.
 there with no `continue-on-error`, each named with its measured cost in
 `.github/kani-harnesses.yml`, and the job refuses a proof that is not listed. And **`invariants`** requires every property in `SECURITY.md` to
 name a witness that exists and runs; its exemption list, `.github/invariants.yml`, is
-currently **empty**: all 158 properties name a witness that resolves.
+currently **empty**: all 158 properties name a witness that resolves. The same job checks
+that the rows witnessed only by a positive boot are exactly `.github/positive-boot.yml`.
 
 Every `tools/check_*.py` has a falsification harness, `tools/test_check_*.sh`, with one case per
 rule showing the rule can fail, and each checker asserts a floor on what it parsed, so a parser

@@ -1,0 +1,21 @@
+# Census of SECURITY.md rows witnessed only by a positive boot. Roadmap 4.21.
+#
+# A row is on this list when its witness names at least one `make` target and
+# names no control arm, no defect flag, and no host proof. The witness is the
+# boot reaching its marker. This file does not add the arms, and it does not
+# change a row. tools/check_positive_boot.py fails unless the set it derives
+# from the table is exactly these ids. A row leaves the list only in the change
+# that gives its witness an arm. A missing file, a line that is not an id, or
+# a table the parser barely read is a failure.
+
+rows:
+  - S1: `make smoke-captest` (269 checks). The cell names no arm.
+  - S6: `make smoke-captest`. The cell names no arm.
+  - S7: `make smoke-captest` and `make smoke-cpu`. The cell names no arm.
+  - S8: `make smoke-wx`. The cell names no arm.
+  - S9: `make smoke-wx` and `make smoke-wx-smp`. The cell names no arm.
+  - S10: `make smoke-modules-tamper` refuses a corrupted module inside the one boot. The cell names no arm that puts the check back.
+  - S11: `make smoke-tpm`, `make smoke-tpm-tamper`, `make smoke-boot-pin` and `make smoke-tpm-bootimg`. The cell does not name the arms S92 cites for two of those targets.
+  - S12: `make smoke-tpm-seal` locks a changed PCR inside the one boot. The cell names no arm.
+  - S18: `make smoke-captest`. The cell names no arm.
+  - S15: `make smoke-aspace`. The cell names no arm.

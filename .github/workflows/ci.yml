@@ -380,6 +380,13 @@ jobs:
       # One arm per rule, applied to a copy of the tree.
       - name: Falsify every rule of the checker
         run: ./tools/test_check_invariants.sh
+      # Roadmap 4.21. The census is the set of rows whose witness is only a
+      # positive boot. A missing file, a row the table gained, or a row that
+      # left the list while it was still only a boot, fails the job.
+      - name: The positive-boot census matches the table
+        run: python3 tools/check_positive_boot.py
+      - name: Falsify the positive-boot census
+        run: ./tools/test_check_positive_boot.sh
 
   unsafe-safety:
     name: "Every unsafe in the security core states the caller's obligations"

@@ -259,12 +259,6 @@ the AEAD use the constant-time compare, plus a nightly timing run of those paths
 variable-time compare on either path must go red. Writing a new primitive is not this item.
 Roadmap 5.15 is the decision that would replace one.
 
-**4.21 ⬜ A census of properties witnessed only by a positive boot.** Name every row in
-`SECURITY.md` whose only evidence is that a boot reached a marker, so a later change can give each
-one an arm. The census is the list. It does not add the arms, and it does not weaken a row to make
-the list shorter. A checker then fails if a new row is only a positive boot and is not on the list,
-so the list cannot go stale by being forgotten.
-
 **4.22 ⬜ Clang as a second nightly compiler.** A nightly job builds the kernel and the userspace
 that the ISO links, with Clang, and fails if it cannot link. It does not gate a merge until it has
 stayed linkable. A skip, or a job that passes because the compiler was not installed, is a failure.

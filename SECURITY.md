@@ -131,7 +131,10 @@ it and fails the build if a property has no witness that resolves to a real `mak
 job, if a named target does not exist or nothing runs it, if an arm's flag is missing from
 `DEFECT_FLAGS` (so a boot under it would not say so), or if the mechanism names code that no
 longer exists. The table is the registry; `.github/invariants.yml` holds exemptions only, and
-has none.
+has none. Rows whose witness is only a positive boot, a `make` target and no arm, are named in
+`.github/positive-boot.yml`. The same job fails if that file and the table disagree, so a new
+row of that shape cannot be forgotten, and a row cannot leave the list until its witness names
+an arm.
 
 | # | Claim | Mechanism | Witness |
 |---|---|---|---|

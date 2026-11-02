@@ -82,6 +82,18 @@ off a name the policy names. A capability with no grant set (held by system task
 session) renames without that rule, so a file moved that way under another principal's grant can
 show a bound that is low through a capability minted before the move, until it is opened again.
 
+### 1.42 Ring 0 still holds the filesystem, the accounts and the loader [G-14]
+
+`.github/ring0-classification.yml` classifies every object linked into the kernel
+(S87). The `service` class sits beside the verified core: the on-disk filesystem
+and object store, accounts and password hashing, ELF loading and spawn staging,
+and the seeding of the CSPRNG. A defect in any of it is a defect in ring 0.
+Evicting it is roadmap 2.7a. The two large moves are decisions rather than
+mechanisms: `storage.c` holds the volume key, and `kusers.c` holds the accounts.
+This entry is the status of architectural gap G-14. [`ARCHITECTURE.md`](ARCHITECTURE.md)
+section 14 is the design note. The gap was already open there. It was absent
+from this register, which is the status of a finding.
+
 ## 2. Correctness
 
 ### 2.3 Only retyped kernel objects have a lifecycle

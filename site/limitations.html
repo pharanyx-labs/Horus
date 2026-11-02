@@ -85,6 +85,7 @@
 <li class="toc-h3"><a href="#hardware">Hardware</a></li>
 <li class="toc-h3"><a href="#releases">Releases</a></li>
 <li class="toc-h3"><a href="#narrow">Proofs</a></li>
+<li class="toc-h3"><a href="#ring0">Policy still in ring 0</a></li>
 <li class="toc-h3"><a href="#where-the-line-sits">Where the line sits</a></li>
 </ol>
 </aside>
@@ -95,7 +96,7 @@
   <p class="lede">What is wrong with Horus right now. The authoritative register, including every closed entry, is docs/LIMITATIONS.md.</p>
 </header>
 <h2 id="limits" data-toc="Open limits">These are the limits that should change a decision.</h2>
-<p>Horus is research-grade. It should not be trusted with anything you cannot afford to lose. The gating set is 147 checks with 12 exempted. The 12 are the contexts of the workflows that do not run on a pull request, not twelve unused jobs. Each security property names a witness, and each gate has an arm. That machinery is not a review.</p>
+<p>Horus is research-grade. It should not be trusted with anything you cannot afford to lose. The gating set is 147 checks with 12 exempted. The 12 are the contexts of the workflows that do not run on a pull request, not twelve unused jobs. Each security property names a witness. A witness that is only a positive boot, with no control arm, is named in <code>.github/positive-boot.yml</code>. That list includes the central dispatch property. The census does not add the arms. The machinery is not a review.</p>
 <ul class="findings">
   <li>
     <h3 id="review" data-toc="No independent review"><span class="id">5.1</span>Nobody reviews a change before it lands</h3>
@@ -128,6 +129,10 @@
   <li>
     <h3 id="narrow" data-toc="Proofs"><span class="id">5.5</span>Formal verification covers the security core, not the kernel</h3>
     <p>Kani proves properties of capability derivation, lookup, revocation, the ELF validator, the user-address checks, the random pool, the login throttle and the page-pool counts. Every harness gates a merge. There is no refinement proof and no TLA+ specification. Two unsound TLA+ specifications were removed on 2026-09-10. A model of the concurrent protocols, nightly, with a seeded bug in each, is roadmap 5.11.</p>
+  </li>
+  <li>
+    <h3 id="ring0" data-toc="Policy still in ring 0"><span class="id">G-14</span>Ring 0 still holds the filesystem, the accounts and the loader</h3>
+    <p>The capability engine is not the whole kernel. The on-disk store, password hashing and program loading run at the same privilege. A defect there is a kernel defect. Moving them out is roadmap 2.7a, and it is not started. The register entry is 1.42.</p>
   </li>
 </ul>
 <div class="callout">

@@ -14,6 +14,10 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- A point-in-time security assessment of commit `e3aa595` is recorded in `audit.md`, with the rendered copy at `docs/audit-2026-11-02.pdf`. It sets no statuses. `docs/LIMITATIONS.md` remains the register, and `docs/AUDIT.md` remains the 19 September 2026 audit.
+
 ### Security
 
 - When a TPM is present, a failed measurement halts the boot and a failed seal refuses the format, rather than continuing into an unmeasured boot or a password-only volume (S157). A machine with no TPM still boots. init says so before the first shell, while the boot log is still stamped, and again at every later login, the installer says so, and a persistent volume records that it was created with no TPM. `MEASURED_BOOT_REQUIRED` still refuses a machine with no TPM and a volume that was never sealed (S85). Limitation 2.9 stays open for the machine with no TPM. Rollback anchoring stays limitation 1.12. `make smoke-measured-present`, `make smoke-measured-seal`, `make smoke-measured-absent` and `make smoke-measured-absent-record`, each with an arm (#609).

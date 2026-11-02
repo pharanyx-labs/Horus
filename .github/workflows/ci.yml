@@ -60,6 +60,11 @@ jobs:
       # in ruleset-audit.yml; this proves on every pull request that it can fail.
       - name: Falsify the injected-workflow check (one arm per rule)
         run: tools/test_check_injected_workflows.sh
+      # Roadmap 4.17. A job handed an image stamped for another flag must go
+      # red here, in the checker, as well as in the smoke job's boot. The
+      # harness plants that image. The unmutated tree must still pass.
+      - name: Falsify the shared-kernel checks
+        run: tools/test_check_shared_kernel.sh
 
   # THE ONE REQUIRED CHECK FROM THIS WORKFLOW (2026-09-21). The branch ruleset
   # requires this job's context and CodeQL's, and no other. It needs every job
@@ -624,6 +629,8 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    outputs:
+      sha256: ${{ steps.kernel-hash.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - name: Install build toolchain
@@ -674,6 +681,24 @@ jobs:
         run: ./tools/test_check_image_budget.sh
       - name: Build bootable ISO
         run: make horus.iso
+      # The hash is a job output, not a file in the artifact. A later job
+      # refuses the image unless the bytes match this output. kernel.sha256
+      # rides along so a download that dropped it fails closed; it is not
+      # what the consumer trusts. upload-artifact hides a leading dot, so
+      # the stamp is published as kernel.build-flags.
+      - name: Stamp the default kernel this run will share
+        id: kernel-hash
+        run: |
+          set -euo pipefail
+          test -s kernel.elf
+          test -s .build-flags
+          cp .build-flags kernel.build-flags
+          test -s kernel.build-flags
+          sha=$(sha256sum kernel.elf | awk 'NR==1 { print $1 }')
+          printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{64}$'
+          printf '%s\n' "$sha" > kernel.sha256
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "shared-kernel: produced $sha"
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         with:
@@ -681,6 +706,15 @@ jobs:
           path: |
             kernel.elf
             horus.iso
+          if-no-files-found: error
+      - name: Upload the stamped default kernel
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+        with:
+          name: horus-default-kernel
+          path: |
+            kernel.elf
+            kernel.build-flags
+            kernel.sha256
           if-no-files-found: error
 
   # Keep the non-default build configurations compiling. The default config is
@@ -821,8 +855,9 @@ jobs:
         run: make smoke-swap-unpinned-control
 
   # SHARD of what was one 59-step job, split 2026-09-21 because it ran for 54
-  # minutes and set the wall time of every CI run. Steps are unchanged and in
-  # their original order; only the job boundary moved.
+  # minutes and set the wall time of every CI run. The boot step takes the
+  # stamped image from the kernel job. The other steps are that shard, in
+  # their original order.
   # Boot, boot media and SATA.
   smoke:
     name: "QEMU smoke-boot (headless)"
@@ -832,16 +867,23 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
           packages: build-essential binutils make xorriso grub-pc-bin grub-common mtools qemu-system-x86 grub-efi-amd64-bin ovmf
       - name: Add bare-metal Rust target
         run: rustup target add x86_64-unknown-none
-      - name: Boot the kernel under QEMU and assert it reaches the shell
-        run: make smoke
+      - name: A kernel stamped for another flag is refused
+        run: make smoke-shared-kernel-refuse
+      - name: The image this job asked for boots to the shell
+        run: make smoke-shared-kernel
       # The image booted the way people actually boot it: {BIOS, UEFI} x
       # {optical, raw disk}. Every other gate runs `-cdrom` under SeaBIOS, one
       # cell of that table, and the other three were broken -- grub.cfg named
@@ -896,8 +938,13 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -977,8 +1024,13 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -1027,8 +1079,13 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -1163,8 +1220,13 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -1296,8 +1358,13 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -1824,8 +1891,13 @@ jobs:
     # six. 210 leaves room for the extra clean builds without making a wedge
     # look like a budget.
     timeout-minutes: 210
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU + swtpm
         uses: ./.github/actions/apt
         with:
@@ -1963,8 +2035,13 @@ jobs:
     # measured-boot jobs above: without it a runner wedged on its package
     # install idles for six hours and the run never concludes.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -2523,8 +2600,13 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -2542,8 +2624,13 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -3253,8 +3340,13 @@ jobs:
     name: "Every boot states which defect flags built it (and a flag change forces a rebuild)"
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -3288,8 +3380,13 @@ jobs:
     name: "A bogus resume %rsp is refused where it is produced (G-9)"
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -3549,8 +3646,13 @@ jobs:
     name: "Every line of the boot log carries a timestamp, and they run forwards"
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -3840,8 +3942,13 @@ jobs:
     runs-on: ubuntu-latest
     # Backstop, not a performance budget: three builds, one boot each.
     timeout-minutes: 45
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -4800,8 +4907,13 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -4910,8 +5022,13 @@ jobs:
     # package install idles for six hours and the run never concludes --
     # which cost three runs on 2026-08-19. See docs/history/CHANGES-2026.md.
     timeout-minutes: 105
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:
@@ -4945,8 +5062,13 @@ jobs:
     #
     # NOT continue-on-error. Never re-run it: the re-run reflex is exactly how
     # smoke-console-smp's deadlock survived months of CI. A red soak is a finding.
+    needs: kernel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Take the default kernel this job asked for
+        uses: ./.github/actions/shared-kernel
+        with:
+          sha256: ${{ needs.kernel.outputs.sha256 }}
       - name: Install build toolchain + QEMU
         uses: ./.github/actions/apt
         with:

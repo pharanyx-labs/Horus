@@ -390,6 +390,7 @@ control_arms:
   smoke-task-ceiling-stack-control: smoke-task-ceiling
   smoke-vfs-mount-control: smoke-vfs
   smoke-vfs-prefix-control: smoke-vfs
+  smoke-shared-kernel-refuse: smoke-shared-kernel
 
 # Base gates: the targets that assert a property HOLDS. Listed rather than
 # inferred as "everything else", because defaulting an unclassified target to
@@ -615,6 +616,7 @@ gates:
   - smoke-enter-user-claim
   - smoke-installer-slowdisk
   - smoke-session
+  - smoke-shared-kernel
   - smoke-shellwatch
   - smoke-session-smp
   - smoke-session-smp-soak

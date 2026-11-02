@@ -94,7 +94,7 @@
 <p><code>make smoke</code> builds a clean image and boots to a ring-3 login. <code>make test</code> runs the Rust tests and a clean rebuild. It boots nothing. The capability suite is:</p>
 <pre class="term"><span class="p">$</span> make smoke-captest         <span class="c"># 269 capability checks</span></pre>
 <p><code>DEBUG_SHELL</code> defaults off. It is a development keyboard inside the kernel. Do not boot a smoke image that was built with it. <code>docs/BUILDING.md</code> is the full flag list, including every defect flag a control arm uses. The document is held complete by a checker.</p>
-<h3 id="targets" data-toc="The suite">The catalogue names every one of the 618 test targets.</h3>
+<h3 id="targets" data-toc="The suite">The catalogue names every one of the 620 test targets.</h3>
 <p><code>TESTS.md</code> is that catalogue. A target that does not exist is a failed check, and so is a document that names one. Run the gate you touched, and its control arm, before you push. A push is a poor way to discover that the arm no longer goes red.</p>
 <h2 id="install" data-toc="Hardware">Install onto a disk the kernel can actually write.</h2>
 <p>IDE, SD and eMMC. The installer asks for a typed confirmation and creates two accounts. Each account's password can open the disk. There are eight key slots. A ninth account does not get one: the change fails and the volume is left as it was.</p>

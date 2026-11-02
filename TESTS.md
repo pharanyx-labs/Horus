@@ -50,7 +50,7 @@ gates that match kernel strings are moving to COM3, which only the kernel can wr
 ## The integration gates
 
 
-There are 618 `smoke-*` targets: 259 gates and 359 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
+There are 620 `smoke-*` targets: 260 gates and 360 control arms. Each row is a gate; the last column lists its control arms. The properties column names the `SECURITY.md` rows the gate is a witness for. Five gates run locally only, each with its reason in `.github/gate-exceptions.yml`. The measurements behind a gate (its rates, and the run that showed its arm turns it red) are in the pull request that added it and in this file's git history.
 
 
 ### Capabilities and authorisation
@@ -360,6 +360,7 @@ There are 618 `smoke-*` targets: 259 gates and 359 control arms. Each row is a g
 |---|---|---|---|
 | `smoke-ap-trampoline` | The embedded secondary-CPU trampoline is exactly its code, whatever the host assembler emits |  | `smoke-ap-trampoline-control` |
 | `smoke-defect-flags` | Every boot states which defect flags built it |  | `smoke-defect-flags-control` |
+| `smoke-shared-kernel` | A job that boots the default kernel boots the image whose `.build-flags` stamp matches the flags it asked for and whose hash is the one the producing job declared. A different stamp or hash stops the job before it links |  | `smoke-shared-kernel-refuse` |
 | `smoke-cr3-return` | With the #596 fork refusal put back (`FORK_NOMEM_KEEPS_KCR3=1`), the task it returns on the kernel's page tables is returned on its own instead: `captest` passes, and COM3 records the repair | S156 | `smoke-cr3-return-control` |
 | `smoke-defect-flags-instrument` | A `SCHED_INVARIANTS` build, which no defect-flag row lists, names it in `DEFECT FLAGS:` and never says `none` |  | `smoke-defect-flags-instrument-control` |
 | `smoke-defect-flags-rebuild` | Changing a defect flag rebuilds what it affects |  | `smoke-defect-flags-rebuild-control` |

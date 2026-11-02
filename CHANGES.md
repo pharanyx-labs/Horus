@@ -57,6 +57,7 @@ here.
 
 ### Changed
 
+- The default kernel build fails when its warnings are not exactly `.github/warning-baseline.txt`, and that set may shrink against the copy on `main` but may not grow (roadmap 4.18). A syscall or interrupt path whose stack depth, read from `-fstack-usage` and the call graph, exceeds `KERNEL_STACK_SIZE` minus the bytes the interrupt stub pushes fails the same build. The kernel is still not built with `-Werror`, and neither check deletes a warning or a frame to go green. (#604)
 - The rows of `SECURITY.md` witnessed only by a positive boot are named in `.github/positive-boot.yml`, and the `invariants` job fails if that set and the table disagree (roadmap 4.21). The census does not add the arms. (#603)
 - `cppcheck` and `flawfinder` can fail the build, and they scan `init`, `fs_server` and `console_server` as well as the kernel (roadmap 4.16). A vendored Semgrep ruleset fails the build on the traps this tree has already shipped. CodeQL's workflow no longer calls that required job advisory, and the `make` it traces compiles those three programs. The session queue now starts at 4.17. (#602)
 - The public pages now follow the tree, and the operating manual is `AGENTS.md`. The site had a task occupying 256 capability slots in one shared scheduling pool; a task may fill 128 of 256 slots, and each CPU keeps its own run list. The security and CI work for later sessions is roadmap 4.16 to 4.23, 5.14 and 5.15. History and the investigations are unchanged. (#601)

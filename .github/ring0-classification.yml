@@ -731,7 +731,14 @@
 # reformats the vdisk. The selftests themselves are in storage.c (service)
 # and the halt when a present TPM cannot measure is in tpm.c (driver). The
 # calls are boot sequencing, which is why they stay in core.
-core_budget_loc: 13360
+# 2026-11-02: 13360 -> 13373, +13, S156 (#610), measured on the sum. A budget
+# reschedule was switching away while a fork refusal still had the kernel root
+# loaded, so the resume put the task's own root back and ring3_cr3_check never
+# saw the slip. The take now leaves that switch pending until the root is the
+# task's, and the fork refusal asks for the switch on every such return.
+# Which address space a task returns to is the isolation check, so it stays
+# in core.
+core_budget_loc: 13373
 
 classify:
   # ---- core: the capability, memory, task and IPC machinery, plus the machine

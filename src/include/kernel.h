@@ -1071,8 +1071,17 @@ int  sched_info_index(uint32_t idx, struct sched_info *out);
 uint32_t sched_root_index(int cpu);
 int  sched_cpu_schedules(int cpu);
 /* idt.c, after a system call: 1 if a tick found the caller out of budget while
- * it was in the kernel (and clears the mark), so it is switched away from. */
+ * it was in the kernel, so it is switched away from. The mark stays set when
+ * the root now loaded is not the caller's, so the epilogue's CR3 check sees
+ * the slip (S156); the next return, on the caller's own root, takes the switch. */
 int  sched_budget_resched_take(int cur);
+/* kspawn.c, the fork refusal that leaves the kernel root loaded
+ * (FORK_NOMEM_KEEPS_KCR3). Asks for the same switch a tick would, so the
+ * epilogue is reached with that root still loaded even on a boot no tick
+ * landed in the fork. */
+#ifdef FORK_NOMEM_KEEPS_KCR3
+void sched_cr3_slip_pending(int cur);
+#endif
 /* rust/src/sched.rs: the split arithmetic, proved by Kani. */
 int32_t rust_sc_split(uint32_t parent_share, uint32_t budget_us, uint32_t period_us,
                       uint32_t *out_parent, uint32_t *out_child);

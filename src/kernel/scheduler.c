@@ -1064,10 +1064,43 @@ static void sc_tick_in_kernel(int cpu, int cur) {
 int sched_budget_resched_take(int cur) {
     int cpu = this_cpu();
     if (cpu < 0 || cpu >= MAX_CPUS || sc_resched[cpu] < 0) return 0;
+    /* A switch here reloads the next task's root, and the resume of this one
+     * later reloads its own (switch_cr3). The root loaded now is thrown away,
+     * so a return that was about to reach ring 3 on the wrong tables never
+     * reaches ring3_cr3_check: the slip is healed in silence, and a
+     * SCHED_INVARIANTS build does not halt on it. S156's witness is that
+     * check, on this return. On 2026-11-02 the push of #608 failed
+     * smoke-cr3-return-control this way: a tick in the fork had marked this
+     * CPU, captest printed PASS 271, and the child came back on its own tables
+     * instead of dying on the kernel's. Leave the mark set. The epilogue sees
+     * the root, and the next return, once it is the task's own, takes the
+     * switch. One return over budget is the cost, and only when the root was
+     * already wrong. */
+    if (sc_resched[cpu] == cur && cur > 0 && cur < g_max_tasks &&
+        tasks[cur].cr3 != 0) {
+        uint64_t have;
+        __asm__ volatile ("mov %%cr3, %0" : "=r"(have));
+        if ((have & ~0xFFFULL) != tasks[cur].cr3) return 0;
+    }
     int t = sc_resched[cpu];
     sc_resched[cpu] = -1;
     return t == cur;
 }
+
+/* The fork refusal under FORK_NOMEM_KEEPS_KCR3 returns with the kernel root
+ * still loaded. A tick lands in that syscall only sometimes. When it does, the
+ * pending switch used to reload the caller's own root and the child lived;
+ * when it does not, the child dies on the kernel root. Asking for the switch
+ * on every such return makes the epilogue the path every boot takes, and
+ * sched_budget_resched_take then refuses to take it until the root is the
+ * task's own. */
+#ifdef FORK_NOMEM_KEEPS_KCR3
+void sched_cr3_slip_pending(int cur) {
+    int cpu = this_cpu();
+    if (cpu < 0 || cpu >= MAX_CPUS || cur <= 0 || cur >= g_max_tasks) return;
+    sc_resched[cpu] = cur;
+}
+#endif
 
 #ifdef SMP
 /* The stamp is dropped when a CPU goes idle, so the idle time is charged to

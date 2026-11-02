@@ -235,6 +235,12 @@ window.HORUS_SEARCH = [
 "k": 3
 },
 {
+"t": "Policy still in ring 0",
+"p": "What is unfinished",
+"u": "limitations.html#ring0",
+"k": 3
+},
+{
 "t": "Where the line sits",
 "p": "What is unfinished",
 "u": "limitations.html#where-the-line-sits",

@@ -910,5 +910,5 @@ Evicting it is roadmap 2.7a, and the two large moves are design decisions rather
 hashes. The capability filesystem's phase 2 (roadmap 2.10) and the installed system's
 `auth_server` (roadmap 2.11) are those decisions. The checks that do not move that policy, and
 the order a later session should take them, are the session queue in
-[`ROADMAP.md`](ROADMAP.md), from 4.17. The status of G-14 stays this section and
-[`LIMITATIONS.md`](LIMITATIONS.md).
+[`ROADMAP.md`](ROADMAP.md), from 4.17. The status of G-14 is
+[`LIMITATIONS.md`](LIMITATIONS.md) 1.42. This section is the design note.

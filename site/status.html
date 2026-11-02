@@ -136,7 +136,6 @@
 <h2 id="next" data-toc="Session queue">Work queued for later sessions.</h2>
 <p>Each item is one concern, written so a later session can take it without re-deriving the reason. The same text is in <code>docs/ROADMAP.md</code>. Do not start a later item while an earlier one in the same lane is open. Do not delete a witness to make room.</p>
 <ol class="queue">
-  <li><h3 data-toc-skip>4.17 One stamped kernel image for the default smoke jobs</h3><p>Jobs that boot the default kernel should download one image and check its build-flag stamp and its hash. Jobs that pass a different flag keep their own build. A shared image without the stamp is a gate that can pass on the wrong kernel.</p></li>
   <li><h3 data-toc-skip>4.19 A nightly guest syscall fuzzer</h3><p>The existing fuzz targets are parsers in the Rust core. Nothing there calls <code>syscall()</code>. Off the merge path, in the same shape as the nightly fuzz workflow.</p></li>
   <li><h3 data-toc-skip>5.4 Execute only from a file capability</h3><p>Closes limitation 1.23. A session that can read a file and does not hold <code>EXEC</code> cannot run it.</p></li>
   <li><h3 data-toc-skip>5.7 Rollback anchoring when a TPM is present</h3><p>Refuse an unanchored volume on a machine with a TPM unless the installer recorded that choice. The counter still moves once per boot. Limitation 1.12.</p></li>

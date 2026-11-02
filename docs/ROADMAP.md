@@ -233,14 +233,6 @@ documentation. The fast path is decided by a checked allowlist of paths, never b
 checker ships with a harness showing a code change cannot take it. The merge queue is a ruleset
 change, made after the pull request that adds the `merge_group` trigger has merged.
 
-**4.17 ⬜ One stamped kernel image for the default smoke jobs.** Jobs that boot the default kernel
-rebuild it. They should download one image and refuse it unless its `.build-flags` stamp and its
-hash are the ones that job expects. A job that passes a different flag keeps its own build, and
-`altconfigs` keeps building `DEBUG_SHELL=1`, `MINIMAL_SECURE=1`, `SMP=1` and `SMP=0` itself. A
-shared image that is not checked is a gate that can pass on the wrong kernel. The witness is a job
-handed an image stamped for a different flag, which must go red, and the same job handed the image
-it asked for, which must boot.
-
 **4.19 ⬜ A nightly guest syscall fuzzer.** The fuzz targets in `fuzz.yml` are parsers in the Rust
 core. Nothing there calls `syscall()`. A nightly job, off the merge path and in the same shape as
 that workflow, fuzzes the guest entry. A crash fails the run and keeps the input. It does not

@@ -1,0 +1,66 @@
+name: Take the stamped default kernel
+description: >-
+  Download the kernel image the kernel job built and refuse it unless its
+  hash is the hash that job declared.
+
+inputs:
+  sha256:
+    description: >-
+      SHA-256 the producing job declared. Callers pass
+      needs.kernel.outputs.sha256. A hash read from a file that travelled
+      with the image is not accepted: whoever can replace the image can
+      replace that file.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Download the default kernel
+      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7
+      with:
+        name: horus-default-kernel
+        path: ${{ github.workspace }}/.shared-kernel
+    - name: Refuse an image that is not the one this job asked for
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # The hash this step trusts is the input, which the workflow sets
+        # from the kernel job's output. kernel.sha256 is required to be
+        # present and non-empty so a download that dropped it fails closed.
+        # It is not compared as the authority. The Makefile compares the
+        # .build-flags stamp later, against the flags of the build that is
+        # about to run. Comparing the stamp to itself here would pass on any
+        # image, including one built with a flag this job did not ask for.
+        dir="${GITHUB_WORKSPACE}/.shared-kernel"
+        expect="${{ inputs.sha256 }}"
+        elf="$dir/kernel.elf"
+        stamp="$dir/kernel.build-flags"
+        side="$dir/kernel.sha256"
+
+        if [ -z "$expect" ]; then
+          echo "shared-kernel: no hash was supplied" >&2
+          exit 1
+        fi
+        if ! printf '%s' "$expect" | grep -Eq '^[0-9a-f]{64}$'; then
+          echo "shared-kernel: hash is not 64 lowercase hex digits" >&2
+          exit 1
+        fi
+        for f in "$elf" "$stamp" "$side"; do
+          if [ ! -f "$f" ] || [ -L "$f" ]; then
+            echo "shared-kernel: missing $(basename "$f")" >&2
+            exit 1
+          fi
+          if [ ! -s "$f" ]; then
+            echo "shared-kernel: empty $(basename "$f")" >&2
+            exit 1
+          fi
+        done
+        got=$(sha256sum "$elf" | awk 'NR==1 { print $1 }')
+        if [ "$got" != "$expect" ]; then
+          echo "shared-kernel: hash elf is $got, this job asked for $expect" >&2
+          exit 1
+        fi
+        printf 'SHARED_KERNEL=%s\n' "$dir" >> "$GITHUB_ENV"
+        printf 'SHARED_KERNEL_SHA256=%s\n' "$expect" >> "$GITHUB_ENV"
+        echo "shared-kernel: took $expect"

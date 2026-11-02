@@ -190,6 +190,20 @@ boot. Any smoke gate can boot with a TPM by passing `TPM=1` to `tools/smoke_test
 `KEEP_TPMSTATE=<dir>` carries one TPM across boots. **`SWTPM_REQUIRED=1` makes a missing `swtpm`
 an error rather than a skip**, and CI sets it, so a TPM gate cannot pass by measuring nothing.
 
+### One kernel image
+
+Jobs that boot the default kernel download one image. The `kernel` job builds
+`kernel.elf`, records the `.build-flags` stamp of that build, and publishes
+the image's SHA-256 as a job output. A later job refuses the download unless
+the hash is that output and the stamp matches the flags this build would use.
+A mismatch stops the job before it links. A job that passes any other flag,
+and the `altconfigs` job, still build their own. Local `make smoke` with no
+shared image still clean-builds.
+
+`make smoke-shared-kernel-refuse` is handed an image stamped for another flag,
+and an image whose bytes do not match the declared hash. It does not boot
+either. `make smoke-shared-kernel` boots the image the job asked for.
+
 ### Defect-reproducing builds (control arms)
 
 Each flag here rebuilds a known defect on purpose, or adds an instrument, so that a gate can be

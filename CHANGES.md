@@ -14,6 +14,10 @@ here.
 
 ## [Unreleased]
 
+### Security
+
+- A job that boots the default kernel boots the image the kernel job stamped: the hash that job declared, and the `.build-flags` stamp of the flags it was built with. A different stamp or hash stops the job before it links. A job that passes another flag, and `altconfigs`, still build their own. `make smoke-shared-kernel-refuse` and `make smoke-shared-kernel`.
+
 ## [0.5.0]: 2026-11-02
 
 **Horus 0.5.0.** Install media for x86-64, for people working on the system. Horus is a research microkernel. It has had no independent audit. The ISO rebuilds to the same bytes from this tag when the compiler, Rust, GRUB, xorriso and mtools match the versions listed beside the release. The tag and the ISO are unsigned.

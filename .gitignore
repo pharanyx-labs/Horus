@@ -226,6 +226,14 @@ soak-evidence/
 
 # Stamp of the CFLAGS/ASFLAGS a build was made with; forces a rebuild when they change
 .build-flags
+# The kernel job publishes these under names upload-artifact will keep (a
+# leading dot is dropped). The copy rule writes the two dot-files. None of
+# them is an input a later build may trust from the worktree.
+kernel.build-flags
+kernel.sha256
+.shared-kernel-ok
+.shared-kernel-used
+.shared-kernel/
 # The GRUB configuration the ISO rule stages before it fills in the ESP pin.
 .bootcfg.staged
 

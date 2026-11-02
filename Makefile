@@ -5518,11 +5518,55 @@ src/kernel/tpm.o: $(MODULE_MANIFEST)
 # linker64.ld is a real input to this link (LDFLAGS carries -T linker64.ld), so
 # it belongs in the prerequisites: without it, editing the script leaves a stale
 # kernel.elf sitting on disk and make reports "up to date".
+#
+# ONE STAMPED IMAGE (roadmap 4.17). A smoke job that boots the default kernel
+# boots the image the producing job built, not a kernel this checkout compiles
+# after ignoring that image. On 2026-08-20 a tree still held a kernel built with
+# KSP_GUARD_INJECT, and the next boot treated that defect as a real reproduction.
+# The producing job's hash is SHARED_KERNEL_SHA256. The stamp is the
+# `.build-flags` this invocation would write. Either mismatch stops the make.
+# This branch has no link line, so the refusal cannot fall through into
+# compiling a replacement and carrying on.
+#
+# SHARED_KERNEL is an environment variable, which a submake inherits.
+# MAKEOVERRIDES is only the command line. SMOKE_TIMEOUT and SOAK_RUNS change
+# how long a boot is willing to wait, not which kernel was built. Putting the
+# image's path on the command line is not a different kernel either:
+# `make SHARED_KERNEL=<dir>` still refuses a stamp that does not match. Any
+# other command-line assignment builds this tree and does not look at the image.
+SHARED_KERNEL_FOREIGN := $(filter-out SMOKE_TIMEOUT=% SOAK_RUNS=% SHARED_KERNEL=% SHARED_KERNEL_SHA256=%,$(MAKEOVERRIDES))
+SHARED_KERNEL_DEFAULT_BUILD :=
+ifneq ($(SHARED_KERNEL),)
+ifeq ($(strip $(SHARED_KERNEL_FOREIGN)),)
+SHARED_KERNEL_DEFAULT_BUILD := 1
+endif
+endif
+
+ifeq ($(SHARED_KERNEL_DEFAULT_BUILD),1)
+# FORCE, because a smoke recipe runs `$(MAKE)` and then `$(MAKE) horus.iso`.
+# Without it the second make sees kernel.elf newer than its prerequisites and
+# skips the check. The stamp file is a prerequisite so the comparison reads
+# the flags of THIS invocation, not whatever a previous build left behind.
+.shared-kernel-ok: .build-flags FORCE
+	python3 tools/check_shared_kernel.py \
+	    --kernel $(SHARED_KERNEL)/kernel.elf \
+	    --stamp $(SHARED_KERNEL)/kernel.build-flags \
+	    --expect-stamp .build-flags \
+	    --expect-hash '$(SHARED_KERNEL_SHA256)'
+	cp $(SHARED_KERNEL)/kernel.elf kernel.elf
+	printf '%s\n' '$(SHARED_KERNEL_SHA256)' > .shared-kernel-used
+	@echo "shared-kernel: using $(SHARED_KERNEL_SHA256)"
+	touch $@
+
+kernel.elf: .shared-kernel-ok
+	@:
+else
 kernel.elf: $(RUST_LIB) $(OBJS) $(RUST_EXTRA_OBJS) linker64.ld
 ifeq ($(RUST_ENABLED),1)
 	$(LD) $(LDFLAGS) -o $@ --whole-archive $(RUST_LIB) --no-whole-archive $(OBJS) $(RUST_EXTRA_OBJS)
 else
 	$(LD) $(LDFLAGS) -o $@ $(OBJS) $(RUST_EXTRA_OBJS)
+endif
 endif
 
 %.o: %.c
@@ -5922,6 +5966,7 @@ clean: userspace-clean
 	rm -f kernel.elf src/boot/*.o src/boot/*.bin src/kernel/*.o src/kernel/rust_*.o
 	rm -f $(MODULE_MANIFEST)
 	rm -f src/boot/*.d src/kernel/*.d userspace/*.d
+	rm -f .shared-kernel-ok .shared-kernel-used
 	rm -rf rust/target
 
 clean-rust:
@@ -15881,6 +15926,92 @@ smoke:
 	@$(MAKE) --no-print-directory
 	@$(MAKE) --no-print-directory horus.iso
 	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh horus.iso
+
+# The image a job asked for, then a stamp and a hash that are not that image.
+# smoke-shared-kernel is what the smoke job boots. It fails closed when no
+# image was supplied, so a runner that skipped the download cannot look like a
+# pass by compiling the tree. .shared-kernel-used is written only by the copy
+# rule above; a recipe that linked kernel.elf instead leaves the test short.
+#
+# smoke-shared-kernel-refuse does not boot. The inner makes sit inside the
+# shell `if`, so this target is not itself a default-kernel build: it points
+# one child at a tampered copy and requires that child to refuse. The
+# directory is a command-line assignment on that child. An environment prefix
+# loses to a SHARED_KERNEL the parent was given on its own command line,
+# which MAKEFLAGS would hand down, and the child would then check the
+# original image. A failure that is only a missing compiler does not name
+# `shared-kernel: stamp` or `shared-kernel: hash`, and does not satisfy the
+# arm. The elf is left intact for the stamp arm (the worked case is a
+# KSP_GUARD_INJECT line on an image whose hash still matches) and the stamp
+# is restored before the hash arm.
+.PHONY: smoke-shared-kernel
+smoke-shared-kernel:
+	@if [ -z "$(SHARED_KERNEL)" ] || [ -z "$(SHARED_KERNEL_SHA256)" ]; then \
+	    echo "shared-kernel: no image was supplied"; \
+	    exit 1; \
+	fi
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory
+	@test "$$(cat .shared-kernel-used)" = "$(SHARED_KERNEL_SHA256)"
+	@$(MAKE) --no-print-directory horus.iso
+	@SMOKE_TIMEOUT=$(SMOKE_TIMEOUT) tools/smoke_test.sh horus.iso
+
+.PHONY: smoke-shared-kernel-refuse
+smoke-shared-kernel-refuse:
+	@set -eu; \
+	if [ -z "$(SHARED_KERNEL)" ] || [ -z "$(SHARED_KERNEL_SHA256)" ]; then \
+	    echo "shared-kernel: no image was supplied"; \
+	    exit 1; \
+	fi; \
+	src="$(SHARED_KERNEL)"; \
+	expect="$(SHARED_KERNEL_SHA256)"; \
+	d=$$(mktemp -d); \
+	case "$$d" in \
+	    /tmp/*|/var/tmp/*) ;; \
+	    *) echo "shared-kernel: bad temp"; exit 1 ;; \
+	esac; \
+	cp "$$src/kernel.elf" "$$src/kernel.build-flags" "$$src/kernel.sha256" "$$d/"; \
+	printf '%s\n' 'KSP_GUARD_INJECT' >> "$$d/kernel.build-flags"; \
+	slog=$$(mktemp); \
+	if $(MAKE) --no-print-directory \
+	    SHARED_KERNEL="$$d" SHARED_KERNEL_SHA256="$$expect" \
+	    kernel.elf >"$$slog" 2>&1; then \
+	    cat "$$slog"; \
+	    echo "shared-kernel: stamp tamper was accepted"; \
+	    rm -f "$$slog"; \
+	    rm -rf "$$d"; \
+	    exit 1; \
+	fi; \
+	cat "$$slog"; \
+	if ! grep -q 'shared-kernel: stamp' "$$slog"; then \
+	    echo "shared-kernel: stamp tamper was not the refusal"; \
+	    rm -f "$$slog"; \
+	    rm -rf "$$d"; \
+	    exit 1; \
+	fi; \
+	rm -f "$$slog"; \
+	python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); b=bytearray(p.read_bytes()); b[-1]^=1; p.write_bytes(b)' "$$d/kernel.elf"; \
+	cp "$$src/kernel.build-flags" "$$d/kernel.build-flags"; \
+	hlog=$$(mktemp); \
+	if $(MAKE) --no-print-directory \
+	    SHARED_KERNEL="$$d" SHARED_KERNEL_SHA256="$$expect" \
+	    kernel.elf >"$$hlog" 2>&1; then \
+	    cat "$$hlog"; \
+	    echo "shared-kernel: hash tamper was accepted"; \
+	    rm -f "$$hlog"; \
+	    rm -rf "$$d"; \
+	    exit 1; \
+	fi; \
+	cat "$$hlog"; \
+	if ! grep -q 'shared-kernel: hash' "$$hlog"; then \
+	    echo "shared-kernel: hash tamper was not the refusal"; \
+	    rm -f "$$hlog"; \
+	    rm -rf "$$d"; \
+	    exit 1; \
+	fi; \
+	rm -f "$$hlog"; \
+	rm -rf "$$d"; \
+	echo "shared-kernel: refuse ok"
 
 # ---- every line of the boot log carries a timestamp ------------------------
 #

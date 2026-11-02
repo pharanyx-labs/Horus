@@ -57,6 +57,7 @@ here.
 
 ### Changed
 
+- The password hash compare and the AEAD tag compare are checked on every pull request. A `memcmp`, an early return, or a slice equality on either path fails the build, and a nightly run times an early mismatch against a late one (roadmap 4.20). Limitation 5.4 stays open. The primitives are not audited, and the timer is not a proof.
 - The default kernel build fails when its warnings are not exactly `.github/warning-baseline.txt`, and that set may shrink against the copy on `main` but may not grow (roadmap 4.18). A syscall or interrupt path whose stack depth, read from `-fstack-usage` and the call graph, exceeds `KERNEL_STACK_SIZE` minus the bytes the interrupt stub pushes fails the same build. The kernel is still not built with `-Werror`, and neither check deletes a warning or a frame to go green. (#604)
 - The rows of `SECURITY.md` witnessed only by a positive boot are named in `.github/positive-boot.yml`, and the `invariants` job fails if that set and the table disagree (roadmap 4.21). The census does not add the arms. (#603)
 - `cppcheck` and `flawfinder` can fail the build, and they scan `init`, `fs_server` and `console_server` as well as the kernel (roadmap 4.16). A vendored Semgrep ruleset fails the build on the traps this tree has already shipped. CodeQL's workflow no longer calls that required job advisory, and the `make` it traces compiles those three programs. The session queue now starts at 4.17. (#602)

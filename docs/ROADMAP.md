@@ -246,13 +246,6 @@ core. Nothing there calls `syscall()`. A nightly job, off the merge path and in 
 that workflow, fuzzes the guest entry. A crash fails the run and keeps the input. It does not
 become a required check until it has stayed quiet, and a silent skip is a failure.
 
-**4.20 ⬜ A constant-time check on the password path and the AEAD.** Limitation 5.4 stays the
-status: the primitives are unaudited and not shown constant-time, and this item does not close it
-and does not replace them. What it does land is a call-graph check that the password compare and
-the AEAD use the constant-time compare, plus a nightly timing run of those paths. A planted
-variable-time compare on either path must go red. Writing a new primitive is not this item.
-Roadmap 5.15 is the decision that would replace one.
-
 **4.22 ⬜ Clang as a second nightly compiler.** A nightly job builds the kernel and the userspace
 that the ISO links, with Clang, and fails if it cannot link. It does not gate a merge until it has
 stayed linkable. A skip, or a job that passes because the compiler was not installed, is a failure.
@@ -316,5 +309,6 @@ keeps secret pages out of swap.
 **5.15 ⏸ An audit of the cryptography, or a replacement** (5.4). The maintainer decides whether
 the from-scratch primitives are audited or replaced by a vendored, hash-pinned `no_std`
 implementation. This item does not start until that decision is written down. Do not write new
-primitives while waiting. The check that can land without the decision is roadmap 4.20. Limitation
-5.4 stays the status until the decision is carried out.
+primitives while waiting. Roadmap 4.20 watches the password compare and the AEAD tag compare.
+It does not audit the primitives and it does not replace them. Limitation 5.4 stays the status
+until the decision is carried out.

@@ -95,7 +95,7 @@
   <p class="lede">What is wrong with Horus right now. The authoritative register, including every closed entry, is docs/LIMITATIONS.md.</p>
 </header>
 <h2 id="limits" data-toc="Open limits">These are the limits that should change a decision.</h2>
-<p>Horus is research-grade. It should not be trusted with anything you cannot afford to lose. The gating set is 147 checks with 9 exempted. The 9 are the contexts of the three schedule-only workflows, not nine unused jobs. Each security property names a witness, and each gate has an arm. That machinery is not a review.</p>
+<p>Horus is research-grade. It should not be trusted with anything you cannot afford to lose. The gating set is 147 checks with 10 exempted. The 10 are the contexts of the four schedule-only workflows, not ten unused jobs. Each security property names a witness, and each gate has an arm. That machinery is not a review.</p>
 <ul class="findings">
   <li>
     <h3 id="review" data-toc="No independent review"><span class="id">5.1</span>Nobody reviews a change before it lands</h3>
@@ -115,7 +115,7 @@
   </li>
   <li>
     <h3 id="crypto" data-toc="Cryptography"><span class="id">5.4</span>The cryptography is unaudited and not shown constant-time</h3>
-    <p>ChaCha20, SHA-256, BLAKE2b, Argon2id and the AEAD are from-scratch <code>no_std</code> Rust with no third-party crate. They wrap the volume key, every block, every password and the CSPRNG. Tests check how they are used. They do not audit the primitives. Writing new primitives is not the fix. An audit, or a vendored hash-pinned implementation, is a maintainer decision (roadmap 5.15). A call-graph check and a nightly timing run are queued as roadmap 4.20 and can land before that decision.</p>
+    <p>ChaCha20, SHA-256, BLAKE2b, Argon2id and the AEAD are from-scratch <code>no_std</code> Rust with no third-party crate. They wrap the volume key, every block, every password and the CSPRNG. Tests check how they are used. They do not audit the primitives. Writing new primitives is not the fix. An audit, or a vendored hash-pinned implementation, is a maintainer decision (roadmap 5.15). A call-graph check refuses a variable-time compare on the password path and the AEAD, and a nightly run times those compares. Roadmap 4.20 landed that. It does not close this finding.</p>
   </li>
   <li>
     <h3 id="hardware" data-toc="Hardware"><span class="id">2.12</span>Hardware support is narrow, and DMA is not always confined</h3>

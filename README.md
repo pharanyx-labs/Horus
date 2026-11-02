@@ -278,9 +278,9 @@ test does not exist or does not run.
 | Reproducibility | `kernel.elf` builds byte for byte the same twice; the ISO does not yet |
 | Toolchain | The Rust compiler, Kani, the fuzzing toolchain, PyYAML and semgrep are pinned to exact versions |
 
-`.github/workflows/ci.yml` defines 143 jobs; 147 of the 156 status checks the workflows produce
-gate a merge. The 9 that do not are the nightly fuzzing, the nightly Kani control arms and the
-scheduled ruleset audit, each with its reason in `.github/ci-gating.yml`.
+`.github/workflows/ci.yml` defines 143 jobs; 147 of the 157 status checks the workflows produce
+gate a merge. The 10 that do not are the nightly fuzzing, the nightly Kani control arms, the
+scheduled ruleset audit and the nightly compare timing, each with its reason in `.github/ci-gating.yml`.
 [`TESTS.md`](TESTS.md) lists every test and what it proves.
 
 ## Repository layout

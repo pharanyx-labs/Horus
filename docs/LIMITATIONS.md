@@ -446,10 +446,15 @@ the measured-boot chain and the sealed volume key (SHA-256), every block of the 
 the `disk_key` unwrap (the AEAD), every password at rest (Argon2id), and the CSPRNG (ChaCha20). The
 tests witness how the primitives are used, not the primitives. The two places a timing leak would
 matter most are the password path behind the login prompt and the AEAD over attacker-chosen block
-contents. Closing this means an independent audit, or replacing them with an audited `no_std`
-implementation, vendored and hash-pinned; both are the maintainer's decision, because the crate's
-zero-dependency property is itself part of the supply-chain argument. Writing new primitives is not
-the fix.
+contents. The password compare (`verify_user_password` calling `rust_ct_eq`) and the AEAD tag
+compare (`tags_equal`, called from `open`) are checked on every pull request. A `memcmp`, an early
+return, or a slice equality on either path fails the build. A nightly run times an early mismatch
+against a late one and fails if that clock cannot separate a planted variable-time compare of the
+same length. Neither check audits the primitives, and a coarse timer is not a proof they are
+constant-time. This finding stays open. Closing this means an independent audit, or replacing them
+with an audited `no_std` implementation, vendored and hash-pinned; both are the maintainer's
+decision, because the crate's zero-dependency property is itself part of the supply-chain argument.
+Writing new primitives is not the fix.
 
 ### 5.5 Formal verification is narrow
 

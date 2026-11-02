@@ -16,7 +16,7 @@ here.
 
 ### Security
 
-- A job that boots the default kernel boots the image the kernel job stamped: the hash that job declared, and the `.build-flags` stamp of the flags it was built with. A different stamp or hash stops the job before it links. A job that passes another flag, and `altconfigs`, still build their own. `make smoke-shared-kernel-refuse` and `make smoke-shared-kernel`.
+- A job that boots the default kernel boots the image the kernel job stamped: the hash that job declared, and the `.build-flags` stamp of the flags it was built with. A different stamp or hash stops the job before it links. A job that passes another flag, and `altconfigs`, still build their own. `make smoke-shared-kernel-refuse` and `make smoke-shared-kernel`. (#615)
 
 ## [0.5.0]: 2026-11-02
 

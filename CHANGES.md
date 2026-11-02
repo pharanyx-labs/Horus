@@ -14,6 +14,10 @@ here.
 
 ## [Unreleased]
 
+## [0.5.0]: 2026-11-02
+
+**Horus 0.5.0.** Install media for x86-64, for people working on the system. Horus is a research microkernel. It has had no independent audit. The ISO rebuilds to the same bytes from this tag when the compiler, Rust, GRUB, xorriso and mtools match the versions listed beside the release. The tag and the ISO are unsigned.
+
 ### Added
 
 - A point-in-time security assessment of commit `e3aa595` is recorded in `audit.md`, with the rendered copy at `docs/audit-2026-11-02.pdf`. It sets no statuses. `docs/LIMITATIONS.md` remains the register, and `docs/AUDIT.md` remains the 19 September 2026 audit.

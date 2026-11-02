@@ -435,11 +435,12 @@ until a reformat. Nothing wrong is ever accepted. `smoke-installer-emmc` fell fr
 
 ### 5.3 No release provenance **[I-9]**
 
-There are four releases, `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09), `v0.4.0-alpha`
-and `v0.4.1-alpha` (both 2026-10-12), each an install ISO and its SHA-256 on GitHub, from an
-unsigned lightweight tag. There are no signed artifacts and no SLSA provenance, so nobody can check
-that an ISO they were given came from this repository's CI. From `v0.4.1-alpha` the ISO rebuilds to
-the same bytes from a checkout of its tag (S17), so anyone can confirm it by rebuilding it with
+There are five releases, `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09), `v0.4.0-alpha`
+and `v0.4.1-alpha` (both 2026-10-12), and `v0.5.0` (2026-11-02), each an install ISO and its
+SHA-256 on GitHub, from an unsigned lightweight tag. There are no signed artifacts and no SLSA
+provenance, so nobody can check that an ISO they were given came from this repository's CI. From
+`v0.4.1-alpha` on, the ISO rebuilds to the same bytes from a checkout of its tag (S17), so anyone
+can confirm it by rebuilding it with
 `make install.iso`, given the same versions of the compiler, Rust, GRUB, `xorriso` and `mtools`,
 which each release lists beside the ISO. A different compiler gives a different kernel, so the
 check is as strong as the reader's ability to match those versions; no script or container does

@@ -208,11 +208,11 @@ automatically verified", not "independently reviewed".
 and the ISO: Sigstore keyless signing from the release workflow, its actions pinned by SHA, and
 release tags signed by the maintainer's key.
 
-**4.5 ⬜ Releases that carry their evidence.** The four releases so far carry an ISO and its checksum
+**4.5 ⬜ Releases that carry their evidence.** The five releases so far carry an ISO and its checksum
 from an unsigned tag. Each release also carries the SBOM, the provenance of 4.4 and the expected PCR
 values. The finished item of this number, in
-[`history/ROADMAP-DONE-2026.md`](history/ROADMAP-DONE-2026.md), is those four tags. This open item
-is the evidence they still do not carry. The number is kept because other documents cite it.
+[`history/ROADMAP-DONE-2026.md`](history/ROADMAP-DONE-2026.md), is the first four tags. This open item
+is the evidence those releases still do not carry. The number is kept because other documents cite it.
 
 **4.8 ⬜ Secret scanning for non-provider patterns [M-4].**
 

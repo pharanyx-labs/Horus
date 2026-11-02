@@ -344,10 +344,10 @@ boundary; bounded Kani proofs and Miri on every pull request.
 
 ## Supported versions
 
-There are four releases, `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09), `v0.4.0-alpha`
-and `v0.4.1-alpha` (both 2026-10-12), each an install ISO for developers; only the latest is supported. Security fixes
-land on `main` only; there are no backports. Anyone using Horus for research should track `main`
-and rebuild.
+There are five releases, `v0.2.0-alpha` (2026-09-14), `v0.3.0-alpha` (2026-10-09), `v0.4.0-alpha`
+and `v0.4.1-alpha` (both 2026-10-12), and `v0.5.0` (2026-11-02), each an install ISO for
+developers. Only the latest is supported. Security fixes land on `main` only; there are no
+backports. Anyone using Horus for research should track `main` and rebuild.
 
 ---
 

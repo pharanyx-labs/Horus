@@ -1,0 +1,46 @@
+# A red run of Fuzz or Kani control arms opens one issue.
+#
+# Those workflows do not run on a pull request, so a red run is easy to miss.
+# This runs after one of them completes. A failure opens one issue. An issue
+# already open for that workflow means this run does not open a second. A
+# success opens nothing. The token can read the repository and open an issue,
+# and nothing else.
+#
+# Not a merge gate. Classified in .github/ci-gating.yml so deleting it trips
+# ci-gating rather than passing quietly.
+
+name: Nightly failure
+
+on:
+  workflow_run:
+    workflows: ["Fuzz", "Kani control arms"]
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly-issue
+  cancel-in-progress: false
+
+jobs:
+  nightly-issue:
+    name: A red nightly opens one issue
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      (github.event.workflow_run.event == 'schedule' ||
+       github.event.workflow_run.event == 'workflow_dispatch') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Open one issue, or leave the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: sh tools/open_nightly_issue.sh

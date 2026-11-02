@@ -444,3 +444,11 @@ advisory:
     The per-PR half is tools/check_ct_compare.py in the required invariants
     job. Listed here so that deleting it trips ci-gating rather than passing
     quietly.
+
+  nightly-issue: >-
+    Runs after the Fuzz or Kani control arms workflow completes, never on a
+    pull request, so it has no conclusion to gate one with. A failure opens
+    one issue and does not open a second while that issue is open. A success
+    opens nothing. Listed here so that deleting it trips ci-gating rather
+    than passing quietly. The per-PR half is tools/check_nightly_issue.py in
+    the required invariants job.

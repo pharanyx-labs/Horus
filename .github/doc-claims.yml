@@ -1005,6 +1005,13 @@ forbidden:
       than on the words, which appear legitimately in the two rows beneath it.
       Kept on ONE LINE because this checker matches line by line.
 
+  - pattern: 'queued as roadmap 4\.23'
+    reason: >-
+      Roadmap 4.23 landed the nightly issue and the PyYAML hash pin. That
+      sentence said both were still queued. Putting it back would say the
+      gate does not exist. Kept on ONE LINE because this checker matches
+      line by line.
+
   - pattern: 'queued as roadmap 4\.20|The check that can land first is roadmap 4\.20|The check that can land without the decision is roadmap 4\.20'
     reason: >-
       Roadmap 4.20 landed the call-graph check and the nightly timing run.
